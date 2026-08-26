@@ -87,4 +87,4 @@ CREATE OR REPLACE AGGREGATE "public"."sum_parallel" (NUMERIC) (
 
 ## Diffing behaviour
 
-Aggregate identity is `(schema, name, input_types)`. Changes to `SFUNC`, `STYPE`, `INITCOND`, `FINALFUNC`, `COMBINEFUNC`, or `SERIALFUNC` require `DROP AGGREGATE CASCADE` + `CREATE AGGREGATE` — `DESTRUCTIVE`.
+Aggregate identity is `(schema, name, input_types)`. Changes to `SFUNC`, `STYPE`, `INITCOND`, `FINALFUNC`, `COMBINEFUNC`, or `SERIALFUNC` require `DROP AGGREGATE IF EXISTS` + `CREATE AGGREGATE` — `DESTRUCTIVE`.

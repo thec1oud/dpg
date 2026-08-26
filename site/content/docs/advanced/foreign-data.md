@@ -47,14 +47,14 @@ CREATE SERVER "analytics_warehouse"
 ```sql
 USER MAPPING FOR app_service
     SERVER analytics_warehouse
-    OPTIONS (user 'fdw_user', password 'env:FDW_PASSWORD');
+    OPTIONS (user 'fdw_user', password '{{vault:secret/fdw/analytics#password}}');
 ```
 
 ```sql
 -- emits
 CREATE USER MAPPING FOR "app_service"
     SERVER "analytics_warehouse"
-    OPTIONS (user 'fdw_user', password 'env:FDW_PASSWORD');
+    OPTIONS (user 'fdw_user', password '<resolved-at-apply-time>');
 ```
 
 ---
@@ -91,10 +91,17 @@ GRANT SELECT ON "public"."remote_events" TO "app_readonly";
 
 | Object | Change | Safety |
 |--------|--------|--------|
-| FDW | Any change | `DESTRUCTIVE` (drop + recreate) |
+| FDW | HANDLER/VALIDATOR/OPTIONS changed | `DESTRUCTIVE` (drop + recreate) |
+| FDW | Owner changed | `SAFE` |
+| FDW | Renamed | `CAUTION` |
+| FDW | Grants/revocations changed | `SAFE` |
+| FDW | Removed | `DESTRUCTIVE` |
 | Server | OPTIONS changed | `SAFE` |
+| Server | VERSION changed only | `SAFE` |
+| Server | Owner changed | `SAFE` |
+| Server | Renamed | `CAUTION` |
 | Server | FDW changed | `DESTRUCTIVE` (drop + recreate) |
 | Server | Removed | `DESTRUCTIVE` |
-| User mapping | OPTIONS changed | `SAFE` |
-| User mapping | Removed | `SAFE` |
+| User mapping | OPTIONS changed | `DESTRUCTIVE` then `SAFE` (drop + recreate) |
+| User mapping | Removed | `DESTRUCTIVE` |
 | Foreign table | Column changes | `ALTER FOREIGN TABLE` |

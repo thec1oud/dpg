@@ -21,18 +21,18 @@ CREATE TABLESPACE "archive"  LOCATION '/mnt/hdd/pg_archive';
 
 ## Tablespace with owner
 
+`OWNER` sits inline in the native `CREATE TABLESPACE` clause, matching real PostgreSQL's own grammar exactly — it is not a `{ }` block directive here (unlike Table/View/etc., where `OWNER` has no place in the native `CREATE` statement).
+
 ```sql
-TABLESPACE fast_ssd LOCATION '/mnt/nvme/pg_data'
-{
-    OWNER "pg_admin";
-}
+TABLESPACE fast_ssd OWNER "pg_admin" LOCATION '/mnt/nvme/pg_data';
 ```
 
 ```sql
 -- emits
-CREATE TABLESPACE "fast_ssd" LOCATION '/mnt/nvme/pg_data';
-ALTER TABLESPACE "fast_ssd" OWNER TO "pg_admin";
+CREATE TABLESPACE "fast_ssd" OWNER "pg_admin" LOCATION '/mnt/nvme/pg_data';
 ```
+
+A later change to the declared `OWNER` emits `ALTER TABLESPACE name OWNER TO role`.
 
 ## Using a tablespace
 
@@ -50,6 +50,13 @@ See [Tables Overview](../../schema-objects/tables/overview/) and [Indexes](../..
 
 ## Diffing behaviour
 
-- New tablespace: `CREATE TABLESPACE`.
-- Owner change: `ALTER TABLESPACE OWNER TO`.
-- Removed tablespace: `DROP TABLESPACE` — `DESTRUCTIVE`. The compiler additionally emits a warning comment that the drop will fail at the PostgreSQL level if any objects still reside in the tablespace.
+| Change | SQL | Safety |
+|--------|-----|--------|
+| New tablespace | `CREATE TABLESPACE` | `SAFE` |
+| Owner changed | `ALTER TABLESPACE OWNER TO` | `SAFE` |
+| Renamed (`RENAMED FROM`) | `ALTER TABLESPACE RENAME TO` | `CAUTION` |
+| `WITH (...)` option changed | `ALTER TABLESPACE SET (...)`/`RESET (...)` | `CAUTION` |
+| `LOCATION` changed | `DROP TABLESPACE` + `CREATE TABLESPACE` | `DESTRUCTIVE` |
+| Removed tablespace | `DROP TABLESPACE` | `DESTRUCTIVE` |
+
+`LOCATION` cannot be changed after creation — any location change requires the full drop-and-recreate path. Dropping a non-empty tablespace fails at the PostgreSQL level; the compiler additionally emits a warning comment noting this.

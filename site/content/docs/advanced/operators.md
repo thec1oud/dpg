@@ -44,7 +44,11 @@ Identity is `(schema, symbol, leftarg_type, rightarg_type)`.
 | Change | SQL | Safety |
 |--------|-----|--------|
 | `PROCEDURE` change | `DROP OPERATOR` + `CREATE OPERATOR` | `DESTRUCTIVE` |
-| Optimizer hint changes (`COMMUTATOR`, `NEGATOR`, `RESTRICT`, `JOIN`, `HASHES`, `MERGES`) | `ALTER OPERATOR` | `SAFE` |
+| `RESTRICT`/`JOIN` set, cleared, or changed | `ALTER OPERATOR SET (...)` | `SAFE` |
+| `COMMUTATOR`/`NEGATOR`/`HASHES`/`MERGES` newly set (previously unset) | `ALTER OPERATOR SET (...)` | `SAFE` |
+| `COMMUTATOR`/`NEGATOR`/`HASHES`/`MERGES` changed once already set | `DROP OPERATOR` + `CREATE OPERATOR` | `DESTRUCTIVE` |
+
+`COMMUTATOR`/`NEGATOR`/`HASHES`/`MERGES` are one-directional in real PostgreSQL: `ALTER OPERATOR ... SET (COMMUTATOR = ...)` errors once a value is already recorded, so only the unset-to-set transition can go through `ALTER OPERATOR`.
 
 ---
 

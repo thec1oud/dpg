@@ -74,5 +74,10 @@ CREATE SUBSCRIPTION "replica_users"
 | Add table to publication | `ALTER PUBLICATION ADD TABLE` | `SAFE` |
 | Remove table from publication | `ALTER PUBLICATION DROP TABLE` | `SAFE` |
 | Change `WITH` options | `ALTER PUBLICATION SET` | `SAFE` |
-| Remove publication | `DROP PUBLICATION` | `SAFE` |
+| Publication owner changed | `ALTER PUBLICATION OWNER TO` | `SAFE` |
+| Publication renamed (`RENAMED FROM`) | `ALTER PUBLICATION RENAME TO` | `CAUTION` |
+| Remove publication | `DROP PUBLICATION` | `DESTRUCTIVE` |
 | Change subscription connection/publication | `DROP SUBSCRIPTION` + `CREATE SUBSCRIPTION` | `DESTRUCTIVE` |
+| Subscription owner changed | `ALTER SUBSCRIPTION OWNER TO` | `SAFE` |
+| Subscription renamed (`RENAMED FROM`) | `ALTER SUBSCRIPTION RENAME TO` | `CAUTION` |
+| Remove subscription | `DROP SUBSCRIPTION` | `DESTRUCTIVE` |

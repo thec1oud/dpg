@@ -44,12 +44,23 @@ ENUM order_status ('pending', 'confirmed', 'shipped', 'delivered', 'refunded');
 
 ```sql
 -- emits
-ALTER TYPE "public"."order_status" ADD VALUE IF NOT EXISTS 'refunded';
+ALTER TYPE "public"."order_status" ADD VALUE 'refunded';
+```
+
+## Renaming a value
+
+```sql
+ENUM order_status ('pending', 'confirmed', 'shipped', 'delivered' RENAMED FROM 'fulfilled');
+```
+
+```sql
+-- emits
+ALTER TYPE "public"."order_status" RENAME VALUE 'fulfilled' TO 'delivered';
 ```
 
 ## Removing a value — `MIGRATE REMOVE`
 
-PostgreSQL has no `ALTER TYPE DROP VALUE`. DPG handles removal through a safe seven-step migration.
+PostgreSQL has no `ALTER TYPE DROP VALUE`. DPG handles removal through a safe six-step migration.
 
 ```sql
 ENUM order_status ('pending', 'confirmed', 'shipped', 'delivered');
@@ -61,7 +72,7 @@ ENUM order_status ('pending', 'confirmed', 'shipped', 'delivered');
 ```
 
 ```sql
--- emits (seven-step migration)
+-- emits (six-step migration)
 
 -- 1. Create a new type with the reduced value set
 CREATE TYPE "public"."order_status__dpg_new" AS ENUM ('pending', 'confirmed', 'shipped', 'delivered');

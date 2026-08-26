@@ -1,6 +1,6 @@
 ---
 title: "Materialized Views"
-description: "Materialized views; any query change emits `DROP MATERIALIZED VIEW CASCADE` then `CREATE MATERIALIZED VIEW`."
+description: "Materialized views; any query change emits `DROP MATERIALIZED VIEW` then `CREATE MATERIALIZED VIEW`."
 weight: 2
 ---
 
@@ -65,4 +65,4 @@ CREATE INDEX IF NOT EXISTS "idx_product_stats_id"
 
 ## Diffing behaviour
 
-Any change to a materialized view's query — including whitespace — emits `DROP MATERIALIZED VIEW CASCADE` then `CREATE MATERIALIZED VIEW` — always `DESTRUCTIVE`. Unlike regular views, there is no `CREATE OR REPLACE MATERIALIZED VIEW`.
+Any change to a materialized view's query (beyond whitespace, which is normalized away before comparison) emits `DROP MATERIALIZED VIEW` then `CREATE MATERIALIZED VIEW` — always `DESTRUCTIVE`. Unlike regular views, there is no `CREATE OR REPLACE MATERIALIZED VIEW`.

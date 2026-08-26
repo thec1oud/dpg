@@ -61,4 +61,11 @@ CREATE COLLATION "public"."my_collation" (COPY = pg_catalog."default");
 
 ## Diffing behaviour
 
-Any change to a collation's properties requires `DROP COLLATION` + `CREATE COLLATION` — `DESTRUCTIVE`. Columns using the collation must be re-indexed after recreation.
+| Change | SQL | Safety |
+|--------|-----|--------|
+| Owner changed | `ALTER COLLATION OWNER TO` | `SAFE` |
+| Renamed (`RENAMED FROM`) | `ALTER COLLATION RENAME TO` (+ `SET SCHEMA` if schema-qualified) | `CAUTION` |
+| `REFRESH VERSION` present in source | `ALTER COLLATION REFRESH VERSION` (re-emitted every apply while present) | `MANUAL` |
+| Any other property change (`LOCALE`/`PROVIDER`/`RULES`/`FROM` target/etc.) | `DROP COLLATION` + `CREATE COLLATION` | `DESTRUCTIVE` |
+
+Columns using the collation must be re-indexed after a drop-and-recreate.
