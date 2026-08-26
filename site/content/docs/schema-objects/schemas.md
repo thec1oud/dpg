@@ -24,7 +24,7 @@ CREATE SCHEMA IF NOT EXISTS "public";
 ```sql
 SCHEMA analytics {
     OWNER   "analytics_role";
-    COMMENT "Derived tables and event aggregations";
+    COMMENT 'Derived tables and event aggregations';
 }
 ```
 

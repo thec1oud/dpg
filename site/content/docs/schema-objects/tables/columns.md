@@ -122,7 +122,7 @@ GRANT SELECT ("email") ON TABLE "public"."users" TO "reporting_role";
 
 | Attribute | Emits |
 |-----------|-------|
-| `COMMENT "text"` | `COMMENT ON COLUMN t.c IS '...'` |
+| `COMMENT 'text'` | `COMMENT ON COLUMN t.c IS '...'` |
 | `STATISTICS n` | `ALTER TABLE t ALTER COLUMN c SET STATISTICS n` |
 | `COMPRESSION method` | `ALTER TABLE t ALTER COLUMN c SET COMPRESSION m` |
 | `STORAGE type` | `ALTER TABLE t ALTER COLUMN c SET STORAGE s` |
@@ -143,7 +143,7 @@ TABLE users (
 {
     COLUMN email_address {
         RENAMED FROM email;
-        COMMENT "Verified email address";
+        COMMENT 'Verified email address';
     }
 }
 ```

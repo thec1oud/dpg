@@ -145,11 +145,10 @@ DROP TABLE "public"."scratch_data" CASCADE;
 
 ## MIGRATE REMOVE — ENUM value removal
 
-PostgreSQL has no `ALTER TYPE DROP VALUE`. DPG triggers a safe seven-step migration. See [ENUM](../../schema-objects/types/enum/) for the complete procedure and output.
+PostgreSQL has no `ALTER TYPE DROP VALUE`. DPG triggers a safe six-step migration. See [ENUM](../../schema-objects/types/enum/) for the complete procedure and output.
 
 ```sql
-ENUM order_status ('pending', 'confirmed', 'shipped', 'delivered');
-{
+ENUM order_status ('pending', 'confirmed', 'shipped', 'delivered') {
     MIGRATE REMOVE ('cancelled') {
         UPDATE orders SET status = 'delivered' WHERE status = 'cancelled';
     }

@@ -93,8 +93,7 @@ GRANT ALL ON SCHEMA "analytics" TO "analytics_admin";
 ```sql
 FUNCTION calculate_total(p_id UUID) RETURNS NUMERIC
 LANGUAGE plpgsql STABLE
-AS $$ ... $$;
-{
+AS $$ ... $$ {
     GRANTS { EXECUTE TO app_service; }
 }
 ```
@@ -107,8 +106,7 @@ GRANT EXECUTE ON FUNCTION "public"."calculate_total"(uuid) TO "app_service";
 ## Sequence grants
 
 ```sql
-SEQUENCE order_number_seq ...;
-{
+SEQUENCE order_number_seq ... {
     GRANTS { USAGE TO app_service; }
 }
 ```

@@ -137,7 +137,7 @@ Fix by adding a `COLUMN` block with a comment:
 ```sql
 TABLE users ( created_at TIMESTAMPTZ NOT NULL DEFAULT now(), ... )
 {
-    COLUMN created_at { COMMENT "UTC timestamp when the record was created"; }
+    COLUMN created_at { COMMENT 'UTC timestamp when the record was created'; }
 }
 ```
 

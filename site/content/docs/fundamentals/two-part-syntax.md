@@ -35,7 +35,7 @@ TABLE users (
     CONSTRAINT uq_users_email UNIQUE (email)
 )
 {
-    COMMENT "Primary identity store";
+    COMMENT 'Primary identity store';
     OWNER   "app_role";
     INDICES { idx_email (email); }
     GRANTS  { SELECT TO app_readonly; }
@@ -112,26 +112,36 @@ Schemas have no `( )` list — their `{ }` block directly contains attributes an
 
 ## Semicolon rules
 
-| Object kind | Terminator before `{ }` |
-|-------------|------------------------|
-| Objects with a `( )` list (tables) | None — `)` or `) WITH (...)` ends Part 1 |
-| Functions and procedures | `$$;` ends the dollar-quoted body |
-| All others (views, enums, extensions) | `;` terminates Part 1 |
+Every object kind follows the same rule, regardless of what Part 1 itself ends with (a closing `)`, a dollar-quoted body's `$$`, or plain text): a `;` immediately before a `{ }` block is forbidden; a `;` is mandatory whenever no `{ }` block follows at all.
+
+| Object kind | With a `{ }` block | With no `{ }` block |
+|-------------|---------------------|----------------------|
+| Objects with a `( )` list (tables) | `)` (or `) WITH (...)`) then `{`, no `;` | `)` then `;` |
+| Functions and procedures | `$$` then `{`, no `;` | `$$;` |
+| All others (views, enums, extensions) | Part 1 then `{`, no `;` | Part 1 then `;` |
+
+`dpg fmt` always renders `{` on the same line as Part 1's own end, joined by a single space.
 
 ```sql
--- table: no semicolon before {
-TABLE users ( id BIGINT ) WITH (fillfactor = 90)
-{ INDICES { idx_email (email); } }
+-- table: no semicolon before {, { on the same line
+TABLE users ( id BIGINT ) WITH (fillfactor = 90) {
+    INDICES { idx_email (email); }
+}
 
--- function: $$; before {
+-- function: no semicolon before {, { on the same line
 FUNCTION foo() RETURNS TEXT LANGUAGE sql AS $$
     SELECT 'hello';
-$$;
-{ GRANTS { EXECUTE TO app_service; } }
+$$ {
+    GRANTS { EXECUTE TO app_service; }
+}
 
--- view: ; before {
-VIEW active_users AS SELECT id FROM users WHERE status = 'active';
-{ GRANTS { SELECT TO app_readonly; } }
+-- view: no semicolon before {, { on the same line
+VIEW active_users AS SELECT id FROM users WHERE status = 'active' {
+    GRANTS { SELECT TO app_readonly; }
+}
+
+-- table with no { } block: semicolon mandatory
+TABLE log ( id BIGINT, msg TEXT NOT NULL );
 ```
 
 ## Dual definition modes

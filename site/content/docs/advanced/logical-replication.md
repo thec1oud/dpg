@@ -9,9 +9,8 @@ weight: 2
 ```sql
 PUBLICATION user_data
     FOR TABLE users, profiles
-    WITH (publish = 'insert, update, delete');
-{
-    COMMENT "Primary replication stream for user data";
+    WITH (publish = 'insert, update, delete') {
+    COMMENT 'Primary replication stream for user data';
 }
 ```
 

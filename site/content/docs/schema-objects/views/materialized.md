@@ -40,8 +40,7 @@ TABLESPACE analytics_space AS
     SELECT product_id, COUNT(*) AS purchases, AVG(price) AS avg_price
     FROM order_items
     GROUP BY product_id
-WITH NO DATA;
-{
+WITH NO DATA {
     INDICES { idx_product_stats_id (product_id); }
     GRANTS  { SELECT TO app_readonly; }
 }

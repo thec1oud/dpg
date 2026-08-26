@@ -70,7 +70,7 @@ FOREIGN TABLE remote_events (
     created_at TIMESTAMPTZ
 ) SERVER log_server OPTIONS (table_name 'events', schema_name 'public')
 {
-    COLUMN id { COMMENT "Remote event primary key"; }
+    COLUMN id { COMMENT 'Remote event primary key'; }
     GRANTS { SELECT TO app_readonly; }
 }
 ```

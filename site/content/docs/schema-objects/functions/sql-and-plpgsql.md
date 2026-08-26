@@ -43,9 +43,8 @@ EXCEPTION
     WHEN NO_DATA_FOUND THEN
         RAISE EXCEPTION 'User not found: %', p_email;
 END;
-$$;
-{
-    COMMENT "Fetch a user record by verified email address";
+$$ {
+    COMMENT 'Fetch a user record by verified email address';
     GRANTS { EXECUTE TO app_service; }
 }
 ```
@@ -204,9 +203,8 @@ AS $func$
 BEGIN
     RETURN '$' || TO_CHAR(p_amount, 'FM999,999,990.00');
 END;
-$func$;
-{
-    COMMENT "Format a numeric amount as a dollar price string";
+$func$ {
+    COMMENT 'Format a numeric amount as a dollar price string';
     GRANTS { EXECUTE TO app_readonly, app_service; }
 }
 ```

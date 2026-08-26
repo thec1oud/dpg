@@ -74,9 +74,8 @@ CREATE OR REPLACE VIEW "public"."active_orders" AS
 
 ```sql
 VIEW admin_summary AS
-    SELECT id, email, created_at FROM users WHERE role = 'admin';
-{
-    COMMENT "Admin user summary";
+    SELECT id, email, created_at FROM users WHERE role = 'admin' {
+    COMMENT 'Admin user summary';
     GRANTS  { SELECT TO app_readonly; }
 }
 ```

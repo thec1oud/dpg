@@ -11,7 +11,7 @@ Roles are cluster-level objects. Declare them in `.dpg` files inside the cluster
 ```sql
 ROLE app_readonly {
     NOLOGIN;
-    COMMENT "Read-only access for reporting tools";
+    COMMENT 'Read-only access for reporting tools';
 }
 ```
 
@@ -80,7 +80,7 @@ CREATE ROLE "app_admin"
 | `VALID UNTIL 'date'` | `VALID UNTIL 'date'` |
 | `PASSWORD 'env:VAR'` | `PASSWORD 'value'` (resolved at runtime) |
 | `IN ROLE role` | `IN ROLE role` |
-| `COMMENT "text"` | `COMMENT ON ROLE name IS '...'` |
+| `COMMENT 'text'` | `COMMENT ON ROLE name IS '...'` |
 
 ## Diffing behaviour
 

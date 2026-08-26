@@ -16,7 +16,7 @@ SCHEMA public {
         INITCOND = '1'
     )
     {
-        COMMENT "Multiplicative aggregate over DOUBLE PRECISION values";
+        COMMENT 'Multiplicative aggregate over DOUBLE PRECISION values';
         GRANTS  { EXECUTE TO app_service; }
     }
 }
@@ -44,7 +44,7 @@ AGGREGATE percentile_disc (DOUBLE PRECISION ORDER BY anyelement) (
     FINALFUNC_EXTRA
 )
 {
-    COMMENT "Ordered-set percentile aggregate";
+    COMMENT 'Ordered-set percentile aggregate';
 }
 ```
 

@@ -53,9 +53,8 @@ Two or more terms joined with `|`. Any mix of composites and type references is 
 VIRTUAL TYPE payment AS
     (kind text, amount numeric, currency text)
     | (kind text, token text)
-    | text;
-{
-    COMMENT "Discriminated union for payment method";
+    | text {
+    COMMENT 'Discriminated union for payment method';
 }
 ```
 

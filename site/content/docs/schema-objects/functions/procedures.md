@@ -21,8 +21,7 @@ SCHEMA public {
             COMMIT;
         END LOOP;
     END;
-    $$;
-    {
+    $$ {
         GRANTS { EXECUTE TO scheduler_role; }
     }
 }

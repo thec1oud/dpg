@@ -18,9 +18,8 @@ CREATE TYPE "public"."user_status" AS ENUM ('active', 'suspended', 'deleted');
 ## ENUM with comment
 
 ```sql
-ENUM invoice_status ('draft', 'sent', 'paid', 'void', 'overdue');
-{
-    COMMENT "Billing lifecycle states for customer invoices";
+ENUM invoice_status ('draft', 'sent', 'paid', 'void', 'overdue') {
+    COMMENT 'Billing lifecycle states for customer invoices';
 }
 ```
 
@@ -49,8 +48,12 @@ ALTER TYPE "public"."order_status" ADD VALUE 'refunded';
 
 ## Renaming a value
 
+Renaming is a `{ }` block directive, not inline value-list syntax — a value's position is inferred purely from list order, so `RENAME VALUE` is the only way to express a rename.
+
 ```sql
-ENUM order_status ('pending', 'confirmed', 'shipped', 'delivered' RENAMED FROM 'fulfilled');
+ENUM order_status ('pending', 'confirmed', 'shipped', 'delivered') {
+    RENAME VALUE 'fulfilled' TO 'delivered';
+}
 ```
 
 ```sql
@@ -63,8 +66,7 @@ ALTER TYPE "public"."order_status" RENAME VALUE 'fulfilled' TO 'delivered';
 PostgreSQL has no `ALTER TYPE DROP VALUE`. DPG handles removal through a safe six-step migration.
 
 ```sql
-ENUM order_status ('pending', 'confirmed', 'shipped', 'delivered');
-{
+ENUM order_status ('pending', 'confirmed', 'shipped', 'delivered') {
     MIGRATE REMOVE ('cancelled') {
         UPDATE orders SET status = 'delivered' WHERE status = 'cancelled';
     }

@@ -37,8 +37,7 @@ CREATE STATISTICS "public"."orders_stats" (dependencies, ndistinct, mcv)
 SCHEMA public {
     STATISTICS orders_stats (dependencies, ndistinct, mcv)
         ON customer_id, created_at
-        FROM orders;
-    {
+        FROM orders {
         STATISTICS_TARGET 200;
     }
 }

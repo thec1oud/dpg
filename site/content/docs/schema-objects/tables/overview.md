@@ -39,7 +39,7 @@ TABLE users (
     CONSTRAINT uq_users_email UNIQUE (email)
 )
 {
-    COMMENT "Primary identity store";
+    COMMENT 'Primary identity store';
     OWNER   "app_role";
 
     COLUMN email {
