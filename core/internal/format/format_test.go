@@ -154,6 +154,51 @@ func TestFormat_SimpleTable(t *testing.T) {
 	}
 }
 
+// TestFormat_BraceJoinsPart1SameLine guards the launch-readiness audit's
+// dpg-fmt requirement: the opening '{' of a block must always render on
+// the same line as Part 1's own end, joined by a single space — never on
+// its own line — regardless of how the source itself placed it (the
+// scanner tolerates whitespace, including a newline, between Part 1 and
+// '{' as long as no ';' appears there; fmt must still normalize it).
+// Covers all three renderObject paths that ever emit '{': renderTable,
+// renderOpaque (via FUNCTION here), and renderSchemaBlock.
+func TestFormat_BraceJoinsPart1SameLine(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{"table", "TABLE t (id BIGINT)\n{\n    COMMENT 'x';\n}"},
+		{"table-same-line-already", "TABLE t (id BIGINT) { COMMENT 'x'; }"},
+		{"function", "FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$\n{\n    COMMENT 'x';\n}"},
+		{"view", "VIEW v AS SELECT 1\n{\n    COMMENT 'x';\n}"},
+		{"schema", "SCHEMA public\n{\n    COMMENT 'x';\n}"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			out := formatSrc(t, c.src, defaultOpts)
+			if strings.Contains(out, "\n{") {
+				t.Errorf("brace on its own line in output:\n%s", out)
+			}
+			if !strings.Contains(out, " {") {
+				t.Errorf("expected '{' joined to Part 1 by a space in output:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestFormat_BlockBracePlacementIdempotent is TestFormat_Idempotent's
+// block-brace-specific sibling — required for '{' placement specifically
+// since a formatter that only sometimes normalizes brace placement would
+// still leave already-formatted files churning on every dpg fmt run.
+func TestFormat_BlockBracePlacementIdempotent(t *testing.T) {
+	src := "TABLE t (id BIGINT)\n{\n    COMMENT 'x';\n}"
+	once := formatSrc(t, src, defaultOpts)
+	twice := formatSrc(t, once, defaultOpts)
+	if once != twice {
+		t.Errorf("format is not idempotent:\n--- once ---\n%s\n--- twice ---\n%s", once, twice)
+	}
+}
+
 func TestFormat_KeywordCaseLower(t *testing.T) {
 	opts := format.Options{IndentSize: 4, KeywordCase: "lower"}
 	src := `TABLE users (id BIGINT NOT NULL);`
