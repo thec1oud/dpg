@@ -285,8 +285,15 @@ func checkFunction(f *ir.Function, cfg pipeline.LinterConfig) []pipeline.LintDia
 			Message: fmt.Sprintf("function %s is deprecated: %s", f.QualifiedName(), *f.Deprecated),
 		})
 	}
-	// Warn on SECURITY DEFINER without explicit search_path.
-	if f.Attrs.SecurityDef && !strings.Contains(f.Attrs.Body, "search_path") {
+	// Warn on SECURITY DEFINER without an explicit SET search_path clause
+	// (Section 9.2). Previously checked strings.Contains(f.Attrs.Body,
+	// "search_path") — a substring scan of the function BODY text, which
+	// SET search_path (a structural attribute, not body text) never
+	// appears in at all, so a function correctly declaring
+	// "SET search_path = ..." was warned about anyway; this only ever
+	// passed by coincidence (e.g. the literal word appearing in a
+	// comment). Now checks the real Config list Section 9.2 documents.
+	if f.Attrs.SecurityDef && !hasSearchPathConfig(f.Attrs.Config) {
 		diags = append(diags, pipeline.LintDiagnostic{
 			Pos:     f.SrcPos,
 			Rule:    "security-definer-search-path",
@@ -298,10 +305,38 @@ func checkFunction(f *ir.Function, cfg pipeline.LinterConfig) []pipeline.LintDia
 	return diags
 }
 
+// hasSearchPathConfig reports whether a Section 9.2 SET-clause list
+// includes a search_path entry, case-insensitively (PostgreSQL GUC names
+// are case-insensitive).
+func hasSearchPathConfig(config []ir.FuncConfig) bool {
+	for _, c := range config {
+		if strings.EqualFold(c.Param, "search_path") {
+			return true
+		}
+	}
+	return false
+}
+
 // ── Procedure rules ──────────────────────────────────────────────────────────
 
 func checkProcedure(p *ir.Procedure, cfg pipeline.LinterConfig) []pipeline.LintDiagnostic {
-	return checkUnnecessaryRevocation(p.Grants, p.Revocations, p.SrcPos, "procedure "+p.QualifiedName())
+	var diags []pipeline.LintDiagnostic
+	// Same SECURITY DEFINER + search_path guard as checkFunction — real
+	// PostgreSQL procedures carry the identical search-path-injection risk
+	// (RFC Section 9.3: "Procedures follow the same model as functions"),
+	// but this was never checked here at all, since Procedure's
+	// SecurityDef/Config were previously silently dropped everywhere else
+	// too (parser capture was fine; only introspection/rendering/diffing
+	// never wired them through) — see ir.RenderCreateProcedureSQL's fix.
+	if p.Attrs.SecurityDef && !hasSearchPathConfig(p.Attrs.Config) {
+		diags = append(diags, pipeline.LintDiagnostic{
+			Pos:     p.SrcPos,
+			Rule:    "security-definer-search-path",
+			Message: fmt.Sprintf("SECURITY DEFINER procedure %s should set search_path", p.QualifiedName()),
+		})
+	}
+	diags = append(diags, checkUnnecessaryRevocation(p.Grants, p.Revocations, p.SrcPos, "procedure "+p.QualifiedName())...)
+	return diags
 }
 
 // ── View rules ────────────────────────────────────────────────────────────────

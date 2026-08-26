@@ -2497,6 +2497,78 @@ func TestDiffFunctionLeakproofChanged(t *testing.T) {
 	}
 }
 
+// TestDiffFunctionConfigChanged guards the Phase 3 launch-readiness audit
+// fix: a Section 9.2 SET-clause-only change (no other attribute touched)
+// previously produced zero diff ops at all, since FuncAttrs had no Config
+// field to compare in the first place.
+func TestDiffFunctionConfigChanged(t *testing.T) {
+	d := New()
+	snap := &pipeline.Snapshot{}
+	_ = snap.SetObject("public.f()", &snapshot.SnapObject{
+		Kind: "function",
+		Function: &snapshot.SnapFunction{
+			Schema: "public", Name: "f", ReturnType: "integer",
+			Language: "sql", Volatility: "VOLATILE", Parallel: "UNSAFE", BodyHash: "h",
+		},
+	})
+	val := "public"
+	desired := []pipeline.IRObject{
+		&ir.Function{
+			Schema: "public", Name: "f",
+			ReturnType: ir.TypeRef{Name: "integer"},
+			BodyHash:   "h",
+			Attrs: ir.FuncAttrs{
+				Language: "sql", Volatility: "VOLATILE", Parallel: "UNSAFE", Body: "SELECT 1",
+				Config: []ir.FuncConfig{{Param: "search_path", Value: &val}},
+			},
+		},
+	}
+	ops, err := d.Diff(desired, snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ops) == 0 || !strings.Contains(ops[0].SQL(), "SET search_path") {
+		t.Errorf("expected a recreate with SET search_path, got: %v", sqlList(ops))
+	}
+}
+
+// TestDiffFunctionConfigUnchangedNoOp proves a matching Config on both
+// sides (accounting for the quoted-vs-bare-value normalization a live
+// introspected snapshot always uses) produces zero ops — the idempotency
+// guarantee every other FuncAttrs field already has.
+func TestDiffFunctionConfigUnchangedNoOp(t *testing.T) {
+	d := New()
+	snapVal := "public"
+	snap := &pipeline.Snapshot{}
+	_ = snap.SetObject("public.f()", &snapshot.SnapObject{
+		Kind: "function",
+		Function: &snapshot.SnapFunction{
+			Schema: "public", Name: "f", ReturnType: "integer",
+			Language: "sql", Volatility: "VOLATILE", Parallel: "UNSAFE", BodyHash: "h",
+			Config: []snapshot.SnapFuncConfig{{Param: "search_path", Value: &snapVal}},
+		},
+	})
+	desiredVal := "'public'"
+	desired := []pipeline.IRObject{
+		&ir.Function{
+			Schema: "public", Name: "f",
+			ReturnType: ir.TypeRef{Name: "integer"},
+			BodyHash:   "h",
+			Attrs: ir.FuncAttrs{
+				Language: "sql", Volatility: "VOLATILE", Parallel: "UNSAFE", Body: "SELECT 1",
+				Config: []ir.FuncConfig{{Param: "search_path", Value: &desiredVal}},
+			},
+		},
+	}
+	ops, err := d.Diff(desired, snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ops) != 0 {
+		t.Errorf("expected zero ops for a quoted-vs-bare-equivalent Config, got: %v", sqlList(ops))
+	}
+}
+
 // TestDiffFunctionTransformsChanged guards RFC audit item #26: Transforms
 // was not compared at all, so a TRANSFORM-only source change would have
 // produced zero diff ops.
@@ -2739,6 +2811,50 @@ func TestDiffProcedureTransformsChanged(t *testing.T) {
 	}
 	if len(ops) == 0 || !strings.Contains(ops[0].SQL(), "TRANSFORM FOR TYPE hstore") {
 		t.Errorf("expected a recreate with TRANSFORM FOR TYPE hstore, got: %v", sqlList(ops))
+	}
+}
+
+// TestDiffProcedureSecurityDefinerAndConfigChanged guards the Phase 3
+// launch-readiness audit finding: Procedure's SecurityDef and Config
+// (Section 9.2/9.3 — RFC's own Section 9.3 worked example uses SECURITY
+// DEFINER) were never compared here at all, so declaring either on an
+// existing procedure produced zero diff ops — silent drift, not just a
+// missing feature.
+func TestDiffProcedureSecurityDefinerAndConfigChanged(t *testing.T) {
+	d := New()
+	body := "pass"
+	hash := ir.HashBody(body)
+	snap := &pipeline.Snapshot{}
+	_ = snap.SetObject("public.p()", &snapshot.SnapObject{
+		Kind: "procedure",
+		Opaque: &snapshot.SnapOpaque{
+			Kind: "procedure", Schema: "public", Name: "p", Args: "", BodyHash: hash,
+		},
+	})
+	val := "public"
+	desired := []pipeline.IRObject{
+		&ir.Procedure{
+			Schema: "public", Name: "p",
+			Attrs: ir.FuncAttrs{
+				Language: "plpgsql", SecurityDef: true, Body: body,
+				Config: []ir.FuncConfig{{Param: "search_path", Value: &val}},
+			},
+			BodyHash: hash,
+		},
+	}
+	ops, err := d.Diff(desired, snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ops) == 0 {
+		t.Fatal("expected a recreate op, got none")
+	}
+	sql := ops[0].SQL()
+	if !strings.Contains(sql, "SECURITY DEFINER") {
+		t.Errorf("expected SECURITY DEFINER in recreate SQL, got: %s", sql)
+	}
+	if !strings.Contains(sql, "SET search_path") {
+		t.Errorf("expected SET search_path in recreate SQL, got: %s", sql)
 	}
 }
 

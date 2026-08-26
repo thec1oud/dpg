@@ -121,9 +121,29 @@ func RenderCreateFunctionSQL(o *Function) string {
 	if o.Attrs.Rows != nil {
 		fmt.Fprintf(&b, " ROWS %v", *o.Attrs.Rows)
 	}
+	writeFuncConfig(&b, o.Attrs.Config)
 	writeFuncBody(&b, o.Attrs)
 	b.WriteString(";")
 	return b.String()
+}
+
+// writeFuncConfig renders Section 9.2's `SET param = value` / `SET param
+// FROM CURRENT` clause list, shared by Function and Procedure (confirmed
+// live: PostgreSQL accepts SET on both). One clause per entry, in
+// declaration order — real PostgreSQL accepts (and pg_get_functiondef
+// itself emits) multiple SET clauses on one CREATE FUNCTION/PROCEDURE
+// statement.
+func writeFuncConfig(b *strings.Builder, config []FuncConfig) {
+	for _, c := range config {
+		b.WriteString(" SET ")
+		b.WriteString(c.Param)
+		if c.FromCurrent {
+			b.WriteString(" FROM CURRENT")
+		} else if c.Value != nil {
+			b.WriteString(" = ")
+			b.WriteString(*c.Value)
+		}
+	}
 }
 
 // writeTransforms renders RFC audit item #26's `TRANSFORM FOR TYPE t [, FOR
@@ -174,11 +194,14 @@ func writeFuncBody(b *strings.Builder, attrs FuncAttrs) {
 }
 
 // RenderCreateProcedureSQL is RenderCreateFunctionSQL's PROCEDURE
-// counterpart. Procedures never take STRICT/SECURITY DEFINER/PARALLEL/COST/
-// ROWS/LEAKPROOF in this codebase's existing emission (matches real
-// PostgreSQL, which doesn't accept most of those on a procedure) but do
-// accept TRANSFORM and every func-body form (RFC audit items #26-#28),
-// confirmed live via pg_query.Parse.
+// counterpart. Procedures never take STRICT/PARALLEL/COST/ROWS/LEAKPROOF in
+// this codebase's existing emission (matches real PostgreSQL, which doesn't
+// accept any of those on a procedure), but DO accept SECURITY DEFINER and
+// SET (RFC Section 9.3's own worked example uses SECURITY DEFINER —
+// confirmed live via pg_query.Parse and a real CREATE PROCEDURE, both were
+// previously silently dropped here, the same "recreate uses this renderer
+// even for the very first CREATE" gap the RFC's own example exposed for
+// SET), plus TRANSFORM and every func-body form (RFC audit items #26-#28).
 func RenderCreateProcedureSQL(o *Procedure) string {
 	var b strings.Builder
 	b.WriteString("CREATE OR REPLACE PROCEDURE ")
@@ -201,6 +224,10 @@ func RenderCreateProcedureSQL(o *Procedure) string {
 	b.WriteString(") LANGUAGE ")
 	b.WriteString(o.Attrs.Language)
 	writeTransforms(&b, o.Attrs.Transforms)
+	if o.Attrs.SecurityDef {
+		b.WriteString(" SECURITY DEFINER")
+	}
+	writeFuncConfig(&b, o.Attrs.Config)
 	writeFuncBody(&b, o.Attrs)
 	b.WriteString(";")
 	return b.String()

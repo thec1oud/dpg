@@ -5783,16 +5783,22 @@ func diffProcedure(o *ir.Procedure, snap *snapshot.SnapOpaque) ([]pipeline.DiffO
 
 	// Body changed: re-create via CREATE OR REPLACE (includes comment and
 	// grants). Transforms/ObjFile/LinkSymbol/AtomicBody (RFC audit items
-	// #26-#28) join the same recreate trigger as BodyHash — none of them
-	// feed into BodyHash itself (Transforms isn't body text at all;
-	// AtomicBody's canonicalised text can hash identically to the same
-	// content declared via a plain dollar-quoted body), so without this
-	// they would never be diffed at all — the same "silently dropped"
-	// gap already confirmed for Function's identical fields.
+	// #26-#28), SecurityDef, and Config (Section 9.2/9.3) join the same
+	// recreate trigger as BodyHash — none of them feed into BodyHash
+	// itself (Transforms isn't body text at all; AtomicBody's
+	// canonicalised text can hash identically to the same content
+	// declared via a plain dollar-quoted body), so without this they
+	// would never be diffed at all. SecurityDef/Config were previously
+	// missing here AND in RenderCreateProcedureSQL's emission — a
+	// procedure declaring either (RFC Section 9.3's own worked example
+	// uses SECURITY DEFINER) silently lost it on the very first apply,
+	// not just on a later drift.
 	if (o.BodyHash != "" && snap.BodyHash != "" && o.BodyHash != snap.BodyHash) ||
 		transformsChanged(o.Attrs.Transforms, snap.ProcedureTransforms) ||
 		!ptrEq(o.Attrs.ObjFile, snap.ProcedureObjFile) || !ptrEq(o.Attrs.LinkSymbol, snap.ProcedureLinkSymbol) ||
-		o.Attrs.AtomicBody != snap.ProcedureAtomicBody {
+		o.Attrs.AtomicBody != snap.ProcedureAtomicBody ||
+		o.Attrs.SecurityDef != snap.ProcedureSecurityDef ||
+		funcConfigsChanged(o.Attrs.Config, snap.ProcedureConfig) {
 		return createProcedure(o), nil
 	}
 
@@ -6007,6 +6013,61 @@ func transformsChanged(desired []ir.TypeRef, snap []string) bool {
 	}
 	for i, t := range desired {
 		if t.String() != snap[i] {
+			return true
+		}
+	}
+	return false
+}
+
+// splitConfigValueItems splits a SET-clause value on "," and strips one
+// optional layer of surrounding single quotes from each item, for
+// comparing a Section 9.2 FuncConfig's declared value (quoted, comma-joined
+// by extractFuncAttrs' "set" case for a multi-valued GUC like search_path)
+// against PostgreSQL's own bare/resolved proconfig text (introspectFuncConfigs)
+// — same "both spellings must compare equal" reasoning as
+// normalizeConfigValue, just applied per comma-separated item instead of to
+// the whole string.
+func splitConfigValueItems(v *string) []string {
+	if v == nil {
+		return nil
+	}
+	parts := strings.Split(*v, ",")
+	out := make([]string, len(parts))
+	for i, p := range parts {
+		p = strings.TrimSpace(p)
+		if len(p) >= 2 && p[0] == '\'' && p[len(p)-1] == '\'' {
+			p = p[1 : len(p)-1]
+		}
+		out[i] = p
+	}
+	return out
+}
+
+// funcConfigsChanged compares a FUNCTION/PROCEDURE's Section 9.2 SET-clause
+// list against its snapshot. A FROM CURRENT-declared entry can never be
+// distinguished from its resolved value on a live comparison (introspection
+// only ever sees the resolved value, not which form was used — same
+// accepted limitation already documented for RoleConfig's identical case),
+// so a FromCurrent entry on either side is treated as always matching once
+// its param is present on both; only a genuinely different param set or
+// resolved value counts as changed.
+func funcConfigsChanged(desired []ir.FuncConfig, snap []snapshot.SnapFuncConfig) bool {
+	if len(desired) != len(snap) {
+		return true
+	}
+	snapByParam := make(map[string]snapshot.SnapFuncConfig, len(snap))
+	for _, s := range snap {
+		snapByParam[s.Param] = s
+	}
+	for _, c := range desired {
+		s, ok := snapByParam[c.Param]
+		if !ok {
+			return true
+		}
+		if c.FromCurrent || s.FromCurrent {
+			continue
+		}
+		if !slices.Equal(splitConfigValueItems(c.Value), splitConfigValueItems(s.Value)) {
 			return true
 		}
 	}
@@ -6618,7 +6679,8 @@ func diffFunction(o *ir.Function, snap *snapshot.SnapFunction) []pipeline.DiffOp
 		o.Attrs.Leakproof != snap.Leakproof || transformsChanged(o.Attrs.Transforms, snap.Transforms) ||
 		!ptrEq(o.Attrs.ObjFile, snap.ObjFile) || !ptrEq(o.Attrs.LinkSymbol, snap.LinkSymbol) ||
 		o.Attrs.AtomicBody != snap.AtomicBody ||
-		o.Attrs.Strict != snap.Strict || o.Attrs.SecurityDef != snap.SecurityDef {
+		o.Attrs.Strict != snap.Strict || o.Attrs.SecurityDef != snap.SecurityDef ||
+		funcConfigsChanged(o.Attrs.Config, snap.Config) {
 		ops = append(ops, safeOp(buildFunctionSQL(o), pos))
 	}
 	if !ptrEq(o.Owner, snap.Owner) && o.Owner != nil {

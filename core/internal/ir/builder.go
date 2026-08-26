@@ -1808,6 +1808,29 @@ func extractFuncAttrs(cfs *pg_query.CreateFunctionStmt, sourceSQL string) FuncAt
 			} else if sv := de.Arg.GetString_(); sv != nil {
 				attrs.Body = sv.Sval
 			}
+		case "set":
+			// SET param = value / SET param FROM CURRENT (Section 9.2) — a
+			// VariableSetStmt, not a plain value like every other DefElem
+			// above (confirmed live via pg_query.Parse). VAR_SET_CURRENT
+			// is FROM CURRENT; VAR_SET_VALUE's Args is a list of A_Const
+			// nodes, one item for a single-valued GUC, more than one for a
+			// multi-valued one like search_path ("SET search_path = a,
+			// b"), joined here with ", " so Value round-trips identically
+			// through RenderCreateFunctionSQL's re-emission.
+			if vs := de.Arg.GetVariableSetStmt(); vs != nil {
+				cfg := FuncConfig{Param: vs.Name}
+				if vs.Kind == pg_query.VariableSetKind_VAR_SET_CURRENT {
+					cfg.FromCurrent = true
+				} else {
+					items := make([]string, len(vs.Args))
+					for i, a := range vs.Args {
+						items[i] = nodeToText(a)
+					}
+					val := strings.Join(items, ", ")
+					cfg.Value = &val
+				}
+				attrs.Config = append(attrs.Config, cfg)
+			}
 		}
 	}
 	if cfs.SqlBody != nil {

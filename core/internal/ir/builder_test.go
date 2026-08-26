@@ -1863,6 +1863,38 @@ func TestBuildFunctionNotLeakproofExplicit(t *testing.T) {
 	}
 }
 
+// TestBuildFunctionSetConfig guards the Phase 3 launch-readiness audit
+// finding: RFC Section 9.2 documents `SET param = value` / `SET param FROM
+// CURRENT` as normative (with a security SHOULD recommendation for
+// SECURITY DEFINER functions), but FuncAttrs had no Config field at all —
+// the RFC's own Appendix B worked example silently lost its declared
+// `SET search_path = public` on every compile. Confirms both forms parse,
+// including a multi-value GUC (search_path accepting a comma-separated
+// list).
+func TestBuildFunctionSetConfig(t *testing.T) {
+	obj := buildObject(t, pipeline.KindFunction,
+		`f(x int) RETURNS int LANGUAGE sql SECURITY DEFINER `+
+			`SET search_path = public, pg_temp SET work_mem FROM CURRENT `+
+			`AS $$ SELECT x $$;`,
+		``,
+	)
+	fn, ok := obj.(*ir.Function)
+	if !ok {
+		t.Fatalf("expected *ir.Function, got %T", obj)
+	}
+	if len(fn.Attrs.Config) != 2 {
+		t.Fatalf("expected 2 Config entries, got %d: %+v", len(fn.Attrs.Config), fn.Attrs.Config)
+	}
+	sp := fn.Attrs.Config[0]
+	if sp.Param != "search_path" || sp.FromCurrent || sp.Value == nil || *sp.Value != "'public', 'pg_temp'" {
+		t.Errorf("search_path entry: got %+v", sp)
+	}
+	wm := fn.Attrs.Config[1]
+	if wm.Param != "work_mem" || !wm.FromCurrent || wm.Value != nil {
+		t.Errorf("work_mem entry: got %+v", wm)
+	}
+}
+
 // TestBuildFunctionObjFileLinkSymbol guards RFC audit item #27: the 2-item
 // "AS 'obj_file', 'link_symbol'" form previously fed straight into the
 // dollar-quoted Body extraction, which only ever read list.Items[0] —

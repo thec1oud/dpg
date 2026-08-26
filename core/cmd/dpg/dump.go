@@ -1074,6 +1074,7 @@ func renderObjectDPGWithRoleInheritDefaults(b *strings.Builder, obj pipeline.IRO
 		if o.Attrs.Rows != nil {
 			fmt.Fprintf(b, " %s %v", kw("ROWS"), *o.Attrs.Rows)
 		}
+		writeFuncConfig(b, fmtOpts, o.Attrs.Config)
 		writeFuncBody(b, fmtOpts, o.Attrs)
 		writeFuncBlockWithDepends(b, ind, fmtOpts, o.Owner, o.Comment, o.Grants, o.Revocations, o.SecurityLabels, o.DependsOnExtensions)
 
@@ -1121,6 +1122,10 @@ func renderObjectDPGWithRoleInheritDefaults(b *strings.Builder, obj pipeline.IRO
 		b.WriteString(" ")
 		b.WriteString(o.Attrs.Language)
 		writeFuncTransforms(b, fmtOpts, o.Attrs.Transforms)
+		if o.Attrs.SecurityDef {
+			fmt.Fprintf(b, " %s %s", kw("SECURITY"), kw("DEFINER"))
+		}
+		writeFuncConfig(b, fmtOpts, o.Attrs.Config)
 		writeFuncBody(b, fmtOpts, o.Attrs)
 		writeFuncBlockWithDepends(b, ind, fmtOpts, o.Owner, o.Comment, o.Grants, o.Revocations, o.SecurityLabels, o.DependsOnExtensions)
 
@@ -1635,6 +1640,22 @@ func writeFuncTransforms(b *strings.Builder, fmtOpts format.Options, transforms 
 			b.WriteString(", ")
 		}
 		fmt.Fprintf(b, "%s %s %s", kw("FOR"), kw("TYPE"), t.String())
+	}
+}
+
+// writeFuncConfig renders Section 9.2's `SET param = value` / `SET param
+// FROM CURRENT` clause list, shared between FUNCTION and PROCEDURE —
+// mirrors ir.writeFuncConfig's identical rendering (kept separate for the
+// same fmtOpts-keyword-casing reason as writeFuncBody above).
+func writeFuncConfig(b *strings.Builder, fmtOpts format.Options, config []ir.FuncConfig) {
+	kw := fmtOpts.Keyword
+	for _, c := range config {
+		fmt.Fprintf(b, " %s %s", kw("SET"), c.Param)
+		if c.FromCurrent {
+			fmt.Fprintf(b, " %s %s", kw("FROM"), kw("CURRENT"))
+		} else if c.Value != nil {
+			fmt.Fprintf(b, " = %s", *c.Value)
+		}
 	}
 }
 

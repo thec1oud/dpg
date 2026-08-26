@@ -2003,6 +2003,27 @@ ORDER  BY n.nspname, c.relname`
 
 // ── functions ─────────────────────────────────────────────────────────────────
 
+// parseFuncConfig parses pg_proc.proconfig (Section 9.2's SET-clause list)
+// into FuncConfig entries. Each array element is a "param=value" pair,
+// split at the first '=' (a GUC name can never itself contain one) — same
+// format and parsing approach as introspectRoleConfigs' pg_db_role_setting
+// handling. There is no way to distinguish a FROM CURRENT-declared entry
+// from an ordinary SET here (PostgreSQL only ever stores the resolved
+// value), so every entry comes back as an ordinary Value — the same
+// accepted narrow limitation already documented for RoleConfig.
+func parseFuncConfig(proconfig []string) []ir.FuncConfig {
+	var out []ir.FuncConfig
+	for _, kv := range proconfig {
+		i := strings.IndexByte(kv, '=')
+		if i < 0 {
+			continue
+		}
+		param, value := kv[:i], kv[i+1:]
+		out = append(out, ir.FuncConfig{Param: param, Value: &value})
+	}
+	return out
+}
+
 func introspectFunctions(ctx context.Context, conn pipeline.Querier) ([]pipeline.IRObject, error) {
 	const q = `
 SELECT n.nspname, p.proname,
@@ -2047,7 +2068,12 @@ SELECT n.nspname, p.proname,
        -- back into BEGIN ATOMIC ... END text; only called for rows that
        -- actually need it.
        p.prosqlbody IS NOT NULL AS has_sql_body,
-       CASE WHEN p.prosqlbody IS NOT NULL THEN pg_get_functiondef(p.oid) END AS funcdef
+       CASE WHEN p.prosqlbody IS NOT NULL THEN pg_get_functiondef(p.oid) END AS funcdef,
+       -- Section 9.2's SET clause list. Each array element is a
+       -- "param=value" pair (confirmed live), identical format to
+       -- pg_db_role_setting.setconfig — see introspectRoleConfigs' doc
+       -- comment for the same parsing/comparison approach.
+       p.proconfig
 FROM   pg_proc p
 JOIN   pg_namespace n ON n.oid = p.pronamespace
 JOIN   pg_language  l ON l.oid = p.prolang
@@ -2082,11 +2108,13 @@ ORDER  BY n.nspname, p.proname, args`
 		var transformTypes []string
 		var hasSQLBody bool
 		var funcdef *string
+		var proconfig []string
 		if err := rs.Scan(&schema, &name, &oid, &args, &argTypes, &retType, &lang, &volatility, &secDef, &strict,
 			&parallel, &cost, &rows, &retset, &isCOrInternal, &comment, &prokind, &prosrc, &owner,
-			&leakproof, &probin, &transformTypes, &hasSQLBody, &funcdef); err != nil {
+			&leakproof, &probin, &transformTypes, &hasSQLBody, &funcdef, &proconfig); err != nil {
 			return nil, err
 		}
+		config := parseFuncConfig(proconfig)
 		// RFC audit items #26/#27/#28: shared between Procedure and Function
 		// below. probin non-empty (LANGUAGE C) means prosrc actually holds
 		// the link_symbol, not a procedural body — confirmed live via
@@ -2119,12 +2147,14 @@ ORDER  BY n.nspname, p.proname, args`
 				Comment: comment,
 				Owner:   &owner,
 				Attrs: ir.FuncAttrs{
-					Language:   lang,
-					Body:       body,
-					Transforms: transforms,
-					ObjFile:    objFile,
-					LinkSymbol: linkSymbol,
-					AtomicBody: atomicBody,
+					Language:    lang,
+					Body:        body,
+					Transforms:  transforms,
+					ObjFile:     objFile,
+					LinkSymbol:  linkSymbol,
+					AtomicBody:  atomicBody,
+					SecurityDef: secDef,
+					Config:      config,
 				},
 			}
 			// Use argTypes (type-only, from oidvectortypes) to build Args so that
@@ -2168,6 +2198,7 @@ ORDER  BY n.nspname, p.proname, args`
 				ObjFile:     objFile,
 				LinkSymbol:  linkSymbol,
 				AtomicBody:  atomicBody,
+				Config:      config,
 			}
 			if cost != defaultCost {
 				c := cost

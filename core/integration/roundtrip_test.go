@@ -544,6 +544,120 @@ $$ {}`
 	}
 }
 
+// TestRoundtripFunctionSecurityDefinerSetSearchPath is the regression guard
+// for the Phase 3 launch-readiness audit's FUNCTION SET finding: RFC
+// Section 9.2 documents `SET param = value`/`SET param FROM CURRENT` as
+// normative — including a SHOULD-level security recommendation that a
+// SECURITY DEFINER function use it to set search_path against search-path
+// injection — but FuncAttrs had no Config field at all, so this exact
+// shape (taken directly from Appendix B's own worked example) silently
+// dropped its declared SET search_path on every compile before this fix.
+func TestRoundtripFunctionSecurityDefinerSetSearchPath(t *testing.T) {
+	connStr := testpg.Start(t)
+	ctx := context.Background()
+
+	differ := diff.New()
+	emitter := emit.New()
+	applyExec := executor.New()
+	ci := introspect.New()
+	store := newMemStore()
+
+	conn, err := executor.Connect(ctx, connStr)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer conn.Close(ctx)
+
+	schema := `FUNCTION get_one() RETURNS integer
+LANGUAGE sql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+    SELECT 1;
+$$ {}
+
+PROCEDURE do_thing()
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    NULL;
+END;
+$$ {}`
+
+	dir := t.TempDir()
+	f := filepath.Join(dir, "schema.dpg")
+	if err := os.WriteFile(f, []byte(schema), 0o644); err != nil {
+		t.Fatalf("write schema: %v", err)
+	}
+
+	applyFixture(t, ctx, conn, []string{f}, dir, differ, emitter, applyExec, store)
+
+	// Confirm the SET clause actually landed live, not just that apply
+	// didn't error — proconfig/prosecdef are the real proof, matching this
+	// project's "verify counts, don't eyeball" standard.
+	proProps := func(name string) (config []string, secDef bool) {
+		t.Helper()
+		rows, err := conn.QueryRows(ctx, "SELECT proconfig, prosecdef FROM pg_proc WHERE proname = $1", name)
+		if err != nil {
+			t.Fatalf("query pg_proc for %s: %v", name, err)
+		}
+		defer rows.Close()
+		if !rows.Next() {
+			t.Fatalf("pg_proc has no row for %s", name)
+		}
+		if err := rows.Scan(&config, &secDef); err != nil {
+			t.Fatalf("scan pg_proc row for %s: %v", name, err)
+		}
+		return config, secDef
+	}
+
+	fnConfig, fnSecDef := proProps("get_one")
+	if !fnSecDef {
+		t.Error("expected get_one to be SECURITY DEFINER live")
+	}
+	if len(fnConfig) != 1 || fnConfig[0] != "search_path=public, pg_temp" {
+		t.Errorf("expected get_one's live proconfig to be [search_path=public, pg_temp], got: %v", fnConfig)
+	}
+	procConfig, procSecDef := proProps("do_thing")
+	if !procSecDef {
+		t.Error("expected do_thing to be SECURITY DEFINER live")
+	}
+	if len(procConfig) != 1 || procConfig[0] != "search_path=public" {
+		t.Errorf("expected do_thing's live proconfig to be [search_path=public], got: %v", procConfig)
+	}
+
+	liveObjects, err := ci.Introspect(ctx, conn)
+	if err != nil {
+		t.Fatalf("introspect: %v", err)
+	}
+	snap, _ := store.Load("test", "dpgtest")
+	var managedLive []pipeline.IRObject
+	for _, obj := range liveObjects {
+		if _, ok := snap.Objects[obj.QualifiedName()]; ok {
+			managedLive = append(managedLive, obj)
+		}
+	}
+	liveSnap := &pipeline.Snapshot{}
+	if err := snapshot.Populate(liveSnap, managedLive); err != nil {
+		t.Fatalf("populate live snapshot: %v", err)
+	}
+
+	desired, _, err := compiler.Compile([]string{f}, dir, pipeline.Default)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	driftOps, err := differ.Diff(desired, liveSnap)
+	if err != nil {
+		t.Fatalf("drift diff: %v", err)
+	}
+	if len(driftOps) != 0 {
+		t.Errorf("drift after SECURITY DEFINER/SET search_path apply (%d ops):", len(driftOps))
+		for _, op := range driftOps {
+			t.Errorf("  [%s] %s", op.Safety(), op.SQL())
+		}
+	}
+}
+
 // TestRoundtripSequence verifies that a standalone sequence with explicit
 // parameters applies cleanly and introspects back to the same params (zero
 // drift after apply).

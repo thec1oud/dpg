@@ -343,6 +343,69 @@ func TestLintSecurityDefiner(t *testing.T) {
 	}
 }
 
+// TestLintSecurityDefinerWithSearchPathSuppressesWarning proves the rule
+// checks the real Section 9.2 Config list, not a substring scan of the
+// function body — the prior implementation only ever matched by
+// coincidence, since a SET search_path clause is a structural attribute
+// that never appears in Body's text.
+func TestLintSecurityDefinerWithSearchPathSuppressesWarning(t *testing.T) {
+	l := New()
+	val := "public"
+	objects := []pipeline.IRObject{
+		&ir.Function{
+			Schema: "public",
+			Name:   "do_thing",
+			Attrs: ir.FuncAttrs{
+				Language:    "plpgsql",
+				SecurityDef: true,
+				Body:        "BEGIN END;",
+				Config:      []ir.FuncConfig{{Param: "search_path", Value: &val}},
+			},
+		},
+	}
+	diags, err := l.Lint(objects, pipeline.LinterConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range diags {
+		if d.Rule == "security-definer-search-path" {
+			t.Fatal("expected no security-definer-search-path warning when search_path is declared via Config")
+		}
+	}
+}
+
+// TestLintSecurityDefinerProcedure proves checkProcedure now applies the
+// same SECURITY DEFINER + search_path guard as checkFunction — previously
+// missing entirely, since Procedure's SecurityDef was never wired through
+// introspection/rendering/diffing at all (see ir.RenderCreateProcedureSQL).
+func TestLintSecurityDefinerProcedure(t *testing.T) {
+	l := New()
+	objects := []pipeline.IRObject{
+		&ir.Procedure{
+			Schema: "public",
+			Name:   "do_thing",
+			Attrs: ir.FuncAttrs{
+				Language:    "plpgsql",
+				SecurityDef: true,
+				Body:        "BEGIN END;",
+			},
+		},
+	}
+	diags, err := l.Lint(objects, pipeline.LinterConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, d := range diags {
+		if d.Rule == "security-definer-search-path" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected security-definer-search-path warning for a SECURITY DEFINER procedure with no search_path")
+	}
+}
+
 func TestLintSerialSequenceDeclared(t *testing.T) {
 	l := New()
 	trueVal := true

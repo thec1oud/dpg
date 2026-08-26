@@ -175,3 +175,66 @@ func TestRenderCreateProcedureSQLArgNames(t *testing.T) {
 		t.Fatalf("rendered PROCEDURE SQL failed to parse: %v\nSQL: %s", err, sql)
 	}
 }
+
+// TestRenderCreateFunctionSQLSetConfig guards the Phase 3 launch-readiness
+// audit fix: RenderCreateFunctionSQL previously had no rendering for
+// Section 9.2's SET clause list at all, so a change that otherwise
+// triggered a recreate (e.g. a Cost change) would silently drop any
+// declared SET clause from the re-emitted CREATE OR REPLACE.
+func TestRenderCreateFunctionSQLSetConfig(t *testing.T) {
+	val := "public"
+	fn := &ir.Function{
+		Schema:     "public",
+		Name:       "f",
+		ReturnType: ir.TypeRef{Name: "int"},
+		Attrs: ir.FuncAttrs{
+			Language: "sql",
+			Body:     "SELECT 1",
+			Config: []ir.FuncConfig{
+				{Param: "search_path", Value: &val},
+				{Param: "work_mem", FromCurrent: true},
+			},
+		},
+	}
+	sql := ir.RenderCreateFunctionSQL(fn)
+	if _, err := pg_query.Parse(sql); err != nil {
+		t.Fatalf("rendered FUNCTION SQL with SET failed to parse: %v\nSQL: %s", err, sql)
+	}
+	if !strings.Contains(sql, "SET search_path = public") {
+		t.Errorf("expected SET search_path = public in rendered SQL, got: %s", sql)
+	}
+	if !strings.Contains(sql, "SET work_mem FROM CURRENT") {
+		t.Errorf("expected SET work_mem FROM CURRENT in rendered SQL, got: %s", sql)
+	}
+}
+
+// TestRenderCreateProcedureSQLSecurityDefinerAndSetConfig guards the Phase 3
+// launch-readiness audit finding: RFC Section 9.3's own worked example
+// declares a PROCEDURE with SECURITY DEFINER, but RenderCreateProcedureSQL
+// never rendered SecurityDef or Config at all — since createProcedure uses
+// this same renderer even for the very first CREATE (not just later
+// recreates), a procedure declaring either was silently stripped of it on
+// every apply, confirmed live against a real CREATE PROCEDURE.
+func TestRenderCreateProcedureSQLSecurityDefinerAndSetConfig(t *testing.T) {
+	val := "public"
+	proc := &ir.Procedure{
+		Schema: "public",
+		Name:   "p",
+		Attrs: ir.FuncAttrs{
+			Language:    "plpgsql",
+			SecurityDef: true,
+			Body:        "BEGIN NULL; END;",
+			Config:      []ir.FuncConfig{{Param: "search_path", Value: &val}},
+		},
+	}
+	sql := ir.RenderCreateProcedureSQL(proc)
+	if _, err := pg_query.Parse(sql); err != nil {
+		t.Fatalf("rendered PROCEDURE SQL with SECURITY DEFINER/SET failed to parse: %v\nSQL: %s", err, sql)
+	}
+	if !strings.Contains(sql, "SECURITY DEFINER") {
+		t.Errorf("expected SECURITY DEFINER in rendered SQL, got: %s", sql)
+	}
+	if !strings.Contains(sql, "SET search_path = public") {
+		t.Errorf("expected SET search_path = public in rendered SQL, got: %s", sql)
+	}
+}

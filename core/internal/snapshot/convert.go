@@ -215,6 +215,8 @@ func toSnapObject(obj pipeline.IRObject) *SnapObject {
 			ProcedureObjFile:             o.Attrs.ObjFile,
 			ProcedureLinkSymbol:          o.Attrs.LinkSymbol,
 			ProcedureAtomicBody:          o.Attrs.AtomicBody,
+			ProcedureSecurityDef:         o.Attrs.SecurityDef,
+			ProcedureConfig:              toSnapFuncConfigs(o.Attrs.Config),
 		}
 		for _, g := range o.Grants {
 			so.Grants = append(so.Grants, toSnapGrant(g))
@@ -710,6 +712,19 @@ func flattenTypeRefs(refs []ir.TypeRef) []string {
 	return out
 }
 
+// toSnapFuncConfigs converts ir.FuncConfig entries (Section 9.2's SET
+// clause list) to their serialised form.
+func toSnapFuncConfigs(configs []ir.FuncConfig) []SnapFuncConfig {
+	if len(configs) == 0 {
+		return nil
+	}
+	out := make([]SnapFuncConfig, len(configs))
+	for i, c := range configs {
+		out[i] = SnapFuncConfig{Param: c.Param, Value: c.Value, FromCurrent: c.FromCurrent}
+	}
+	return out
+}
+
 func ToSnapIndex(idx *ir.Index) SnapIndex {
 	cols := make([]string, 0, len(idx.Columns))
 	for _, c := range idx.Columns {
@@ -900,6 +915,7 @@ func toSnapFunction(o *ir.Function) *SnapFunction {
 		AtomicBody:  o.Attrs.AtomicBody,
 		Strict:      o.Attrs.Strict,
 		SecurityDef: o.Attrs.SecurityDef,
+		Config:      toSnapFuncConfigs(o.Attrs.Config),
 	}
 	for _, g := range o.Grants {
 		sf.Grants = append(sf.Grants, toSnapGrant(g))

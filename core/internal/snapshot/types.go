@@ -137,6 +137,16 @@ type SnapOpaque struct {
 	ProcedureObjFile    *string  `json:"procedure_obj_file,omitempty"`
 	ProcedureLinkSymbol *string  `json:"procedure_link_symbol,omitempty"`
 	ProcedureAtomicBody bool     `json:"procedure_atomic_body,omitempty"`
+	// ProcedureSecurityDef/ProcedureConfig are Section 9.3's SECURITY
+	// DEFINER / Section 9.2's SET diffing inputs for Procedure — both were
+	// previously missing entirely (not just here but in
+	// RenderCreateProcedureSQL's emission), so a procedure declaring either
+	// silently lost it on the very first apply (createProcedure recreates
+	// via the same renderer used for a real recreate). Procedure uses
+	// these dedicated fields instead of SnapFunction's, same reasoning as
+	// ProcedureDependsOnExtensions above.
+	ProcedureSecurityDef bool         `json:"procedure_security_def,omitempty"`
+	ProcedureConfig      []SnapFuncConfig `json:"procedure_config,omitempty"`
 	// OptionsStructured/FDWHandler/FDWValidator/FDWOptions/ServerFDWName/
 	// ServerType/ServerVersion/ServerOptions/UserMappingOptions are RFC
 	// Section 14.8/Section 14.9/Section 14.10's structured diffing inputs for fdw/server/
@@ -622,6 +632,18 @@ type SnapFunction struct {
 	// recreate condition.
 	Strict      bool `json:"strict,omitempty"`
 	SecurityDef bool `json:"security_def,omitempty"`
+	// Config is Section 9.2's SET-clause diffing input — see
+	// ir.FuncAttrs.Config's doc comment. A change joins the same recreate
+	// trigger as Cost/Rows/Leakproof; see diffFunction/diffProcedure.
+	Config []SnapFuncConfig `json:"config,omitempty"`
+}
+
+// SnapFuncConfig is one FUNCTION/PROCEDURE-level SET clause's serialised
+// form — see ir.FuncConfig's doc comment.
+type SnapFuncConfig struct {
+	Param       string  `json:"param"`
+	Value       *string `json:"value,omitempty"`
+	FromCurrent bool    `json:"from_current,omitempty"`
 }
 
 type SnapType struct {

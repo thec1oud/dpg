@@ -445,6 +445,27 @@ type FuncAttrs struct {
 	// (RFC Section 9.1) — only the recreate-time rendering differs.
 	AtomicBody bool
 	Body       string // raw dollar-quoted body text (or BEGIN ATOMIC statement-list text when AtomicBody)
+	// Config is Section 9.2's `SET param = value` / `SET param FROM
+	// CURRENT` clause list — sets or inherits a GUC for the duration of
+	// each call, most commonly used to guard a SECURITY DEFINER function
+	// against search-path injection via `SET search_path = ...`. Real
+	// PostgreSQL's CREATE OR REPLACE fully replaces proconfig from
+	// whatever this list declares (confirmed live: omitting a previously-
+	// set SET clause on replace clears it, it is never additive), so a
+	// change here joins the same recreate trigger as Cost/Rows/Leakproof
+	// rather than needing its own imperative ALTER ... SET/RESET path.
+	Config []FuncConfig
+}
+
+// FuncConfig is one FUNCTION/PROCEDURE-level SET clause (RFC Section 9.2).
+type FuncConfig struct {
+	Param string
+	// Value is the "= value" form's value text exactly as declared (quotes
+	// preserved for a string literal; comma-joined for a multi-value GUC
+	// like search_path — see extractFuncAttrs' "set" case). nil when
+	// FromCurrent is true.
+	Value       *string
+	FromCurrent bool
 }
 
 // PartitionSpec describes a table's partition strategy.
