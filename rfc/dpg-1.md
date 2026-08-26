@@ -1246,15 +1246,22 @@ enum-decl     = "ENUM" WSP identifier WSP
 
 enum-values   = enum-value *( "," WSP enum-value )
 enum-value    = SQUOTE identifier SQUOTE
-                [ WSP ( "BEFORE" / "AFTER" ) WSP SQUOTE identifier SQUOTE ]
-                [ WSP "RENAMED FROM" WSP SQUOTE identifier SQUOTE ]
 
 enum-block    = *( enum-directive ";" )
 
 enum-directive = comment-dir
                / owner-dir
                / renamed-from-dir
+               / rename-value-dir
                / migrate-remove-dir
+
+; RENAME VALUE is a { } block directive, not part of enum-value itself —
+; real PostgreSQL's CREATE TYPE ... AS ENUM value list accepts nothing but
+; a bare string literal per value, so BEFORE/AFTER/RENAMED FROM cannot be
+; written inline there (Section 5.1.1/5.1.2 explain how each is expressed
+; instead).
+rename-value-dir = "RENAME" WSP "VALUE" WSP SQUOTE identifier SQUOTE
+                    WSP "TO" WSP SQUOTE identifier SQUOTE
 ```
 
    Examples:
@@ -1276,6 +1283,12 @@ ENUM order_status ('pending', 'confirmed', 'shipped', 'delivered');
     MIGRATE REMOVE ('cancelled') {
         UPDATE orders SET status = 'delivered' WHERE status = 'cancelled';
     }
+}
+
+-- ENUM with a value rename ('fulfilled' -> 'delivered' in the snapshot)
+ENUM order_status ('pending', 'confirmed', 'shipped', 'delivered');
+{
+    RENAME VALUE 'fulfilled' TO 'delivered';
 }
 ```
 
@@ -1305,14 +1318,27 @@ ALTER TYPE <schema>.<name> ADD VALUE '<new_value>';
    new value), so the "not referenced until after commit" condition is
    always satisfied.
 
-   **Positional control (`BEFORE`/`AFTER`):** An `enum-value` written as
-   `'new_value' BEFORE 'existing_value'` (or `AFTER`) emits `ALTER TYPE
-   <schema>.<name> ADD VALUE '<new_value>' BEFORE '<existing_value>'` —
-   same Safety as plain `ADD VALUE` above.  Omitting `BEFORE`/`AFTER`
-   always appends at the end, matching real PostgreSQL's own default.
+   **Positional control:** real PostgreSQL's `CREATE TYPE ... AS ENUM`
+   value list accepts nothing but a bare string literal per value — there
+   is no inline `BEFORE`/`AFTER` syntax to write, so `enum-value` carries
+   none.  Instead, position is inferred purely from where a new value sits
+   in the desired `( )` list relative to values that already exist live
+   (including one added earlier in the same migration, or one just
+   renamed into place by a `RENAME VALUE` directive, Safety `SAFE`
+   either way): walking the desired list left to right, each new value
+   anchors `AFTER` the nearest earlier already-existing value, or
+   `BEFORE` the nearest later already-existing one when there is no
+   earlier anchor yet (e.g. inserting before the enum's current first
+   value), falling back to a plain, unanchored `ADD VALUE` only when
+   neither anchor exists.  Reordering the source list therefore controls
+   the emitted position without any extra keyword.
 
-   **Renaming a value (`RENAMED FROM`):** An `enum-value` written as
-   `'new_value' RENAMED FROM 'old_value'` — where `'old_value'` is
+   **Renaming a value (`RENAME VALUE`):** unlike `RENAMED FROM` on a
+   column or table (Section 7.6), an enum value rename cannot be written
+   inline in the `( )` value list for the same reason positional control
+   cannot: real PostgreSQL's value-list grammar accepts only a bare
+   string literal there.  It is instead a `{ }` block directive:
+   `RENAME VALUE 'old_value' TO 'new_value';` — where `'old_value'` is
    present in the snapshot and `'new_value'` is not — emits `ALTER TYPE
    <schema>.<name> RENAME VALUE '<old_value>' TO '<new_value>'`, Safety
    `SAFE` (a catalog-only rename with no transactional restriction in
@@ -1869,7 +1895,7 @@ EXTENSION pg_trgm CASCADE;
    | Change | DDL emitted | Safety |
    |--------|-------------|--------|
    | New extension | `CREATE EXTENSION IF NOT EXISTS name [SCHEMA ...] [VERSION ...] [CASCADE]` | `SAFE` |
-   | VERSION change | `ALTER EXTENSION name UPDATE [TO version]` | `CAUTION` |
+   | VERSION change | `ALTER EXTENSION name UPDATE TO version` | `CAUTION` |
    | SCHEMA change | `ALTER EXTENSION name SET SCHEMA new_schema` | `SAFE` |
    | Extension removed | `DROP EXTENSION name [CASCADE]` | `DESTRUCTIVE` |
 
@@ -3567,7 +3593,19 @@ SCHEMA public {
    **Output column list comparison:** The compiler compares the columns
    produced by the view query by name and ordinal position.  If
    either the name or the position of any output column differs, the
-   change is classified as `DESTRUCTIVE`.
+   change is classified as `DESTRUCTIVE`.  This comparison is
+   best-effort: it can name the implicit or explicit output column at
+   each target-list position for a plain `SELECT` (or a set operation,
+   using its leftmost leaf) whose target list contains no `*`/`t.*`
+   star expansion, since a star's true output column count isn't
+   knowable without catalog access.  When the query on either side of
+   the change doesn't fit that shape, the comparison cannot prove
+   whether the output column list changed and the query change is
+   instead emitted as `CREATE OR REPLACE VIEW ...` (`SAFE`); if the
+   output columns did in fact change, PostgreSQL itself rejects the
+   `CREATE OR REPLACE VIEW` at apply time (a real column-name/position
+   change is never silently applied) rather than DPG proactively
+   detecting it.
 
 ### 8.2. Materialized Views
 
@@ -3971,8 +4009,8 @@ SCHEMA public {
    (`SSPACE`/`DESERIALFUNC`/`MSFUNC`/`MINVFUNC`/`MSTYPE`/`MSSPACE`/
    `MFINALFUNC`/`MINITCOND`/`SORTOP`/`PARALLEL`/`HYPOTHETICAL`/
    `FINALFUNC_EXTRA`/`FINALFUNC_MODIFY`/`MFINALFUNC_EXTRA`/
-   `MFINALFUNC_MODIFY`) — requires `DROP AGGREGATE CASCADE` followed by
-   `CREATE AGGREGATE`, classified as `DESTRUCTIVE`.  Real PostgreSQL's
+   `MFINALFUNC_MODIFY`) — requires `DROP AGGREGATE IF EXISTS` followed
+   by `CREATE AGGREGATE`, classified as `DESTRUCTIVE`.  Real PostgreSQL's
    `ALTER AGGREGATE` supports only three operations, all metadata-only:
 
    -   Renamed (`RENAMED FROM`, `func-block`): `ALTER AGGREGATE name
@@ -4086,15 +4124,19 @@ SCHEMA public {
    as follows:
 
    -   Changes to attributes that `CREATE OR REPLACE FUNCTION` can
-       update (`SECURITY DEFINER`, `STRICT`, `VOLATILE`/`STABLE`/
-       `IMMUTABLE`, `LEAKPROOF`, `PARALLEL`, `COST`, `ROWS`, `SET`
-       options): emit `CREATE OR REPLACE FUNCTION` — Safety `SAFE`.
-       (Setting `LEAKPROOF` requires superuser privilege at apply time —
-       a PostgreSQL-level restriction, not a DPG one.)
+       update (`LANGUAGE`, `SECURITY DEFINER`, `STRICT`, `VOLATILE`/
+       `STABLE`/`IMMUTABLE`, `LEAKPROOF`, `PARALLEL`, `COST`, `ROWS`,
+       `SET` options): emit `CREATE OR REPLACE FUNCTION` — Safety
+       `SAFE`.  (Setting `LEAKPROOF` requires superuser privilege at
+       apply time — a PostgreSQL-level restriction, not a DPG one.
+       `LANGUAGE` is changeable in place too, confirmed live: real
+       PostgreSQL's `CREATE OR REPLACE FUNCTION` accepts a different
+       `LANGUAGE` as long as the argument list and return type stay
+       the same.)
 
    -   Changes to the argument list or return type: PostgreSQL does
        not support `CREATE OR REPLACE` for these.  The compiler emits
-       `DROP FUNCTION CASCADE` followed by `CREATE FUNCTION` —
+       `DROP FUNCTION IF EXISTS` followed by `CREATE FUNCTION` —
        classified as `DESTRUCTIVE`.
 
 ---
@@ -4839,8 +4881,7 @@ pub-table         = schema-table-name
 ; grammar changes here, the same passthrough pattern Subscription's
 ; WITH options (Section 13.2) already uses.
 
-pub-block = *( ( comment-dir / owner-dir / renamed-from-dir
-               / grants-block ) ";" )
+pub-block = *( ( comment-dir / owner-dir / renamed-from-dir ) ";" )
 ```
 
    `owner-dir`/`renamed-from-dir` follow the standard rules (Section 7.6):
@@ -4848,7 +4889,11 @@ pub-block = *( ( comment-dir / owner-dir / renamed-from-dir
    old RENAME TO new` (`CAUTION`) — Publication is database-level, not
    schema-scoped (like Role and Event Trigger, Sections 11.1/14.1), so the
    cross-schema `SET SCHEMA` half of the generic extension never
-   applies here.
+   applies here. Unlike most database-level kinds, a Publication has no
+   `GRANTS`/`REVOCATIONS` directive — confirmed live that real
+   PostgreSQL has no `GRANT`/`REVOKE ... ON PUBLICATION` statement at
+   all (only ownership gates `ALTER`/`DROP`), so `pub-block` carries no
+   `grants-block` alternative.
 
    Examples:
 
@@ -4921,8 +4966,16 @@ subscription-decl = "SUBSCRIPTION" WSP identifier
                     WSP "PUBLICATION" WSP identifier-list
                     [ WSP "WITH" WSP "(" sub-options ")" ]
                     ";"
-                    [ "{" comment-dir ";" "}" ]
+                    [ "{" subscription-block "}" ]
+
+subscription-block = *( ( comment-dir / owner-dir / renamed-from-dir ) ";" )
 ```
+
+   `owner-dir`/`renamed-from-dir` follow the standard rules (Section 7.6):
+   `ALTER SUBSCRIPTION name OWNER TO role` (`SAFE`); `ALTER SUBSCRIPTION
+   old RENAME TO new` (`CAUTION`) — Subscription is database-level, not
+   schema-scoped (like Publication, Section 13.1), so the cross-schema
+   `SET SCHEMA` half of the generic extension never applies here.
 
    `conn-literal` is an ordinary libpq conninfo string, used exactly as
    written, optionally with one or more `{{<secret-uri>}}` placeholders
@@ -4988,6 +5041,8 @@ SUBSCRIPTION replica_billing
    | New subscription | `CREATE SUBSCRIPTION ...` [+ `COMMENT ON SUBSCRIPTION ...` if set] | `MANUAL` (non-transactional; still auto-executed, not an operator instruction) |
    | Body change (`CONNECTION`, `PUBLICATION`, or `WITH`) | `DROP SUBSCRIPTION ...` + `CREATE SUBSCRIPTION ...` [+ `COMMENT ...`] | `DESTRUCTIVE` then `MANUAL` |
    | Comment-only change | `COMMENT ON SUBSCRIPTION ... IS ...` (or `IS NULL`) | `SAFE` |
+   | Owner changed | `ALTER SUBSCRIPTION name OWNER TO role` | `SAFE` |
+   | Renamed (`RENAMED FROM`) | `ALTER SUBSCRIPTION old RENAME TO new` | `CAUTION` |
    | Subscription removed | `DROP SUBSCRIPTION name` | `DESTRUCTIVE` (non-transactional) |
 
 ---
@@ -5183,8 +5238,21 @@ SCHEMA public {
    |--------|-------------|--------|
    | New operator | `CREATE OPERATOR ...` | `SAFE` |
    | `PROCEDURE`/`FUNCTION` changed | `DROP OPERATOR; CREATE OPERATOR` | `DESTRUCTIVE` |
-   | Optimizer hint changes (`RESTRICT`, `JOIN`, `COMMUTATOR`, `NEGATOR`, `HASHES`, `MERGES`) | `ALTER OPERATOR ... (...)` | `SAFE` |
+   | `RESTRICT`/`JOIN` set, cleared, or changed | `ALTER OPERATOR ... SET (...)` | `SAFE` |
+   | `COMMUTATOR`/`NEGATOR`/`HASHES`/`MERGES` newly set (previously unset) | `ALTER OPERATOR ... SET (...)` | `SAFE` |
+   | `COMMUTATOR`/`NEGATOR`/`HASHES`/`MERGES` changed once already set | `DROP OPERATOR; CREATE OPERATOR` | `DESTRUCTIVE` |
    | Operator removed | `DROP OPERATOR symbol (leftarg, rightarg)` | `DESTRUCTIVE` |
+
+   `RESTRICT` and `JOIN` are freely re-settable in either direction —
+   confirmed live that `ALTER OPERATOR ... SET (RESTRICT = ...)` accepts
+   overwriting an already-set value. `COMMUTATOR`, `NEGATOR`, `HASHES`,
+   and `MERGES` are one-directional: confirmed live (PostgreSQL 17) that
+   `ALTER OPERATOR ... SET (COMMUTATOR = ...)` errors "operator attribute
+   \"commutator\" cannot be changed if it has already been set" once a
+   value is already recorded, so only the unset-to-set transition can go
+   through `ALTER OPERATOR`; changing an already-set value (or clearing
+   `HASHES`/`MERGES` back off) forces the same drop-and-recreate as a
+   `FUNCTION` change.
 
 ### 14.4. Operator Classes and Families
 
@@ -5414,10 +5482,41 @@ TABLESPACE archive  LOCATION '/mnt/hdd/pg_archive';
 ```sql
 FOREIGN DATA WRAPPER myfdw
     HANDLER   myfdw_handler
-    VALIDATOR myfdw_validator;
+    VALIDATOR myfdw_validator
+{
+    OWNER "fdw_admin";
+    COMMENT 'Custom C-implemented FDW';
+    GRANTS { USAGE TO app_service; }
+}
 ```
 
-   Any change to a FDW requires drop + recreate (`DESTRUCTIVE`).
+   `FOREIGN DATA WRAPPER` MAY carry an optional `{ }` block
+   (`comment-dir`/`owner-dir`/`renamed-from-dir`/`grants-block`/
+   `revocations-block`) — same standard rules as every other kind
+   (Section 7.6/Section 11.2) — real PostgreSQL supports `ALTER FOREIGN
+   DATA WRAPPER ... OWNER TO`/`RENAME TO` and `GRANT/REVOKE USAGE ON
+   FOREIGN DATA WRAPPER` (superuser-only for `CREATE`/`OWNER TO`, same
+   restriction as the bare `CREATE FOREIGN DATA WRAPPER` statement
+   itself). FDW is database-level, not schema-scoped, so the
+   cross-schema `SET SCHEMA` half of the generic extension never
+   applies here (same as Publication/Server above).
+
+   **Diffing semantics:**
+
+   | Change | DDL emitted | Safety |
+   |--------|-------------|--------|
+   | New FDW | `CREATE FOREIGN DATA WRAPPER ...` | `SAFE` |
+   | `HANDLER`/`VALIDATOR`/`OPTIONS` changed | `DROP FOREIGN DATA WRAPPER` + `CREATE FOREIGN DATA WRAPPER` | `DESTRUCTIVE` |
+   | Owner changed | `ALTER FOREIGN DATA WRAPPER name OWNER TO role` | `SAFE` |
+   | Renamed (`RENAMED FROM`) | `ALTER FOREIGN DATA WRAPPER old RENAME TO new` | `CAUTION` |
+   | Grants/Revocations changed | `GRANT`/`REVOKE ... ON FOREIGN DATA WRAPPER name` | `SAFE` |
+   | FDW removed | `DROP FOREIGN DATA WRAPPER name` | `DESTRUCTIVE` |
+
+   PostgreSQL provides no `ALTER FOREIGN DATA WRAPPER` for `HANDLER`,
+   `VALIDATOR`, or `OPTIONS` — any change to those three forces
+   drop-and-recreate; `OWNER TO`, `RENAME TO`, and the grant/revoke
+   surface are the only in-place alterations available, same shape as
+   Foreign Server below.
 
 ### 14.9. Foreign Servers
 
@@ -6434,7 +6533,12 @@ Options:
    `dpg validate --strict` or `dpg apply --strict` to promote them to
    errors.
 
-   Exit codes: 0 = success (no changes); 1 = changes computed; 2 = error.
+   Exit codes: 0 = success (the plan was computed and printed, whether or
+   not it contains any operations); non-zero = error (compilation failure,
+   lint error, connection error under `--live`). Unlike `dpg verify`
+   (Section 18.3), `dpg plan` does not use its exit code to signal whether
+   changes were found — check the printed output, or `--format json`'s
+   `"empty"` field, for that.
 
    With `--format json`, each targeted database's plan is serialised to
    stdout as one JSON object:
@@ -6501,18 +6605,30 @@ Options:
 
    1.  Run the linter.  If any error-level diagnostics exist (or
        any warnings with `--strict`), abort and print diagnostics.
-   2.  Compute the migration (`dpg plan`).
-   3.  If `--dry-run`, print and exit.
-   4.  If the migration contains `DESTRUCTIVE` ops and `--allow-destructive`
-       is absent, abort with error DPG-E025.
-   5.  Print the migration SQL.
+   2.  Compute the migration (`dpg plan`).  If there are no operations,
+       print "already up to date" and exit successfully — none of the
+       remaining steps run.
+   3.  If the migration contains `DESTRUCTIVE` ops and `--allow-destructive`
+       is absent, abort with error DPG-E025. This check runs before
+       `--dry-run`'s early exit (step 5) — `--dry-run` alone does not
+       bypass the destructive-operations gate; a preview of a destructive
+       migration still requires `--allow-destructive`.
+   4.  If the migration contains any instruction-only `MANUAL` steps (e.g.
+       a partition strategy change) and `--approve-partition-rebuild` is
+       absent, abort listing the required manual step.
+   5.  Print the migration SQL. If `--dry-run`, stop here — the migration
+       is not executed and the snapshot is not updated.
    6.  Unless `--yes`, prompt: `Apply this migration? [y/N]`.  Abort if
        the operator does not confirm.
    7.  Execute transactional ops in a single `BEGIN`/`COMMIT` per
        database.
-   8.  Execute non-transactional ops sequentially.
-   9.  Update the snapshot atomically (write to a temp file, rename).
-   10. Print `Migration applied successfully.` to stdout.
+   8.  Execute non-transactional ops sequentially. Instruction-only
+       `MANUAL` steps are never sent to the executor — they are the
+       operator's own responsibility outside of `dpg apply`.
+   9.  Update the snapshot atomically (write to a temp file, rename),
+       unless `--no-snapshot` is set.
+   10. Print `Applied` to stdout, including the archived migration
+       file's path, unless `--no-snapshot` was set (noted instead).
 
    If step 7 fails, the transaction is rolled back.  The snapshot is
    not updated.  The error from the database is printed with the
@@ -6529,8 +6645,11 @@ dpg verify [options] [<cluster>[/<database>]]
 Options:
   --cluster <name>
   --database <name>
-  --format <fmt>     sql (default), json, text
 ```
+
+   The drift report is always printed as human-readable text (to stdout
+   when a database/cluster has no drift, to stderr with the computed SQL
+   otherwise) — there is no `--format` flag.
 
    **Drift detection model:**
 
@@ -6546,7 +6665,11 @@ Options:
    -   **Does NOT report:** objects present in the live catalog but
        absent from DPG source (unmanaged objects).
 
-   Exit codes: 0 = no drift; 1 = drift detected; 2 = connection error.
+   Exit codes: 0 = no drift; non-zero = drift was detected in at least
+   one targeted cluster/database, OR an error occurred (a connection
+   failure is reported the same way as drift — both produce a non-zero
+   exit; the two are distinguished only by the printed message, not by
+   a separate exit code).
 
 ### 18.4. dpg dump
 
@@ -6601,9 +6724,13 @@ Options:
    whose whole purpose is to let a dump be inspected without touching the
    real project) — fixed.
 
-   The dump output is a best-effort conversion.  Objects whose DDL
-   cannot be cleanly reconstructed from catalog information are emitted
-   as comments with a `-- dpg:manual` marker.
+   The dump output is a best-effort conversion.  An individual object
+   whose DDL cannot be cleanly reconstructed from catalog information at
+   all (e.g. a `COLLATION` or `OPERATOR CLASS` introspected with no
+   reconstructable attributes/members left after DPG's own filtering) is
+   silently omitted from the dump entirely, rather than emitted as a
+   comment or any other marker — there is currently no `-- dpg:manual`-
+   style convention, and no warning is printed naming what was skipped.
 
 ### 18.5. dpg diff
 
@@ -6611,14 +6738,16 @@ Options:
    without requiring a snapshot or a live database connection.
 
 ```
-dpg diff --from <dir> --to <dir> [options]
+dpg diff --from <dir> --to <dir>
 
 Options:
   --from <dir>         REQUIRED. "Before" source directory.
   --to <dir>           REQUIRED. "After" source directory.
-  --format <fmt>       sql (default), json.
-  --allow-destructive
 ```
+
+   The result is always printed as SQL to stdout — there is no `--format`
+   or `--allow-destructive` flag; unlike `dpg apply`, `dpg diff` never
+   executes anything, so a destructive-operations gate does not apply.
 
    Both directories MUST contain a `dpg.toml` with a `[database]`
    section identifying the same logical database.
@@ -6784,26 +6913,70 @@ dpg completion <shell>
 <shell>: bash | zsh | fish | powershell
 ```
 
+### 18.11. dpg docs
+
+   Serves the DPG documentation locally over HTTP.
+
+```
+dpg docs [options]
+
+Options:
+  --port <n>, -p <n>   Port to serve on (default: 6060).
+  --open                Open the browser automatically.
+```
+
+   The documentation site is compiled into the `dpg` binary at release
+   build time (`make build-full`, tag `embeddata`) and served entirely
+   offline — no network access or live database connection is required.
+   A development build (plain `make build`) does not embed the
+   documentation; running `dpg docs` from such a build prints an error.
+
 ---
 
 ## 19. The Linter
 
 ### 19.1. Built-in Rules
 
+   Rule IDs use hyphens, not underscores (a `[linter.rules]` key given
+   with underscores is still accepted — Section 19.2 — but the ID as
+   reported in diagnostics and `dpg validate --format json`'s `rule`
+   field is always the hyphenated form below):
+
    | Rule ID | Description | Default Level |
    |---------|-------------|---------------|
-   | `hardcoded_password` | `ROLE PASSWORD 'literal'` detected. Use `env:VAR_NAME`. | Error |
-   | `hardcoded_fdw_password` | `USER MAPPING OPTIONS` has a literal value under a password-like key (`password`/`passwd`/`pwd`/`secret`/`passphrase`, matched as a substring). | Error |
-   | `deprecated_reference` | A non-deprecated object references a deprecated object or column. | Warning |
-   | `missing_column_comment` | A column has no `COMMENT` and `require_column_comments = true`. | Warning (configurable to Error) |
-   | `column_count_exceeded` | A table has more columns than `max_columns_per_table`. | Warning |
-   | `scalar_merge_conflict` | Two files provide conflicting scalar values for the same object property. | Warning |
-   | `security_definer_search_path` | A `SECURITY DEFINER` function has no explicit `SET search_path`. | Warning |
-   | `serial_sequence_declared` | A sequence is declared with a name matching an auto-managed `SERIAL`/`IDENTITY` sequence. | Warning |
-   | `unnecessary_revocation` | A revocation targets a role that was never granted the privilege by DPG. | Warning |
-   | `stale_renamed_from` | `RENAMED FROM` directive references a name not in the snapshot (DPG-E021). | Error |
-   | `unguarded_enum_removal` | An ENUM value is removed without a `MIGRATE REMOVE` block. | Error |
-   | `protected_drop_attempt` | The diff would drop a `PROTECTED` object (DPG-E022). | Error |
+   | `hardcoded-password` | A table column's `DEFAULT` is a hardcoded string literal, for a column whose name contains `password`/`passwd`/`pwd`/`secret`/`passphrase` (case-insensitive substring match). | Error |
+   | `hardcoded-role-password` | A `ROLE`'s `PASSWORD` is a literal value with no `{{secret-uri}}` placeholder. A separate rule from `hardcoded-password` above — different check, different object kind. | Error |
+   | `hardcoded-fdw-password` | A `USER MAPPING`'s `OPTIONS` has a literal value under a password-like key (same 5-key list as `hardcoded-password` above), with no `{{secret-uri}}` placeholder. | Error |
+   | `deprecated` | An object or column is itself marked `DEPRECATED`. | Warning |
+   | `deprecated-reference` | A non-deprecated `FOREIGN KEY` references a deprecated table/column, or a non-deprecated column/function-parameter/function-return-type references a deprecated custom `TYPE`. Does not (yet) cover a view query, function/procedure body, or column `DEFAULT` referencing a deprecated object — those are raw text with no AST to analyze. | Warning |
+   | `missing-column-comment` | A column has no `COMMENT` and `require_column_comments = true`. | Warning (configurable to Error) |
+   | `column-count-exceeded` | A table has more columns than `max_columns_per_table`. | Error |
+   | `scalar-merge-conflict` | Two files provide conflicting scalar values for the same object property. Computed by `Merger.Merge`, not by a `Linter.Lint` rule (Section 15.8) — see the implementation note below. | Warning |
+   | `security-definer-search-path` | A `SECURITY DEFINER` function has no explicit `SET search_path`. | Warning |
+   | `serial-sequence-declared` | A hand-declared `SEQUENCE` collides with the auto-managed sequence name for a `GENERATED ... AS IDENTITY` column or a `SERIAL`/`BIGSERIAL`/`SMALLSERIAL` column's owned sequence (`<table>_<column>_seq`) in the same desired state. | Warning |
+   | `unnecessary-revocation` | A `REVOCATIONS` entry names a (role, privilege) pair with no matching `GRANTS` entry in that *same object's own declaration*. | Warning |
+   | `min-pg-version` | A declared construct requires a PostgreSQL major version newer than the project's effective `min_pg_version` (Section 3.8). | Warning |
+   | `stale-renamed-from` | `RENAMED FROM` directive references a name not in the snapshot (DPG-E021). Implemented as a hard error returned directly from `Differ.Diff`, not a `Linter.Lint` rule — see the implementation note below. | Error |
+   | `unguarded-enum-removal` | An ENUM value is removed without a `MIGRATE REMOVE` block (DPG-E014). Implemented in `Differ.Diff`, not `Linter.Lint` — see below. | Error |
+   | `protected-drop-attempt` | The diff would drop a `PROTECTED` object (DPG-E022). Implemented in `Differ.Diff`, not `Linter.Lint` — see below. | Error |
+
+   **Implementation note:** `stale-renamed-from`, `unguarded-enum-removal`,
+   and `protected-drop-attempt` are fully implemented and tested, but as
+   hard errors returned directly from `Differ.Diff` (Section 21) during the
+   desired-vs-snapshot comparison, not as diagnostics from the
+   `Linter.Lint(objects []IRObject, cfg LinterConfig)` interface every
+   other rule above uses — each fundamentally needs the desired-vs-snapshot
+   comparison the differ already performs every run, which `Linter.Lint`'s
+   `[]IRObject`-only input does not have access to. This means they abort
+   the plan/apply outright rather than surfacing as a downgradable,
+   `[linter.rules]`-overridable diagnostic. `scalar-merge-conflict` is
+   architecturally distinct in a different way: it is computed by
+   `Merger.Merge` (Section 15.8) itself, which runs before `Linter.Lint`
+   ever sees the merged objects and needs the pre-merge, per-file values
+   `Linter.Lint`'s input has already discarded; every CLI command that
+   runs the linter also runs `Merger.Merge` first, so this diagnostic is
+   present in every command's output alongside the `Linter.Lint` ones,
+   filtered through the same `[linter.rules]` severity overrides.
 
 ### 19.2. Configuration
 
@@ -6813,12 +6986,14 @@ dpg completion <shell>
    `warn_on_scalar_merge_conflict` fields are described in Section 3.2.
 
    Individual rules MAY be set to `"error"`, `"warning"`, or `"off"`
-   via `[linter.rules]`:
+   via `[linter.rules]`. Keys may be written with hyphens or underscores
+   interchangeably — underscores are normalized to hyphens before
+   matching a rule ID:
 
 ```toml
 [linter.rules]
-security_definer_search_path = "error"
-serial_sequence_declared      = "off"
+security-definer-search-path = "error"
+serial-sequence-declared      = "off"
 ```
 
 ---
@@ -7358,6 +7533,14 @@ serial_sequence_declared      = "off"
    Operators MUST review `DESTRUCTIVE` ops carefully.  DPG's safety
    classification system exists precisely to make this review tractable.
 
+   **Row Level Security on partitioned tables:** Enabling RLS and
+   declaring policies on a partitioned parent protects only queries
+   against the parent — it does not protect direct queries against a
+   leaf partition, which PostgreSQL evaluates independently and does
+   not inherit the parent's RLS state for (Section 7.8).  Operators
+   who need to protect direct partition access MUST also declare RLS
+   and equivalent policies on each partition individually.
+
 ---
 
 ## 25. Feature Coverage Matrix
@@ -7462,6 +7645,8 @@ serial_sequence_declared      = "off"
    | `CREATE [PROCEDURAL] LANGUAGE` | Out of scope | Covered by extension install (`CREATE EXTENSION`); see Section 23 |
    | `CREATE TRANSFORM` | Out of scope | Always bundled with a specific extension pairing; see Section 23 |
    | `ALTER EXTENSION ADD`/`DROP member_object` | Out of scope | Extension-authoring concern, a tier below application-schema scope; see Section 23 |
+   | `CLUSTER` (maintenance command) | Out of scope | One-shot table rewrite, not idempotent as declared state; `CLUSTER ON` (Section 7.11) declares the target index only, doesn't invoke the command; see Section 23 |
+   | Large Objects (`lo_create`/`lo_import`/`lo_export` etc.) | Out of scope | No `CREATE`/`ALTER`/`DROP` DDL surface to attach to; see Section 23 |
 
 ---
 
@@ -7747,23 +7932,26 @@ EXTENSION pgcrypto;
 EXTENSION pg_trgm CASCADE;
 ```
 
+   Files under `schemas/<schema>/` do not wrap their declarations in a
+   `SCHEMA { }` block — the schema is inferred from the directory name
+   (Section 3.6), and the compiler rejects an explicit `SCHEMA` block
+   found there as redundant.
+
 ```sql
 -- production/myapp/schemas/public/types.dpg
 
-SCHEMA public {
-    ENUM account_status ('trial', 'active', 'suspended', 'cancelled');
-    {
-        COMMENT 'Top-level account lifecycle states';
-    }
-
-    ENUM invoice_status ('draft', 'sent', 'paid', 'void', 'overdue');
-    {
-        COMMENT 'Billing lifecycle states for customer invoices';
-    }
-
-    DOMAIN positive_money AS NUMERIC(12, 2)
-        CONSTRAINT must_be_positive CHECK (VALUE >= 0);
+ENUM account_status ('trial', 'active', 'suspended', 'cancelled');
+{
+    COMMENT 'Top-level account lifecycle states';
 }
+
+ENUM invoice_status ('draft', 'sent', 'paid', 'void', 'overdue');
+{
+    COMMENT 'Billing lifecycle states for customer invoices';
+}
+
+DOMAIN positive_money AS NUMERIC(12, 2)
+    CONSTRAINT must_be_positive CHECK (VALUE >= 0);
 ```
 
 ```sql
@@ -7774,37 +7962,35 @@ MACRO audit_timestamps (
     deleted_at TIMESTAMPTZ
 )
 
-SCHEMA public {
-    TABLE accounts (
-        id     UUID           NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-        name   TEXT           NOT NULL,
-        status account_status NOT NULL DEFAULT 'trial',
-        ...audit_timestamps
-    )
-    {
-        COMMENT 'Top-level tenant accounts';
-        ENABLE ROW LEVEL SECURITY;
+TABLE accounts (
+    id     UUID           NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+    name   TEXT           NOT NULL,
+    status account_status NOT NULL DEFAULT 'trial',
+    ...audit_timestamps
+)
+{
+    COMMENT 'Top-level tenant accounts';
+    ENABLE ROW LEVEL SECURITY;
 
-        COLUMN status     { STATISTICS 300; }
-        COLUMN created_at { STATISTICS 200; }
+    COLUMN status     { STATISTICS 300; }
+    COLUMN created_at { STATISTICS 200; }
 
-        INDICES {
-            idx_accounts_status (status) WHERE (deleted_at IS NULL);
-        }
+    INDICES {
+        idx_accounts_status (status) WHERE (deleted_at IS NULL);
+    }
 
-        POLICIES {
-            isolate_tenants FOR ALL
-                USING (id = current_setting('app.account_id')::UUID);
-        }
+    POLICIES {
+        isolate_tenants FOR ALL
+            USING (id = current_setting('app.account_id')::UUID);
+    }
 
-        GRANTS {
-            SELECT, INSERT, UPDATE TO app_service;
-            SELECT                 TO app_readonly;
-        }
+    GRANTS {
+        SELECT, INSERT, UPDATE TO app_service;
+        SELECT                 TO app_readonly;
+    }
 
-        REVOCATIONS {
-            ALL PRIVILEGES FROM PUBLIC;
-        }
+    REVOCATIONS {
+        ALL PRIVILEGES FROM PUBLIC;
     }
 }
 ```
@@ -7812,84 +7998,79 @@ SCHEMA public {
 ```sql
 -- production/myapp/schemas/public/tables/invoices.dpg
 
-SCHEMA public {
-    TABLE invoices (
-        id         UUID           NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-        account_id UUID           NOT NULL,
-        status     invoice_status NOT NULL DEFAULT 'draft',
-        total      positive_money NOT NULL DEFAULT 0,
-        issued_at  TIMESTAMPTZ,
-        due_at     TIMESTAMPTZ,
-        created_at TIMESTAMPTZ    NOT NULL DEFAULT now(),
-        CONSTRAINT fk_account FOREIGN KEY (account_id)
-            REFERENCES accounts (id) ON DELETE CASCADE,
-        CONSTRAINT ck_due_after_issued CHECK (due_at IS NULL OR due_at > issued_at)
-    )
-    {
-        COLUMN created_at { STATISTICS 200; }
+TABLE invoices (
+    id         UUID           NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+    account_id UUID           NOT NULL,
+    status     invoice_status NOT NULL DEFAULT 'draft',
+    total      positive_money NOT NULL DEFAULT 0,
+    issued_at  TIMESTAMPTZ,
+    due_at     TIMESTAMPTZ,
+    created_at TIMESTAMPTZ    NOT NULL DEFAULT now(),
+    CONSTRAINT fk_account FOREIGN KEY (account_id)
+        REFERENCES accounts (id) ON DELETE CASCADE,
+    CONSTRAINT ck_due_after_issued CHECK (due_at IS NULL OR due_at > issued_at)
+)
+{
+    COLUMN created_at { STATISTICS 200; }
 
-        INDICES {
-            idx_invoices_account (account_id);
-            idx_invoices_status  (status) WHERE (status NOT IN ('paid', 'void'));
-            idx_invoices_due     (due_at) WHERE (status = 'sent');
-        }
-
-        ENABLE ROW LEVEL SECURITY;
-
-        POLICIES {
-            isolate_tenants FOR ALL
-                USING (account_id = current_setting('app.account_id')::UUID);
-        }
-
-        TRIGGERS {
-            after_status_change AFTER UPDATE OF status
-                FOR EACH ROW
-                WHEN (OLD.status IS DISTINCT FROM NEW.status)
-                EXECUTE FUNCTION notify_invoice_status_change();
-        }
-
-        GRANTS { SELECT, INSERT, UPDATE TO app_service; }
+    INDICES {
+        idx_invoices_account (account_id);
+        idx_invoices_status  (status) WHERE (status NOT IN ('paid', 'void'));
+        idx_invoices_due     (due_at) WHERE (status = 'sent');
     }
+
+    ENABLE ROW LEVEL SECURITY;
+
+    POLICIES {
+        isolate_tenants FOR ALL
+            USING (account_id = current_setting('app.account_id')::UUID);
+    }
+
+    TRIGGERS {
+        after_status_change AFTER UPDATE OF status
+            FOR EACH ROW
+            WHEN (OLD.status IS DISTINCT FROM NEW.status)
+            EXECUTE FUNCTION notify_invoice_status_change();
+    }
+
+    GRANTS { SELECT, INSERT, UPDATE TO app_service; }
 }
 ```
 
 ```sql
 -- production/myapp/schemas/public/functions.dpg
 
-SCHEMA public {
+FUNCTION notify_invoice_status_change() RETURNS TRIGGER
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    PERFORM pg_notify(
+        'invoice_status_changed',
+        json_build_object(
+            'invoice_id', NEW.id,
+            'old_status', OLD.status,
+            'new_status', NEW.status
+        )::TEXT
+    );
+    RETURN NEW;
+END;
+$$;
 
-    FUNCTION notify_invoice_status_change() RETURNS TRIGGER
-    LANGUAGE plpgsql SECURITY DEFINER
-    SET search_path = public
-    AS $$
-    BEGIN
-        PERFORM pg_notify(
-            'invoice_status_changed',
-            json_build_object(
-                'invoice_id', NEW.id,
-                'old_status', OLD.status,
-                'new_status', NEW.status
-            )::TEXT
-        );
-        RETURN NEW;
-    END;
-    $$;
-
-    MATERIALIZED VIEW account_billing_summary AS
-        SELECT
-            a.id,
-            a.name,
-            COUNT(i.id)                                                  AS total_invoices,
-            COALESCE(SUM(i.total) FILTER (WHERE i.status = 'paid'),   0) AS paid_total,
-            COALESCE(SUM(i.total) FILTER (WHERE i.status = 'overdue'),0) AS overdue_total
-        FROM accounts a
-        LEFT JOIN invoices i ON i.account_id = a.id
-        WHERE a.deleted_at IS NULL
-        GROUP BY a.id, a.name
-    WITH NO DATA;
-    {
-        GRANTS { SELECT TO app_readonly; }
-    }
+MATERIALIZED VIEW account_billing_summary AS
+    SELECT
+        a.id,
+        a.name,
+        COUNT(i.id)                                                  AS total_invoices,
+        COALESCE(SUM(i.total) FILTER (WHERE i.status = 'paid'),   0) AS paid_total,
+        COALESCE(SUM(i.total) FILTER (WHERE i.status = 'overdue'),0) AS overdue_total
+    FROM accounts a
+    LEFT JOIN invoices i ON i.account_id = a.id
+    WHERE a.deleted_at IS NULL
+    GROUP BY a.id, a.name
+WITH NO DATA;
+{
+    GRANTS { SELECT TO app_readonly; }
 }
 ```
 
@@ -8892,7 +9073,14 @@ ENUM user_status ('active', 'inactive', 'banned') {
    `min_pg_version`.  A value means the construct requires at least
    that PostgreSQL major version; a value with a parenthetical
    qualifies which part of a Mixed row's construct the gate applies to
-   when the row's other part is floor-14.
+   when the row's other part is floor-14.  A non-blank cell documents the
+   real PostgreSQL version requirement regardless of enforcement; the
+   `min-pg-version` rule itself only actively checks a subset of these
+   constructs as of this revision (Collation `REFRESH VERSION`/`RULES`,
+   `PARAMETER PRIVILEGES`, Event Trigger `login`, and `MAINTAIN`) — the
+   remaining gated rows require IR fields the reference implementation
+   does not yet carry (a documented, deliberate v1 scope decision, not
+   an oversight) and produce no diagnostic yet even when violated.
 
    | Section | Construct | Classification | Min PG Version | Notes |
    |---|---|---|---|---|
