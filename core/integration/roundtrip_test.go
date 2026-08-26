@@ -432,8 +432,7 @@ func TestRoundtripEnumBareShorthand(t *testing.T) {
 
 	dir := t.TempDir()
 	f := filepath.Join(dir, "schema.dpg")
-	src := `ENUM user_status ('active', 'suspended', 'deleted');
-{
+	src := `ENUM user_status ('active', 'suspended', 'deleted') {
     COMMENT 'Account lifecycle states';
 }`
 	if err := os.WriteFile(f, []byte(src), 0o644); err != nil {

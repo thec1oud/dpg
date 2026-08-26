@@ -292,7 +292,7 @@ func TestRoundtripFunctionAtomicBody(t *testing.T) {
 		return v
 	}
 
-	v1 := `FUNCTION f_atomic(x integer) RETURNS integer LANGUAGE sql BEGIN ATOMIC SELECT x + 1; END; {}`
+	v1 := `FUNCTION f_atomic(x integer) RETURNS integer LANGUAGE sql BEGIN ATOMIC SELECT x + 1; END {}`
 	if err := os.WriteFile(f, []byte(v1), 0o644); err != nil {
 		t.Fatalf("write v1: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestRoundtripFunctionAtomicBody(t *testing.T) {
 	}
 	assertNoLiveDrift(t, ctx, conn, []string{f}, dir, differ, store)
 
-	v2 := `FUNCTION f_atomic(x integer) RETURNS integer LANGUAGE sql BEGIN ATOMIC SELECT x + 100; END; {}`
+	v2 := `FUNCTION f_atomic(x integer) RETURNS integer LANGUAGE sql BEGIN ATOMIC SELECT x + 100; END {}`
 	if err := os.WriteFile(f, []byte(v2), 0o644); err != nil {
 		t.Fatalf("write v2: %v", err)
 	}

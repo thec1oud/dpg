@@ -93,8 +93,7 @@ SCHEMA public {
 
     VIEW active_users AS
         SELECT id, email, full_name, created_at
-        FROM users;
-    {
+        FROM users {
         GRANTS { SELECT TO app_readonly; }
     }
 
@@ -102,8 +101,7 @@ SCHEMA public {
     LANGUAGE sql STABLE
     AS $$
         SELECT COUNT(*) FROM orders WHERE user_id = p_user_id;
-    $$;
-    {
+    $$ {
         COMMENT 'Returns the total number of orders placed by a user';
         GRANTS  { EXECUTE TO app_service; }
     }
