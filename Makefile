@@ -23,6 +23,7 @@ HUGO := $(shell PATH="$(HOME)/.local/bin:$(PATH)" sh -c 'command -v hugo 2>/dev/
 
 .PHONY: build build-full install install-full \
         test test-verbose test-integration test-examples test-dpg vet lint \
+        check-error-codes \
         test-lsp test-lsp-smoke test-grammar test-lang \
         test-nvim test-vscode test-idea test-helix test-plugins \
         test-all \
@@ -172,6 +173,11 @@ vet:
 
 lint:
 	cd $(CORE) && staticcheck ./...
+
+# Every DPG-Ennn code documented in rfc/dpg-1.md Appendix C must have a
+# matching occurrence in core/ (or be explicitly marked retracted there).
+check-error-codes:
+	./tools/check-error-codes.sh
 
 # ── Distribution ──────────────────────────────────────────────────────────────
 # All dist targets embed the documentation site; run docs-site first.

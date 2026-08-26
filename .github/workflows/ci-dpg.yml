@@ -23,6 +23,9 @@ jobs:
         working-directory: core
         run: go vet ./...
 
+      - name: DPG-Ennn code/RFC parity
+        run: ./tools/check-error-codes.sh
+
       - name: Test
         working-directory: core
         run: go test ./...
