@@ -4,7 +4,10 @@
 // They do not track line/column numbers; callers handle that themselves.
 package scanutil
 
-import "fmt"
+import (
+	"bytes"
+	"fmt"
+)
 
 // IsWordStart reports whether b can begin an SQL identifier or keyword.
 func IsWordStart(b byte) bool {
@@ -109,4 +112,20 @@ func SkipBlockComment(src []byte, pos int) int {
 		pos++
 	}
 	return pos
+}
+
+// utf8BOM is the byte sequence a UTF-8 byte-order mark (U+FEFF) encodes to.
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
+// NormalizeSource strips a leading UTF-8 byte-order mark, if present, and
+// normalises all line endings (CRLF and bare CR) to LF. Every entry point
+// that reads a .dpg source file (RFC Section 4.1) MUST call this on the raw
+// bytes before tokenizing or parsing them, so that a file's line-ending
+// style and the presence or absence of a BOM never affect scanning, dollar-
+// quoted body content, or emitted SQL.
+func NormalizeSource(src []byte) []byte {
+	src = bytes.TrimPrefix(src, utf8BOM)
+	src = bytes.ReplaceAll(src, []byte("\r\n"), []byte("\n"))
+	src = bytes.ReplaceAll(src, []byte("\r"), []byte("\n"))
+	return src
 }

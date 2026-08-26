@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/thec1oud/dpg/internal/pipeline"
+	"github.com/thec1oud/dpg/internal/scanutil"
 )
 
 // Compile reads all source files, runs them through every pipeline stage up to
@@ -68,6 +69,7 @@ func Compile(files []string, dbDir string, reg *pipeline.Registry) ([]pipeline.I
 			if readErr != nil {
 				return nil, nil, fmt.Errorf("compiler: reading %s: %w", path, readErr)
 			}
+			src = scanutil.NormalizeSource(src)
 			if seedErr := seeder.AddGlobalMacros(src); seedErr != nil {
 				return nil, nil, fmt.Errorf("compiler: collecting macros from %s: %w", path, seedErr)
 			}
@@ -80,6 +82,7 @@ func Compile(files []string, dbDir string, reg *pipeline.Registry) ([]pipeline.I
 		if readErr != nil {
 			return nil, nil, fmt.Errorf("compiler: reading %s: %w", path, readErr)
 		}
+		src = scanutil.NormalizeSource(src)
 		raws, scanErr := tokenizer.Scan(path, src)
 		if scanErr != nil {
 			if d, ok := scanErr.(pipeline.Diagnostics); ok {

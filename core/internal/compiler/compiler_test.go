@@ -65,6 +65,29 @@ func TestCompile_InferSchemaFromPath(t *testing.T) {
 	}
 }
 
+// TestCompile_BOMAndCRLFNormalized covers RFC Section 4.1: a leading UTF-8
+// BOM MUST be silently stripped and CRLF line endings MUST be normalized to
+// LF before any scanning occurs.
+func TestCompile_BOMAndCRLFNormalized(t *testing.T) {
+	dbDir := t.TempDir()
+	f := filepath.Join(dbDir, "tables.dpg")
+	src := "\xEF\xBB\xBFTABLE users (\r\n    id BIGINT NOT NULL\r\n);\r\n"
+	writeDPG(t, f, src)
+
+	objects := compile(t, dbDir, []string{f})
+
+	var tbl *ir.Table
+	for _, o := range objects {
+		if t2, ok := o.(*ir.Table); ok && t2.Name == "users" {
+			tbl = t2
+			break
+		}
+	}
+	if tbl == nil {
+		t.Fatal("table 'users' not found in output; BOM/CRLF handling likely broke scanning")
+	}
+}
+
 func TestCompile_InferSchemaInjectsSyntheticSchema(t *testing.T) {
 	dbDir := t.TempDir()
 	f := filepath.Join(dbDir, "schemas", "billing", "tables.dpg")
