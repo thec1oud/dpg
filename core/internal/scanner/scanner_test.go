@@ -161,8 +161,7 @@ func TestView(t *testing.T) {
 
 func TestViewWithBlock(t *testing.T) {
 	src := `VIEW active_users AS
-    SELECT id, email FROM users WHERE status = 'active';
-{
+    SELECT id, email FROM users WHERE status = 'active' {
     GRANTS { SELECT TO app_readonly; }
 }`
 	obj := assertOne(t, scan(t, src))
@@ -208,8 +207,7 @@ AS $$
 BEGIN
     RETURN (SELECT * FROM users WHERE email = p_email);
 END;
-$$;
-{
+$$ {
     COMMENT 'Fetch user by email';
     GRANTS { EXECUTE TO app_service; }
 }`
@@ -344,12 +342,77 @@ func TestEnum(t *testing.T) {
 }
 
 func TestEnumWithBlock(t *testing.T) {
-	obj := assertOne(t, scan(t, `ENUM invoice_status ('draft', 'sent', 'paid', 'void');
-{
+	obj := assertOne(t, scan(t, `ENUM invoice_status ('draft', 'sent', 'paid', 'void') {
     COMMENT 'Billing lifecycle states';
 }`))
 	assertKind(t, obj, pipeline.KindEnum)
 	assertPart2Contains(t, obj, "Billing lifecycle states")
+}
+
+// ── terminator rules (RFC Section 4.5, Rules T1-T3 unified) ────────────────────
+//
+// Guards the launch-readiness audit finding: the RFC declared Section 4.5's
+// rules NORMATIVE ("a compiler that silently accepts deviations is non-
+// conforming"), but the scanner enforced neither direction — a ';' before an
+// immediately-following '{ }' block, and a missing mandatory ';' when no
+// block follows, both compiled silently. DPG-E037/E038 close both gaps, for
+// a representative kind from each Part-1-ending shape (paren-close: table;
+// dollar-quote: function; plain text: view).
+
+// assertErrCode fails the test unless err is a *pipeline.CompilerError
+// carrying the given DPG-Ennn code.
+func assertErrCode(t *testing.T, err error, want string) {
+	t.Helper()
+	ce, ok := err.(*pipeline.CompilerError)
+	if !ok {
+		t.Fatalf("expected *pipeline.CompilerError, got %T: %v", err, err)
+	}
+	if ce.Code != want {
+		t.Fatalf("expected code %s, got %q (message: %s)", want, ce.Code, ce.Message)
+	}
+}
+
+func TestSemicolonBeforeBlockForbiddenTable(t *testing.T) {
+	assertErrCode(t, scanErr(t, `TABLE t (id integer) ; { COMMENT 'x'; }`), "DPG-E037")
+}
+
+func TestSemicolonBeforeBlockForbiddenFunction(t *testing.T) {
+	assertErrCode(t, scanErr(t, `FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$; { COMMENT 'x'; }`), "DPG-E037")
+}
+
+func TestSemicolonBeforeBlockForbiddenView(t *testing.T) {
+	assertErrCode(t, scanErr(t, `VIEW v AS SELECT 1; { COMMENT 'x'; }`), "DPG-E037")
+}
+
+func TestMissingMandatorySemicolonTable(t *testing.T) {
+	assertErrCode(t, scanErr(t, `TABLE t (id integer)`), "DPG-E038")
+}
+
+func TestMissingMandatorySemicolonFunction(t *testing.T) {
+	assertErrCode(t, scanErr(t, `FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$`), "DPG-E038")
+}
+
+func TestMissingMandatorySemicolonView(t *testing.T) {
+	assertErrCode(t, scanErr(t, `VIEW v AS SELECT 1`), "DPG-E038")
+}
+
+// TestTerminatorRulesPositiveCases proves the correct form for each kind
+// still compiles cleanly in both shapes: no block (mandatory ';'), and a
+// block immediately following (no ';', brace on the same line).
+func TestTerminatorRulesPositiveCases(t *testing.T) {
+	cases := []string{
+		`TABLE t (id integer);`,
+		`TABLE t (id integer) { COMMENT 'x'; }`,
+		`FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;`,
+		`FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$ { COMMENT 'x'; }`,
+		`VIEW v AS SELECT 1;`,
+		`VIEW v AS SELECT 1 { COMMENT 'x'; }`,
+	}
+	for _, src := range cases {
+		if _, err := scanner.New().Scan("test.dpg", []byte(src)); err != nil {
+			t.Errorf("scan(%q) unexpectedly failed: %v", src, err)
+		}
+	}
 }
 
 func TestCompositeType(t *testing.T) {

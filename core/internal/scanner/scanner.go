@@ -13,6 +13,7 @@
 package scanner
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -320,6 +321,15 @@ func (s *state) skipBlockComment() {
 // readRawUntil reads raw bytes until a byte in stopChars is found at
 // paren-depth 0, outside string literals, dollar-quoted strings, and comments.
 // The stop character is NOT consumed. Returns an error if EOF is reached first.
+// errUnterminatedRawText is readRawUntil's EOF-without-stop-char error,
+// distinguished from its other failure modes (an unterminated string
+// literal or dollar-quoted body, surfaced via skipSingleQuoted/
+// skipDollarQuoted's own errors) so a caller reading a Part-1-ending "{;"
+// span can upgrade specifically this case to a clean DPG-E038 diagnostic
+// (RFC Section 4.5's "; mandatory when no { } block follows") without
+// mislabeling a genuinely different syntax error the same way.
+var errUnterminatedRawText = errors.New("unexpected EOF before a terminator")
+
 func (s *state) readRawUntil(stopChars string) (string, error) {
 	start := s.pos
 	depth := 0
@@ -365,7 +375,7 @@ func (s *state) readRawUntil(stopChars string) (string, error) {
 			s.advance()
 		}
 	}
-	return "", fmt.Errorf("unexpected EOF; expected one of: %q", stopChars)
+	return "", fmt.Errorf("%w; expected one of: %q", errUnterminatedRawText, stopChars)
 }
 
 // readBraceBlock reads the content of a { } block, tracking nested braces,
@@ -874,11 +884,32 @@ func (s *state) scanBody(schemaName string, stopAtBrace bool) ([]pipeline.RawObj
 		if err != nil {
 			return nil, "", err
 		}
-		// Consume a ';' if that's what stopped readRawUntil. A Part2 '{ }' block
-		// may still follow (e.g. VIEW ... AS SELECT ...;\n{ GRANTS { ... } }).
+		// RFC Section 4.5 (Rules T1-T3, unified): a ';' immediately before an
+		// immediately-following '{ }' block is forbidden for every kind
+		// (DPG-E037); when no block follows at all, a ';' terminator is
+		// mandatory (DPG-E038). This is the single, kind-agnostic
+		// enforcement point for both directions — it runs identically
+		// whichever readPart1 branch produced part1 above (readRawUntil's
+		// "{;"-based kinds always stop exactly at ';' or '{'; the function/
+		// procedure branch stops right after its closing dollar-quote/END
+		// with no guarantee about what follows, which is what made the
+		// missing-mandatory-semicolon direction a real, previously
+		// unenforced gap for that kind specifically).
 		s.skipWS()
+		sawSemi := false
 		if s.peek() == ';' {
+			sawSemi = true
 			s.advance()
+			s.skipWS()
+		}
+		blockFollows := s.peek() == '{'
+		switch {
+		case sawSemi && blockFollows:
+			return nil, "", pipeline.ErrorfCode(declPos, "DPG-E037",
+				"unexpected ';' before '{ }' block (Rule T1/T2/T3, Section 4.5): remove it — a semicolon must never appear immediately before a block")
+		case !sawSemi && !blockFollows:
+			return nil, "", pipeline.ErrorfCode(declPos, "DPG-E038",
+				"missing ';' terminator (Rule T1/T2/T3, Section 4.5): a declaration with no { } block must end with ';'")
 		}
 		part2, hasPart2, err := s.readOptionalPart2()
 		if err != nil {
@@ -956,6 +987,19 @@ func (s *state) readSchemaDecl(pos pipeline.SourcePos) (nested []pipeline.RawObj
 	return nestedObjs, obj, nil
 }
 
+// part1EOFErr upgrades a readRawUntil("{;") EOF failure to a clean
+// DPG-E038 diagnostic (RFC Section 4.5, Rules T1/T3: a ';' terminator is
+// mandatory when no '{ }' block follows) — leaving any other readRawUntil
+// error (an unterminated string literal or dollar-quoted body) as-is,
+// since those are a genuinely different problem, not a missing terminator.
+func part1EOFErr(pos pipeline.SourcePos, err error) error {
+	if errors.Is(err, errUnterminatedRawText) {
+		return pipeline.ErrorfCode(pos, "DPG-E038",
+			"missing ';' terminator (Rule T1/T3, Section 4.5): a declaration with no { } block must end with ';'")
+	}
+	return pipeline.Errorf(pos, "%v", err)
+}
+
 // readPart1 reads the Part 1 text for the given kind. The kind keyword(s) have
 // already been consumed. The returned string is trimmed of leading/trailing
 // whitespace; internal whitespace and comments are preserved verbatim.
@@ -973,7 +1017,7 @@ func (s *state) readPart1(kind pipeline.ObjectKind, pos pipeline.SourcePos) (str
 		// are part of Part 1 and are tracked correctly by readRawUntil.
 		text, err := s.readRawUntil("{;")
 		if err != nil {
-			return "", pipeline.Errorf(pos, "%v", err)
+			return "", part1EOFErr(pos, err)
 		}
 		return strings.TrimSpace(text), nil
 
@@ -989,7 +1033,7 @@ func (s *state) readPart1(kind pipeline.ObjectKind, pos pipeline.SourcePos) (str
 		// must be synthesized here before Reconstruct hands this to pg_query.
 		text, err := s.readRawUntil("{;")
 		if err != nil {
-			return "", pipeline.Errorf(pos, "%v", err)
+			return "", part1EOFErr(pos, err)
 		}
 		text = strings.TrimSpace(text)
 		idx := strings.IndexByte(text, '(')
@@ -1003,7 +1047,7 @@ func (s *state) readPart1(kind pipeline.ObjectKind, pos pipeline.SourcePos) (str
 		// (Views, enums, extensions, sequences, roles, etc.)
 		text, err := s.readRawUntil("{;")
 		if err != nil {
-			return "", pipeline.Errorf(pos, "%v", err)
+			return "", part1EOFErr(pos, err)
 		}
 		return strings.TrimSpace(text), nil
 	}
