@@ -1257,7 +1257,10 @@ func renderObjectDPGWithRoleInheritDefaults(b *strings.Builder, obj pipeline.IRO
 		// case that merge would have been silently pointless.
 		fmt.Fprintf(b, "\n%s %s %s %s", kw("VIRTUAL"), kw("TYPE"), quoteIdentIfNeeded(o.Name), kw("AS"))
 		fmt.Fprintf(b, " %s", renderVtypeBody(o.Body))
-		b.WriteString(";")
+		// RFC Section 4.5 (Rules T1-T3, unified): a ';' never appears
+		// immediately before a '{ }' block, for any kind — VIRTUAL TYPE's
+		// bare-text Part 1 makes it a Rule T3 kind. Previously written
+		// unconditionally before checking whether a block follows.
 		if o.Comment != nil || o.JsonFormat != "" {
 			b.WriteString(" {\n")
 			if o.Comment != nil {
@@ -1268,7 +1271,7 @@ func renderObjectDPGWithRoleInheritDefaults(b *strings.Builder, obj pipeline.IRO
 			}
 			b.WriteString("}\n")
 		} else {
-			b.WriteString("\n")
+			b.WriteString(";\n")
 		}
 
 	case *ir.Sequence:
@@ -1439,7 +1442,10 @@ func renderObjectDPGWithRoleInheritDefaults(b *strings.Builder, obj pipeline.IRO
 			fmt.Fprintf(&opts, " %s %s", kw("ADMIN"), joinIdentsIfNeeded(adminRoles))
 		}
 		if o.Comment != nil || len(o.SecurityLabels) > 0 || len(o.Configs) > 0 || len(membershipDirs) > 0 {
-			fmt.Fprintf(b, "\n%s %s%s\n{\n", kw("ROLE"), name, opts.String())
+			// { joins the same line as Part 1's own end (RFC Section 4.5's
+			// canonical brace placement) — this previously put it on its
+			// own line, the only render case in this file that did.
+			fmt.Fprintf(b, "\n%s %s%s {\n", kw("ROLE"), name, opts.String())
 			if o.Comment != nil {
 				fmt.Fprintf(b, "%s%s %s;\n", ind, kw("COMMENT"), sqlStringLit(*o.Comment))
 			}
