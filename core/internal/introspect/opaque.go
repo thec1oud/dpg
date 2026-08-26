@@ -17,6 +17,28 @@ import (
 // and collations) that DPG must never dump or diff.
 const firstNormalObjectID = 16384
 
+// skipWarningsKey is the context key a caller uses to opt into collecting
+// unreconstructable-object warnings (RFC Section 18.4) — e.g. a COLLATION
+// with no LOCALE PostgreSQL will surface, or an OPERATOR CLASS with no
+// reconstructable member. Without a sink installed via WithSkipWarnings,
+// recordSkip is a no-op: only `dpg dump` (the command that actually loses
+// information by omitting these objects) needs to know about them; verify/
+// plan --live diff against the live catalog directly and are unaffected.
+type skipWarningsKey struct{}
+
+// WithSkipWarnings returns a context that causes introspection to append a
+// human-readable message to *sink for every object it silently omits
+// because nothing about it was reconstructable as valid DDL.
+func WithSkipWarnings(ctx context.Context, sink *[]string) context.Context {
+	return context.WithValue(ctx, skipWarningsKey{}, sink)
+}
+
+func recordSkip(ctx context.Context, format string, args ...any) {
+	if sink, ok := ctx.Value(skipWarningsKey{}).(*[]string); ok {
+		*sink = append(*sink, fmt.Sprintf(format, args...))
+	}
+}
+
 // notExtensionOwned is a SQL predicate that excludes catalog rows owned by an
 // extension (pg_depend deptype 'e'). Such objects are managed by CREATE
 // EXTENSION — introspecting them as standalone objects would make `dump` emit
@@ -1107,6 +1129,8 @@ ORDER  BY n.nspname, c.collname`
 			if loc == "" {
 				// Cannot reconstruct a valid ICU collation; skip rather than
 				// emit DDL that would fail to apply (LOCALE is required).
+				recordSkip(ctx, "collation %s: ICU provider with no reported LOCALE — omitted, re-declare manually",
+					qualIdentQ(schema, name))
 				continue
 			}
 			attrs = append(attrs, "PROVIDER = icu", "LOCALE = "+quoteLit(loc))
@@ -1129,7 +1153,10 @@ ORDER  BY n.nspname, c.collname`
 			attrs = append(attrs, "DETERMINISTIC = false")
 		}
 		if len(attrs) == 0 {
-			continue // nothing reconstructable; skip rather than emit invalid DDL
+			// nothing reconstructable; skip rather than emit invalid DDL
+			recordSkip(ctx, "collation %s: no reconstructable attributes — omitted, re-declare manually",
+				qualIdentQ(schema, name))
+			continue
 		}
 		body := fmt.Sprintf("CREATE COLLATION %s (%s)", qualIdentQ(schema, name), strings.Join(attrs, ", "))
 		out = append(out, &ir.Collation{
@@ -1982,6 +2009,8 @@ ORDER  BY n.nspname, c.opcname`
 		if len(clauses) == 0 {
 			// An operator class with no reconstructable members cannot be emitted
 			// as valid DDL; skip rather than produce an empty AS clause.
+			recordSkip(ctx, "operator class %s: no reconstructable members — omitted, re-declare manually",
+				qualIdentQ(r.schema, r.name))
 			continue
 		}
 		var sb strings.Builder

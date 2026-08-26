@@ -223,11 +223,16 @@ func runDump(
 	}
 	defer conn.Close(ctx)
 
-	objects, err := introspector.Introspect(ctx, conn)
+	var skipped []string
+	objects, err := introspector.Introspect(introspect.WithSkipWarnings(ctx, &skipped), conn)
 	if err != nil {
 		return ui.WrapDB(fmt.Errorf("introspect: %w", err))
 	}
 	objects = append(objects, mergeExistingVirtualTypes(db)...)
+
+	for _, msg := range skipped {
+		fmt.Fprintf(os.Stderr, "%s  %s\n", ui.Yellow("warning", color), msg)
+	}
 
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return fmt.Errorf("create output directory: %w", err)

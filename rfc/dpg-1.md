@@ -6728,9 +6728,12 @@ Options:
    whose DDL cannot be cleanly reconstructed from catalog information at
    all (e.g. a `COLLATION` or `OPERATOR CLASS` introspected with no
    reconstructable attributes/members left after DPG's own filtering) is
-   silently omitted from the dump entirely, rather than emitted as a
-   comment or any other marker — there is currently no `-- dpg:manual`-
-   style convention, and no warning is printed naming what was skipped.
+   omitted from the dump entirely rather than emitted as invalid DDL —
+   but unlike earlier versions, this is not silent: `dump` prints a
+   `warning` line to stderr naming the omitted object and its kind, so
+   the operator knows their dump is incomplete and can re-declare that
+   object by hand. There is no `-- dpg:manual`-style marker comment in
+   the generated source itself, only the stderr warning at dump time.
 
 ### 18.5. dpg diff
 

@@ -1,6 +1,7 @@
 package introspect
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -109,5 +110,30 @@ func TestUserMappingRedactedPlaceholderHasNoTemplateMarker(t *testing.T) {
 	// with a fake-but-still-hardcoded value instead of hard-erroring.
 	if strings.Contains(UserMappingRedactedPlaceholder, "{{") {
 		t.Fatalf("UserMappingRedactedPlaceholder contains %q; the hardcoded-fdw-password lint rule would no longer catch an un-replaced dump", "{{")
+	}
+}
+
+// TestRecordSkipNoopWithoutSink proves recordSkip is a true no-op — verify
+// and plan --live call introspection without ever installing a sink via
+// WithSkipWarnings, and must never panic or allocate on their behalf.
+func TestRecordSkipNoopWithoutSink(t *testing.T) {
+	recordSkip(context.Background(), "collation %s: omitted", "public.x")
+}
+
+// TestRecordSkipAppendsToInstalledSink proves dump's WithSkipWarnings/
+// recordSkip wiring (RFC Section 18.4) actually surfaces a human-readable
+// message for every object introspection silently omits, instead of the
+// prior fully-silent omission that gave the operator no way to know their
+// dump was incomplete.
+func TestRecordSkipAppendsToInstalledSink(t *testing.T) {
+	var sink []string
+	ctx := WithSkipWarnings(context.Background(), &sink)
+	recordSkip(ctx, "collation %s: no reconstructable attributes — omitted, re-declare manually", "public.weird")
+	recordSkip(ctx, "operator class %s: no reconstructable members — omitted, re-declare manually", "public.opc")
+	if len(sink) != 2 {
+		t.Fatalf("expected 2 recorded skips, got %d: %v", len(sink), sink)
+	}
+	if !strings.Contains(sink[0], "public.weird") || !strings.Contains(sink[1], "public.opc") {
+		t.Errorf("recorded skip messages missing expected object names: %v", sink)
 	}
 }
