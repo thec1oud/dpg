@@ -1122,8 +1122,13 @@ func renderObjectDPGWithRoleInheritDefaults(b *strings.Builder, obj pipeline.IRO
 	case *ir.Type:
 		switch o.Variant {
 		case "ENUM":
-			// DPG enum form: ENUM <name> AS ENUM ('a', 'b', …);
-			fmt.Fprintf(b, "\n%s %s %s %s (", kw("ENUM"), quoteIdentIfNeeded(o.Name), kw("AS"), kw("ENUM"))
+			// DPG enum form (RFC Section 5.1): ENUM <name> ('a', 'b', …);
+			// — no "AS ENUM"; the ENUM keyword itself is DPG's sugar for
+			// PostgreSQL's "CREATE TYPE name AS ENUM (...)", synthesized
+			// back in by the scanner (readPart1's KindEnum case) when this
+			// gets recompiled. Emitting "AS ENUM" here doubled it up on
+			// recompile ("mood AS ENUM AS ENUM (...)", a PG parse error).
+			fmt.Fprintf(b, "\n%s %s (", kw("ENUM"), quoteIdentIfNeeded(o.Name))
 			for i, v := range o.EnumValues {
 				if i > 0 {
 					b.WriteString(", ")

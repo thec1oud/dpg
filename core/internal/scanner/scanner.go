@@ -981,6 +981,23 @@ func (s *state) readPart1(kind pipeline.ObjectKind, pos pipeline.SourcePos) (str
 		// Handled by readSchemaDecl; should not reach here.
 		return "", pipeline.Errorf(pos, "internal: readPart1 called for SCHEMA")
 
+	case pipeline.KindEnum:
+		// The ENUM keyword is DPG-specific sugar for PostgreSQL's
+		// "CREATE TYPE name AS ENUM (...)" — real PG syntax requires the
+		// literal "AS ENUM" that DPG source never spells out (Section 5.1's
+		// whole point is the bare "ENUM name (values)" shorthand), so it
+		// must be synthesized here before Reconstruct hands this to pg_query.
+		text, err := s.readRawUntil("{;")
+		if err != nil {
+			return "", pipeline.Errorf(pos, "%v", err)
+		}
+		text = strings.TrimSpace(text)
+		idx := strings.IndexByte(text, '(')
+		if idx == -1 {
+			return "", pipeline.Errorf(pos, "expected '(' after ENUM name")
+		}
+		return strings.TrimSpace(text[:idx]) + " AS ENUM " + text[idx:], nil
+
 	default:
 		// For all other kinds, Part 1 is everything up to '{' or ';'.
 		// (Views, enums, extensions, sequences, roles, etc.)

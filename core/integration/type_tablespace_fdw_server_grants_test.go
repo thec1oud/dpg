@@ -47,7 +47,7 @@ func TestRoundtripTypeGrants(t *testing.T) {
 
 	v1 := `ROLE app_service NOLOGIN;
 
-ENUM mood AS ENUM ('sad', 'happy') {
+ENUM mood ('sad', 'happy') {
     REVOCATIONS { USAGE FROM PUBLIC; }
     GRANTS { USAGE TO app_service; }
 }
@@ -91,7 +91,7 @@ DOMAIN positive_integer AS integer {
 	// actually lands live.
 	v2 := `ROLE app_service NOLOGIN;
 
-ENUM mood AS ENUM ('sad', 'happy') {
+ENUM mood ('sad', 'happy') {
     REVOCATIONS { USAGE FROM PUBLIC; }
 }
 

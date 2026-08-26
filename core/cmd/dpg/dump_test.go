@@ -2439,7 +2439,8 @@ func TestRenderReservedWordAndStructuralCompile(t *testing.T) {
 		&ir.Schema{Name: "reporting", Comment: &comment},
 		&ir.Schema{Name: "select"},
 		&ir.Extension{Name: "hstore"},
-		// ENUM must render "AS ENUM (...)" with single-quoted labels.
+		// ENUM must render canonical "ENUM name (...)" form (RFC Section
+		// 5.1, no "AS ENUM") with single-quoted labels.
 		&ir.Type{Schema: "public", Name: "mood", Variant: "ENUM", EnumValues: []string{"happy", "it's ok"}},
 		// Reserved-word names + a COMMENT + an INDEX (INDICES block) must all recompile.
 		&ir.Table{Schema: "public", Name: "user", Comment: &tblComment,

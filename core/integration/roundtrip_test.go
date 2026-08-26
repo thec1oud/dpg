@@ -403,6 +403,83 @@ VIEW active_users AS
 	}
 }
 
+// TestRoundtripEnumBareShorthand is the regression guard for RFC Section
+// 5.1's documented "ENUM name ('a', 'b', ...);" shorthand — the form used
+// throughout this specification (including Appendix B's worked example) and
+// by lang/grammar's tree-sitter grammar, distinct from the generic "TYPE
+// name AS ENUM (...)" form every other roundtrip test in this file uses.
+// readPart1's KindEnum case in internal/scanner/scanner.go must synthesize
+// the "AS ENUM" real PostgreSQL's CREATE TYPE grammar requires but DPG
+// source never spells out; before that case existed, this exact source text
+// failed to even compile ("PG parse error: syntax error at or near
+// 'active'"), since Part 1 was reconstructed as the literally invalid
+// "CREATE TYPE user_status ('active', ...)".
+func TestRoundtripEnumBareShorthand(t *testing.T) {
+	connStr := testpg.Start(t)
+	ctx := context.Background()
+
+	differ := diff.New()
+	emitter := emit.New()
+	applyExec := executor.New()
+	ci := introspect.New()
+	store := newMemStore()
+
+	conn, err := executor.Connect(ctx, connStr)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer conn.Close(ctx)
+
+	dir := t.TempDir()
+	f := filepath.Join(dir, "schema.dpg")
+	src := `ENUM user_status ('active', 'suspended', 'deleted');
+{
+    COMMENT 'Account lifecycle states';
+}`
+	if err := os.WriteFile(f, []byte(src), 0o644); err != nil {
+		t.Fatalf("write schema: %v", err)
+	}
+
+	applyFixture(t, ctx, conn, []string{f}, dir, differ, emitter, applyExec, store)
+
+	desired, _, err := compiler.Compile([]string{f}, dir, pipeline.Default)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	snap, _ := store.Load("test", "dpgtest")
+	if err := snapshot.Populate(snap, desired); err != nil {
+		t.Fatalf("populate snapshot: %v", err)
+	}
+	if err := store.Save("test", "dpgtest", snap); err != nil {
+		t.Fatalf("save snapshot: %v", err)
+	}
+
+	liveObjects, err := ci.Introspect(ctx, conn)
+	if err != nil {
+		t.Fatalf("introspect: %v", err)
+	}
+	var managedLive []pipeline.IRObject
+	for _, obj := range liveObjects {
+		if _, ok := snap.Objects[obj.QualifiedName()]; ok {
+			managedLive = append(managedLive, obj)
+		}
+	}
+	liveSnap := &pipeline.Snapshot{}
+	if err := snapshot.Populate(liveSnap, managedLive); err != nil {
+		t.Fatalf("populate live snapshot: %v", err)
+	}
+	driftOps, err := differ.Diff(desired, liveSnap)
+	if err != nil {
+		t.Fatalf("drift diff: %v", err)
+	}
+	if len(driftOps) != 0 {
+		t.Errorf("drift after applying bare ENUM shorthand (%d ops):", len(driftOps))
+		for _, op := range driftOps {
+			t.Errorf("  [%s] %s", op.Safety(), op.SQL())
+		}
+	}
+}
+
 // TestRoundtripFunction verifies that a function applies without error, that
 // introspection returns a matching body hash, and that a second plan produces
 // zero drift ops.
