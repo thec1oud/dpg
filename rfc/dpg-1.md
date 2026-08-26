@@ -908,73 +908,95 @@ object-keyword   = "SCHEMA" / "TABLE" / "UNLOGGED TABLE" /
 ### 4.5. Statement Terminators
 
    The terminator rules are as follows.  These rules are NORMATIVE; a
-   compiler that silently accepts deviations is non-conforming.
+   compiler that silently accepts deviations is non-conforming.  Every
+   declaration kind follows the same two-directional shape: **a
+   semicolon between Part 1's own end and an immediately-following `{
+   }` block is forbidden, with no exception for any kind; a semicolon
+   is mandatory whenever no `{ }` block follows at all, again with no
+   exception for any kind.**  Rules T1–T3 below restate this identical
+   shape once per Part-1-ending shape (closing parenthesis,
+   dollar-quoted body, or plain text) purely so each can note its own
+   concrete terminator token; Rule T5 restates the shape itself as a
+   single summary.
 
 ```abnf
-terminator = paren-close SP* [ with-clause / tablespace-clause /
-                                inherits-clause / partition-clause /
-                                server-clause ]
-           / dollar-close ";"
-           / ";"
+terminator = ";"
+           / SP* "{"
 ```
+
+   (`terminator` attaches directly after whatever shape Part 1 itself
+   ends with — a closing parenthesis optionally followed by `WITH`,
+   `TABLESPACE`, `INHERITS`, `PARTITION BY`, or a foreign-table
+   `SERVER` clause; a dollar-quoted body's closing `$$`/`$tag$`; an
+   `END` closing a `BEGIN ATOMIC ... END` body; or plain reconstructed
+   Part 1 text for every other kind.  Those per-kind Part 1 shapes are
+   each defined in their own object's grammar production elsewhere in
+   this document, not repeated here.)
 
    **Rule T1.** A declaration whose Part 1 ends with a closing
    parenthesis `)` — tables, composite types, range types, aggregates,
-   base (shell) types declared with a full option list — MUST NOT have
-   a semicolon between `)` and the `{ }` block.  The `)` (optionally
-   followed by `WITH`, `TABLESPACE`, `INHERITS`, or `PARTITION BY`
-   clauses) is the Part 1 terminator.
+   base (shell) types declared with a full option list.  When a `{ }`
+   block immediately follows, no semicolon may appear between `)` (or
+   the last `WITH`/`TABLESPACE`/`INHERITS`/`PARTITION BY` clause) and
+   `{`.  When no `{ }` block follows, a semicolon after `)` (or the
+   last clause) is mandatory.
 
    **Rule T2.** A declaration whose Part 1 ends with a dollar-quoted
-   body — functions, procedures — terminates with `$$;` or `$tag$;`.
-   The semicolon is mandatory after the closing delimiter.  An optional
-   `{ }` block MUST follow immediately after, with no intervening
-   whitespace beyond optional newlines. A `BEGIN ATOMIC ... END` body
-   (Section 9.1, PG14+ standard-SQL form) follows the same rule with `END;`
-   in place of `$$;`.
+   body — functions, procedures.  When a `{ }` block immediately
+   follows, no semicolon may appear between the closing `$$`/`$tag$`
+   and `{`.  When no `{ }` block follows, `$$;`/`$tag$;` is mandatory.
+   A `BEGIN ATOMIC ... END` body (Section 9.1, PG14+ standard-SQL form)
+   follows the same rule with `END` in place of `$$`/`$tag$` (so `END;`
+   when no block follows, bare `END` immediately before `{` when one
+   does).
 
    **Rule T3.** All other declarations — views, ENUM types, sequences,
-   roles, publications, subscriptions, extensions, schemas without
-   nested objects, domains, and a bare forward-declared base (shell)
-   type (`TYPE name;`, no option list — Section 5.5) — terminate their Part 1
-   with `;`.  An optional `{ }` block follows immediately after `;`.
+   roles, publications, subscriptions, extensions, domains, and a bare
+   forward-declared base (shell) type (`TYPE name;`, no option list —
+   Section 5.5).  When a `{ }` block immediately follows, no semicolon
+   may appear between Part 1's own last token and `{`.  When no `{ }`
+   block follows, a semicolon terminating Part 1 is mandatory.
 
    **Rule T4.** A declaration with a `{ }` block but no Part 1
    terminator issue is the `SCHEMA` object: the schema body IS the
-   `{ }` block.  The schema declaration ends when the `}` closes.
+   `{ }` block (always present, never optional — Section 6.1), and the
+   schema declaration ends when the `}` closes.  Rules T1–T3, T5 do not
+   apply to `SCHEMA`.
 
-   **Rule T5.** When no `{ }` block is present, the `;` (or `$$;` or
-   `)`) is the sole terminator of the complete declaration.  No further
-   punctuation follows.
+   **Rule T5.** Summary of T1–T3's shared shape: whenever a `{ }`
+   block immediately follows Part 1, the semicolon between them is
+   forbidden for every kind; whenever no `{ }` block follows, the
+   kind-appropriate terminator (`;`, `$$;`/`$tag$;`, or `END;`) is
+   mandatory for every kind.  A trailing semicolon immediately after a
+   block's closing `}` is always permitted and never mandatory,
+   regardless of kind or of whether Part 1's own terminator was itself
+   a bare closing token or an explicit semicolon.
 
    Examples:
 
 ```sql
--- T1: table with { } block, no semicolon before {
+-- T1: table with { } block — { on the same line as ), no semicolon
 TABLE users (
     id BIGINT GENERATED ALWAYS AS IDENTITY,
     CONSTRAINT pk PRIMARY KEY (id)
-)
-{
+) {
     INDICES { idx_email (email); }
 }
 
--- T3: view with { } block
-VIEW active_users AS SELECT id FROM users WHERE active;
-{
+-- T3: view with { } block — { on the same line as Part 1, no semicolon
+VIEW active_users AS SELECT id FROM users WHERE active {
     GRANTS { SELECT TO app_readonly; }
 }
 
--- T2: function with { } block
+-- T2: function with { } block — { on the same line as $$, no semicolon
 FUNCTION foo() RETURNS TEXT LANGUAGE sql STABLE
 AS $$
     SELECT 'hello';
-$$;
-{
+$$ {
     COMMENT 'Returns hello';
 }
 
--- T1: table with no { } block
+-- T1: table with no { } block — semicolon mandatory
 TABLE log (
     id   BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     msg  TEXT NOT NULL
@@ -1004,8 +1026,10 @@ TABLE log (
        opening delimiter) encountered during the scan terminates the
        dollar-quoted region.  Partial matches do NOT terminate.
 
-   4.  The bytes immediately following the closing `D` MUST be `;` (per
-       Rule T2).  The semicolon is the Part 1 terminator.
+   4.  The bytes immediately following the closing `D` (per Rule T2)
+       are `;` when no `{ }` block follows (mandatory), or the block's
+       opening `{` directly when one does (a semicolon there is
+       forbidden).
 
    5.  Named dollar-quoting (`$body$`, `$func$`, `$sql$`, or any
        `$identifier$`) is fully supported.  The opening and closing tag
@@ -1220,9 +1244,11 @@ INDEX idx_status (status) WHERE (status = 'active');
 ### 5.1. ENUM Types
 
    ENUM types use PostgreSQL's natural parenthesised list syntax.
-   The Part 1 body is the value list enclosed in `( )`, terminated with
-   `;` per Rule T3.  An optional `{ }` block holds comments, owner,
-   rename, and value-removal migration directives.
+   The Part 1 body is the value list enclosed in `( )`.  Per Rule T3,
+   a `;` terminates Part 1 only when no `{ }` block follows; when one
+   does, it follows the closing `)` directly, no `;` between them.  An
+   optional `{ }` block holds comments, owner, rename, and
+   value-removal migration directives.
 
    `owner-dir`/`renamed-from-dir` in `enum-block` follow the same rules
    as every other object kind: `OWNER "..."` emits `ALTER TYPE name
@@ -1271,14 +1297,12 @@ rename-value-dir = "RENAME" WSP "VALUE" WSP SQUOTE identifier SQUOTE
 ENUM user_status ('active', 'suspended', 'deleted');
 
 -- ENUM with comment
-ENUM invoice_status ('draft', 'sent', 'paid', 'void', 'overdue');
-{
+ENUM invoice_status ('draft', 'sent', 'paid', 'void', 'overdue') {
     COMMENT 'Billing lifecycle states for customer invoices';
 }
 
 -- ENUM with value removal
-ENUM order_status ('pending', 'confirmed', 'shipped', 'delivered');
-{
+ENUM order_status ('pending', 'confirmed', 'shipped', 'delivered') {
     COMMENT 'Order lifecycle states';
     MIGRATE REMOVE ('cancelled') {
         UPDATE orders SET status = 'delivered' WHERE status = 'cancelled';
@@ -1286,8 +1310,7 @@ ENUM order_status ('pending', 'confirmed', 'shipped', 'delivered');
 }
 
 -- ENUM with a value rename ('fulfilled' -> 'delivered' in the snapshot)
-ENUM order_status ('pending', 'confirmed', 'shipped', 'delivered');
-{
+ENUM order_status ('pending', 'confirmed', 'shipped', 'delivered') {
     RENAME VALUE 'fulfilled' TO 'delivered';
 }
 ```
@@ -3512,9 +3535,10 @@ detached-from-dir = "DETACHED FROM" WSP table-ref [ WSP "CONCURRENTLY" ] ";"
 ### 8.1. Regular Views
 
    Views use `AS <query>` per PostgreSQL's `CREATE VIEW` syntax.  The
-   query text is Part 1, terminated with `;` per Rule T3.  An optional
-   `{ }` block holds grants, a comment, owner, and other externally-
-   attachable concerns.
+   query text is Part 1.  Per Rule T3, a `;` terminates Part 1 only
+   when no `{ }` block follows; when one does, it follows the query
+   text directly, no `;` between them.  An optional `{ }` block holds
+   grants, a comment, owner, and other externally-attachable concerns.
 
    **Temporary views** are session-scoped for the same reason temporary
    tables are (Section 7.12) and are excluded on the same terms: DPG MUST NOT
@@ -3569,8 +3593,7 @@ SCHEMA public {
 
     -- With { } block
     VIEW admin_summary AS
-        SELECT id, email, created_at FROM users WHERE role = 'admin';
-    {
+        SELECT id, email, created_at FROM users WHERE role = 'admin' {
         COMMENT 'Admin user summary view';
         GRANTS { SELECT TO app_readonly; }
     }
@@ -3652,8 +3675,7 @@ SCHEMA analytics {
         SELECT product_id, COUNT(*) AS purchases, AVG(price) AS avg_price
         FROM order_items
         GROUP BY product_id
-    WITH NO DATA;
-    {
+    WITH NO DATA {
         INDICES   { idx_product_stats_id (product_id); }
         GRANTS    { SELECT TO app_readonly; }
     }
@@ -3704,8 +3726,10 @@ SCHEMA public {
 
    Functions are written in complete, unmodified PostgreSQL SQL syntax
    with only the `CREATE OR REPLACE` verb removed.  The dollar-quoted
-   body is Part 1 (terminated with `$$;` or `$tag$;` per Rule T2).
-   The optional `{ }` block is Part 2.
+   body is Part 1.  Per Rule T2, `$$;`/`$tag$;` terminates Part 1 only
+   when no `{ }` block follows; when one does, it follows the closing
+   `$$`/`$tag$` directly, no `;` between them.  The optional `{ }`
+   block is Part 2.
 
 ```abnf
 function-decl = "FUNCTION" WSP schema-func-name "(" [ arg-list ] ")"
@@ -3886,8 +3910,7 @@ SCHEMA public {
         WHEN NO_DATA_FOUND THEN
             RAISE EXCEPTION 'User not found: %', p_email;
     END;
-    $$;
-    {
+    $$ {
         COMMENT 'Fetch a user record by verified email address';
         GRANTS { EXECUTE TO app_service; }
     }
@@ -3899,8 +3922,7 @@ SCHEMA public {
     BEGIN
         RETURN '$' || TO_CHAR(p_amount, 'FM999,999,990.00');
     END;
-    $func$;
-    {
+    $func$ {
         GRANTS { EXECUTE TO app_readonly, app_service; }
     }
 }
@@ -3925,8 +3947,7 @@ SCHEMA public {
             COMMIT;
         END LOOP;
     END;
-    $$;
-    {
+    $$ {
         GRANTS { EXECUTE TO scheduler_role; }
     }
 }
@@ -4900,8 +4921,7 @@ pub-block = *( ( comment-dir / owner-dir / renamed-from-dir ) ";" )
 ```sql
 PUBLICATION user_data
     FOR TABLE users, profiles
-    WITH (publish = 'insert, update, delete');
-{
+    WITH (publish = 'insert, update, delete') {
     COMMENT 'Primary replication stream for user data';
 }
 
@@ -7943,13 +7963,11 @@ EXTENSION pg_trgm CASCADE;
 ```sql
 -- production/myapp/schemas/public/types.dpg
 
-ENUM account_status ('trial', 'active', 'suspended', 'cancelled');
-{
+ENUM account_status ('trial', 'active', 'suspended', 'cancelled') {
     COMMENT 'Top-level account lifecycle states';
 }
 
-ENUM invoice_status ('draft', 'sent', 'paid', 'void', 'overdue');
-{
+ENUM invoice_status ('draft', 'sent', 'paid', 'void', 'overdue') {
     COMMENT 'Billing lifecycle states for customer invoices';
 }
 
@@ -8071,8 +8089,7 @@ MATERIALIZED VIEW account_billing_summary AS
     LEFT JOIN invoices i ON i.account_id = a.id
     WHERE a.deleted_at IS NULL
     GROUP BY a.id, a.name
-WITH NO DATA;
-{
+WITH NO DATA {
     GRANTS { SELECT TO app_readonly; }
 }
 ```
@@ -8120,6 +8137,8 @@ WITH NO DATA;
    | DPG-E034 | `duplicate_cluster_name` | Two cluster directories declare the same `name` (Section 3.6). |
    | DPG-E035 | `duplicate_database_name` | Two database directories within the same cluster declare the same `name` (Section 3.6). |
    | DPG-E036 | `owner_role_not_a_member` | Connecting role is not a member of one or more declared `OWNER` roles (Section 11.5). |
+   | DPG-E037 | `semicolon_before_block` | A `;` appears immediately before an immediately-following `{ }` block (Section 4.5, Rules T1-T3). Forbidden for every declaration kind. |
+   | DPG-E038 | `missing_terminator` | No `{ }` block follows a declaration, and Part 1 has no `;` (or `$$;`/`$tag$;`/`END;`) terminator (Section 4.5, Rules T1-T3). Mandatory for every declaration kind when no block follows. |
 
 ---
 
