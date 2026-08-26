@@ -269,7 +269,7 @@ func discoverDatabases(clusterDir, reservedDir string) ([]*Database, error) {
 			// the duplicate-name bugs fixed alongside this.
 			cfgPath := filepath.Join(clusterDir, entry.Name(), "dpg.toml")
 			if hasDatabaseSection(cfgPath) {
-				return nil, fmt.Errorf("%s: database directory name %q conflicts with the cluster's reserved objects directory name (cluster_objects_dir) — rename one of them",
+				return nil, fmt.Errorf("DPG-E004: %s: database directory name %q conflicts with the cluster's reserved objects directory name (cluster_objects_dir) — rename one of them",
 					filepath.Join(clusterDir, entry.Name()), entry.Name())
 			}
 			continue

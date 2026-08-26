@@ -11911,6 +11911,39 @@ func TestDiffSequenceRestartWithValueEmittedEveryPlan(t *testing.T) {
 	}
 }
 
+// TestDiffSequenceRestartEmitsRemovalReminder proves RESTART's emission is
+// followed by an inline comment recommending the directive be removed from
+// source once applied (RFC Section 10), matching real PostgreSQL's own
+// documented one-shot-then-remove usage pattern for RESTART.
+func TestDiffSequenceRestartEmitsRemovalReminder(t *testing.T) {
+	d := New()
+	snap := &pipeline.Snapshot{}
+	_ = snap.SetObject("public.seq_id", &snapshot.SnapObject{
+		Kind:     "sequence",
+		Sequence: &snapshot.SnapSequence{Schema: "public", Name: "seq_id"},
+	})
+	restartWith := int64(1000)
+	desired := []pipeline.IRObject{
+		&ir.Sequence{Schema: "public", Name: "seq_id", Restart: true, RestartWith: &restartWith},
+	}
+	ops, err := d.Diff(desired, snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, op := range ops {
+		if strings.Contains(op.SQL(), "remove the RESTART directive") {
+			found = true
+			if op.Safety() != pipeline.Manual {
+				t.Errorf("expected removal-reminder comment to be Manual safety, got %s", op.Safety())
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected a removal-reminder comment op, got: %v", sqlList(ops))
+	}
+}
+
 // TestDiffSequenceRestartBareOmitsWith proves a bare RESTART (no WITH n)
 // omits the WITH clause, matching real PostgreSQL's "reset to START value"
 // semantics for that form.

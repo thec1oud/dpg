@@ -248,7 +248,7 @@ func (d *Differ) Diff(desired []pipeline.IRObject, snap *pipeline.Snapshot) ([]p
 		// into SnapTable but nothing ever read it back out again, so a
 		// declared PROTECTED table had zero actual protection.
 		if so.Kind == "table" && so.Table != nil && so.Table.Protected {
-			return nil, pipeline.Errorf(pipeline.SourcePos{},
+			return nil, pipeline.ErrorfCode(pipeline.SourcePos{}, "DPG-E022",
 				"table %q is PROTECTED and cannot be dropped; remove the PROTECTED directive first",
 				key,
 			)
@@ -5931,8 +5931,14 @@ func diffSequence(o *ir.Sequence, snap *snapshot.SnapSequence) []pipeline.DiffOp
 		// Unconditional, every plan/apply while declared — see
 		// Sequence.Restart's doc comment. Not gated on any snapshot
 		// comparison, deliberately: there is no persisted "current RESTART
-		// value" to compare against.
+		// value" to compare against. The trailing comment op mirrors real
+		// PostgreSQL's own documented usage pattern for RESTART (Section 10):
+		// a one-shot reset that should be removed from source once applied.
 		ops = append(ops, sequenceRestartOp(ident, o))
+		ops = append(ops, manualOp(fmt.Sprintf(
+			"-- remove the RESTART directive on %s once this reset has been applied; it will be re-emitted on every future plan/apply while it remains declared",
+			ident,
+		), pos))
 	}
 	return ops
 }
@@ -7008,7 +7014,7 @@ func diffType(o *ir.Type, snap *snapshot.SnapType, fullSnap *pipeline.Snapshot, 
 				continue
 			}
 			if !snapVals[r.From] {
-				return nil, pipeline.Errorf(r.Pos,
+				return nil, pipeline.ErrorfCode(r.Pos, "DPG-E021",
 					"RENAME VALUE %q on enum %s does not match the snapshot — neither the old nor the new value exists there. Remove RENAME VALUE if this is a genuinely new value.",
 					r.From, typeIdent)
 			}
