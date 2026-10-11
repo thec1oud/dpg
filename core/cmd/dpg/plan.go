@@ -224,20 +224,9 @@ Use --watch to re-run automatically whenever source files change.`,
 // introspectSnapshot connects to the live database db within cl, introspects
 // its catalog, and returns a Snapshot built from the live state.
 func introspectSnapshot(ctx context.Context, cl *project.Cluster, db *project.Database, secretResolver pipeline.SecretResolver, introspector pipeline.Introspector) (*pipeline.Snapshot, error) {
-	connStr := cl.ConnectionString()
-	if connStr == "" {
-		return nil, fmt.Errorf("DPG-E003: cluster %q has no connection configured (set url or link in cluster dpg.toml)", cl.Name())
-	}
-	if cl.IsLink() {
-		var err error
-		connStr, err = secretResolver.Resolve(connStr)
-		if err != nil {
-			return nil, ui.WrapDB(fmt.Errorf("resolve connection secret: %w", err))
-		}
-	}
-	conn, err := executor.ConnectToDatabase(ctx, connStr, db.Name())
+	conn, err := connectDatabase(ctx, cl, db, secretResolver)
 	if err != nil {
-		return nil, ui.WrapDB(err)
+		return nil, err
 	}
 	defer conn.Close(ctx)
 

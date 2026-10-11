@@ -50,6 +50,7 @@ func TestDefaultRootConfig(t *testing.T) {
 func TestLoadRoot_MinimalFile(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "dpg.toml", `
+kind = "root"
 [compiler]
 default_drop_behavior = "cascade"
 `)
@@ -69,6 +70,7 @@ default_drop_behavior = "cascade"
 func TestLoadRoot_FmtSection(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "dpg.toml", `
+kind = "root"
 [compiler]
 default_drop_behavior = "restrict"
 
@@ -91,6 +93,7 @@ keyword_case = "lower"
 func TestLoadRoot_InvalidDropBehavior(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "dpg.toml", `
+kind = "root"
 [compiler]
 default_drop_behavior = "explode"
 `)
@@ -114,6 +117,7 @@ func TestLoadRoot_MissingFile(t *testing.T) {
 func TestLoadRoot_UnknownTopLevelKey(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "dpg.toml", `
+kind = "root"
 [compiler]
 default_drop_behavior = "restrict"
 
@@ -137,6 +141,7 @@ foo = "bar"
 func TestLoadRoot_UnknownNestedKey(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "dpg.toml", `
+kind = "root"
 [compiler]
 default_drop_behavior = "restrict"
 typo_key = "oops"
@@ -156,6 +161,7 @@ typo_key = "oops"
 func TestLoadRoot_NameMapsKeysNeverFlagged(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "dpg.toml", `
+kind = "root"
 [compiler]
 default_drop_behavior = "restrict"
 
@@ -177,6 +183,7 @@ prisma = "UPPER_CAMEL_CASE"
 func TestLoadCluster_Basic(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "dpg.toml", `
+kind = "cluster"
 [cluster]
 name = "prod"
 url = "postgres://localhost/prod"
@@ -200,6 +207,7 @@ url = "postgres://localhost/prod"
 func TestLoadCluster_MutuallyExclusiveURLAndLink(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "dpg.toml", `
+kind = "cluster"
 [cluster]
 name = "prod"
 url  = "postgres://localhost/prod"
@@ -214,6 +222,7 @@ link = "env:PROD_URL"
 func TestLoadCluster_EmptyNameErrors(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "dpg.toml", `
+kind = "cluster"
 [cluster]
 url = "postgres://localhost/prod"
 `)
@@ -228,6 +237,7 @@ url = "postgres://localhost/prod"
 func TestLoadCluster_UnknownKey(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "dpg.toml", `
+kind = "cluster"
 [cluster]
 name = "prod"
 url = "postgres://localhost/prod"
@@ -245,6 +255,7 @@ bogus_key = true
 func TestLoadCluster_ConnectionURL_PrefersURL(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "dpg.toml", `
+kind = "cluster"
 [cluster]
 name = "x"
 url  = "postgres://localhost/x"
@@ -258,6 +269,7 @@ url  = "postgres://localhost/x"
 func TestLoadCluster_ConnectionURL_FallsBackToLink(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "dpg.toml", `
+kind = "cluster"
 [cluster]
 name = "x"
 link = "env:X_URL"
@@ -273,6 +285,7 @@ link = "env:X_URL"
 func TestLoadDatabase_Basic(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "dpg.toml", `
+kind = "database"
 [database]
 name = "mydb"
 default_schema = "app"
@@ -292,6 +305,7 @@ default_schema = "app"
 func TestLoadDatabase_EmptyNameErrors(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "dpg.toml", `
+kind = "database"
 [database]
 default_schema = "app"
 `)
@@ -306,6 +320,7 @@ default_schema = "app"
 func TestLoadDatabase_UnknownKey(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "dpg.toml", `
+kind = "database"
 [database]
 name = "app"
 bogus_key = 5
@@ -324,6 +339,7 @@ bogus_key = 5
 func TestNameMaps_GlobalRules(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "dpg.toml", `
+kind = "root"
 [compiler]
 default_drop_behavior = "restrict"
 
@@ -346,6 +362,7 @@ prisma  = "LOWER_CAMEL_CASE"
 func TestNameMaps_ByTypeRules(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "dpg.toml", `
+kind = "root"
 [compiler]
 default_drop_behavior = "restrict"
 
@@ -382,6 +399,7 @@ prisma = "UPPER_CAMEL_CASE"
 func TestNameMaps_InvalidRule(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "dpg.toml", `
+kind = "root"
 [namemaps]
 default = "SNAKE_LOWER"
 `)
@@ -400,6 +418,7 @@ default = "SNAKE_LOWER"
 func TestNameMaps_InvalidRuleInByType(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "dpg.toml", `
+kind = "root"
 [namemaps.column]
 prisma = "NOT_A_RULE"
 `)
@@ -415,6 +434,7 @@ prisma = "NOT_A_RULE"
 func TestNameMaps_EmptySection(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "dpg.toml", `
+kind = "root"
 [compiler]
 default_drop_behavior = "restrict"
 `)
@@ -434,6 +454,7 @@ default_drop_behavior = "restrict"
 func TestNameMaps_ClusterConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "dpg.toml", `
+kind = "cluster"
 [cluster]
 name = "prod"
 url  = "postgres://localhost/prod"
@@ -459,6 +480,7 @@ prisma = "UPPER_CAMEL_CASE"
 func TestNameMaps_DatabaseConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "dpg.toml", `
+kind = "database"
 [database]
 name = "mydb"
 
@@ -477,6 +499,7 @@ default = "LOWER_CAMEL_CASE"
 func TestLoadDatabase_DefaultSchema(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "dpg.toml", `
+kind = "database"
 [database]
 name = "bare"
 `)
@@ -494,6 +517,7 @@ name = "bare"
 func TestLoadRoot_MinPGVersionUnset(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "dpg.toml", `
+kind = "root"
 [compiler]
 default_drop_behavior = "restrict"
 `)
@@ -509,6 +533,7 @@ default_drop_behavior = "restrict"
 func TestLoadRoot_MinPGVersionSet(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "dpg.toml", `
+kind = "root"
 [compiler]
 min_pg_version = 16
 `)
@@ -527,6 +552,7 @@ min_pg_version = 16
 func TestLoadRoot_MinPGVersionBelowFloorErrors(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "dpg.toml", `
+kind = "root"
 [compiler]
 min_pg_version = 13
 `)
@@ -542,6 +568,7 @@ min_pg_version = 13
 func TestLoadCluster_MinPGVersion(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "dpg.toml", `
+kind = "cluster"
 [cluster]
 name = "prod"
 
@@ -560,6 +587,7 @@ min_pg_version = 17
 func TestLoadCluster_MinPGVersionBelowFloorErrors(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "dpg.toml", `
+kind = "cluster"
 [cluster]
 name = "prod"
 
@@ -578,6 +606,7 @@ min_pg_version = 10
 func TestLoadDatabase_MinPGVersion(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "dpg.toml", `
+kind = "database"
 [database]
 name = "mydb"
 
@@ -596,6 +625,7 @@ min_pg_version = 15
 func TestLoadDatabase_MinPGVersionBelowFloorErrors(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "dpg.toml", `
+kind = "database"
 [database]
 name = "mydb"
 
@@ -605,5 +635,49 @@ min_pg_version = 9
 	_, err := config.LoadDatabase(path)
 	if err == nil {
 		t.Fatal("expected error for min_pg_version below the floor of 14")
+	}
+}
+
+// ── kind (RFC Section 3.1, DPG-E041) ─────────────────────────────────────────
+
+func TestKindIsRequiredAndMustMatch(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "dpg.toml", "[compiler]\ndefault_drop_behavior = \"restrict\"\n")
+	if _, err := config.LoadRoot(dir); err == nil || !strings.Contains(err.Error(), "DPG-E041") {
+		t.Errorf("missing kind: expected DPG-E041, got %v", err)
+	}
+	path := writeFile(t, dir, "dpg.toml", "kind = \"database\"\n[cluster]\nname = \"c\"\n")
+	if _, err := config.LoadCluster(path); err == nil || !strings.Contains(err.Error(), "DPG-E041") {
+		t.Errorf("wrong kind: expected DPG-E041, got %v", err)
+	}
+	writeFile(t, dir, "dpg.toml", "kind = \"warehouse\"\n")
+	if _, err := config.PeekKind(path); err == nil || !strings.Contains(err.Error(), "DPG-E041") {
+		t.Errorf("unknown kind: expected DPG-E041, got %v", err)
+	}
+}
+
+// ── database connection override (RFC Section 3.4) ──────────────────────────
+
+func TestLoadDatabase_ConnectionOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "dpg.toml", "kind = \"database\"\n[database]\nname = \"app\"\nlink = \"env:APP_DB_URL\"\n")
+	cfg, err := config.LoadDatabase(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Database.ConnectionURL() != "env:APP_DB_URL" {
+		t.Errorf("ConnectionURL: got %q", cfg.Database.ConnectionURL())
+	}
+	writeFile(t, dir, "dpg.toml", "kind = \"database\"\n[database]\nname = \"app\"\nurl = \"postgres://x\"\nlink = \"env:Y\"\n")
+	if _, err := config.LoadDatabase(path); err == nil || !strings.Contains(err.Error(), "DPG-E002") {
+		t.Errorf("url+link: expected DPG-E002, got %v", err)
+	}
+}
+
+func TestLoadCluster_OptionsTableRemoved(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "dpg.toml", "kind = \"cluster\"\n[cluster]\nname = \"c\"\n[cluster.options]\nsnapshot_on_apply = true\n")
+	if _, err := config.LoadCluster(path); err == nil || !strings.Contains(err.Error(), "DPG-E001") {
+		t.Errorf("[cluster.options] should be an unknown key (DPG-E001), got %v", err)
 	}
 }

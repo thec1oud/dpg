@@ -41,8 +41,9 @@ myproject/
 ```
 
 **Discovery rules:**
-- Clusters = immediate subdirectories of the root with a `dpg.toml`.
-- Databases = immediate subdirectories of a cluster directory with a `dpg.toml`, excluding the cluster objects directory.
+- Every `dpg.toml` starts with `kind = "root"`, `kind = "cluster"`, or `kind = "database"`. The root is the directory whose `dpg.toml` says `kind = "root"`.
+- Clusters and databases can sit at any depth below the root. A database belongs to its nearest enclosing cluster directory, or to the cluster named by `parent = "<relative path>"` in its `dpg.toml`, so it can also live outside the cluster's directory.
+- A cluster can't be nested inside another cluster or a database, and a database can't be nested inside another database.
 - All `.dpg` files beneath a database directory compile as one unit.
 - Files under `schemas/<name>/` (at any depth) belong to schema `<name>`, as if wrapped in `SCHEMA <name> { }`. The schema's own settings (owner, comment, grants, default privileges) go in `schemas/<name>/schema.dpg`:
 
@@ -59,6 +60,8 @@ SCHEMA analytics {
 ## Root `dpg.toml`
 
 ```toml
+kind = "root"
+
 [compiler]
 default_drop_behavior = "restrict"   # restrict | cascade
 
@@ -94,6 +97,8 @@ Variables already present in the process environment are never overwritten. A mi
 
 ```toml
 # production/dpg.toml
+kind = "cluster"
+
 [cluster]
 name                = "production"
 cluster_objects_dir = "cluster"      # reserved name; no database may share it
@@ -103,9 +108,6 @@ url = "postgresql://pguser@primary.prod.internal:5432/postgres"
 
 # Or a secrets-provider URI resolved at runtime:
 # link = "env:PRIMARY_DB_URL"
-
-[cluster.options]
-snapshot_on_apply = true
 ```
 
 `url` and `link` are mutually exclusive. Either may be omitted for offline use (`dpg plan`, `dpg diff`). Commands that connect (`dpg apply`, `dpg verify`, `dpg dump`) require one to be set.
@@ -114,12 +116,26 @@ snapshot_on_apply = true
 
 ```toml
 # production/myapp/dpg.toml
+kind = "database"
+
 [database]
 name           = "myapp"
 default_schema = "public"
 ```
 
 `default_schema` (optional, default `public`) is the schema for objects declared with no qualifier outside any `SCHEMA { }` block or `schemas/<name>/` directory.
+
+A database can also set its own `url` or `link`, replacing the cluster's connection for that database only. It's used exactly as written, which suits a different role per database or a connection pooler whose pool name differs from the database name. Without one, the database connects through the cluster's `url`/`link` with the database name swapped in.
+
+```toml
+# databases/crm/dpg.toml — lives outside its cluster's directory
+kind   = "database"
+parent = "../../production"
+
+[database]
+name = "crm"
+link = "env:CRM_DB_URL"
+```
 
 All `.dpg` files beneath this directory are scoped to the `myapp` database on the `production` cluster.
 

@@ -36,15 +36,18 @@ func buildTree(t *testing.T) string {
 	}
 
 	writeF("dpg.toml", `
+kind = "root"
 [compiler]
 default_drop_behavior = "restrict"
 `)
 	writeF("mycluster/dpg.toml", `
+kind = "cluster"
 [cluster]
 name = "mycluster"
 url  = "postgres://localhost/test"
 `)
 	writeF("mycluster/mydb/dpg.toml", `
+kind = "database"
 [database]
 name = "mydb"
 `)
@@ -134,12 +137,12 @@ func TestDiscover_MultipleClustersDatabases(t *testing.T) {
 		_ = os.WriteFile(path, []byte(content), 0o644)
 	}
 
-	writeF("dpg.toml", "[compiler]\ndefault_drop_behavior = \"restrict\"\n")
-	writeF("cluster-a/dpg.toml", "[cluster]\nname = \"a\"\nurl = \"postgres://a\"\n")
-	writeF("cluster-a/db1/dpg.toml", "[database]\nname = \"db1\"\n")
-	writeF("cluster-a/db2/dpg.toml", "[database]\nname = \"db2\"\n")
-	writeF("cluster-b/dpg.toml", "[cluster]\nname = \"b\"\nurl = \"postgres://b\"\n")
-	writeF("cluster-b/db3/dpg.toml", "[database]\nname = \"db3\"\n")
+	writeF("dpg.toml", "kind = \"root\"\n[compiler]\ndefault_drop_behavior = \"restrict\"\n")
+	writeF("cluster-a/dpg.toml", "kind = \"cluster\"\n[cluster]\nname = \"a\"\nurl = \"postgres://a\"\n")
+	writeF("cluster-a/db1/dpg.toml", "kind = \"database\"\n[database]\nname = \"db1\"\n")
+	writeF("cluster-a/db2/dpg.toml", "kind = \"database\"\n[database]\nname = \"db2\"\n")
+	writeF("cluster-b/dpg.toml", "kind = \"cluster\"\n[cluster]\nname = \"b\"\nurl = \"postgres://b\"\n")
+	writeF("cluster-b/db3/dpg.toml", "kind = \"database\"\n[database]\nname = \"db3\"\n")
 
 	proj, err := project.Discover(root)
 	if err != nil {
@@ -166,9 +169,9 @@ func TestDiscover_DuplicateClusterNameErrors(t *testing.T) {
 		_ = os.WriteFile(path, []byte(content), 0o644)
 	}
 
-	writeF("dpg.toml", "[compiler]\ndefault_drop_behavior = \"restrict\"\n")
-	writeF("cluster-a/dpg.toml", "[cluster]\nname = \"shared\"\nurl = \"postgres://a\"\n")
-	writeF("cluster-b/dpg.toml", "[cluster]\nname = \"shared\"\nurl = \"postgres://b\"\n")
+	writeF("dpg.toml", "kind = \"root\"\n[compiler]\ndefault_drop_behavior = \"restrict\"\n")
+	writeF("cluster-a/dpg.toml", "kind = \"cluster\"\n[cluster]\nname = \"shared\"\nurl = \"postgres://a\"\n")
+	writeF("cluster-b/dpg.toml", "kind = \"cluster\"\n[cluster]\nname = \"shared\"\nurl = \"postgres://b\"\n")
 
 	_, err := project.Discover(root)
 	if err == nil {
@@ -191,10 +194,10 @@ func TestDiscover_DuplicateDatabaseNameErrors(t *testing.T) {
 		_ = os.WriteFile(path, []byte(content), 0o644)
 	}
 
-	writeF("dpg.toml", "[compiler]\ndefault_drop_behavior = \"restrict\"\n")
-	writeF("cluster-a/dpg.toml", "[cluster]\nname = \"a\"\nurl = \"postgres://a\"\n")
-	writeF("cluster-a/db-x/dpg.toml", "[database]\nname = \"shared\"\n")
-	writeF("cluster-a/db-y/dpg.toml", "[database]\nname = \"shared\"\n")
+	writeF("dpg.toml", "kind = \"root\"\n[compiler]\ndefault_drop_behavior = \"restrict\"\n")
+	writeF("cluster-a/dpg.toml", "kind = \"cluster\"\n[cluster]\nname = \"a\"\nurl = \"postgres://a\"\n")
+	writeF("cluster-a/db-x/dpg.toml", "kind = \"database\"\n[database]\nname = \"shared\"\n")
+	writeF("cluster-a/db-y/dpg.toml", "kind = \"database\"\n[database]\nname = \"shared\"\n")
 
 	_, err := project.Discover(root)
 	if err == nil {
@@ -222,11 +225,11 @@ func TestDiscover_SameDatabaseNameAcrossDifferentClustersIsAllowed(t *testing.T)
 		_ = os.WriteFile(path, []byte(content), 0o644)
 	}
 
-	writeF("dpg.toml", "[compiler]\ndefault_drop_behavior = \"restrict\"\n")
-	writeF("cluster-a/dpg.toml", "[cluster]\nname = \"a\"\nurl = \"postgres://a\"\n")
-	writeF("cluster-a/staging/dpg.toml", "[database]\nname = \"staging\"\n")
-	writeF("cluster-b/dpg.toml", "[cluster]\nname = \"b\"\nurl = \"postgres://b\"\n")
-	writeF("cluster-b/staging/dpg.toml", "[database]\nname = \"staging\"\n")
+	writeF("dpg.toml", "kind = \"root\"\n[compiler]\ndefault_drop_behavior = \"restrict\"\n")
+	writeF("cluster-a/dpg.toml", "kind = \"cluster\"\n[cluster]\nname = \"a\"\nurl = \"postgres://a\"\n")
+	writeF("cluster-a/staging/dpg.toml", "kind = \"database\"\n[database]\nname = \"staging\"\n")
+	writeF("cluster-b/dpg.toml", "kind = \"cluster\"\n[cluster]\nname = \"b\"\nurl = \"postgres://b\"\n")
+	writeF("cluster-b/staging/dpg.toml", "kind = \"database\"\n[database]\nname = \"staging\"\n")
 
 	proj, err := project.Discover(root)
 	if err != nil {
@@ -246,9 +249,9 @@ func TestCluster_IsLink(t *testing.T) {
 		_ = os.MkdirAll(filepath.Dir(p), 0o755)
 		_ = os.WriteFile(p, []byte(content), 0o644)
 	}
-	writeF("dpg.toml", "[compiler]\ndefault_drop_behavior = \"restrict\"\n")
-	writeF("c/dpg.toml", "[cluster]\nname = \"c\"\nlink = \"env:DB_URL\"\n")
-	writeF("c/db/dpg.toml", "[database]\nname = \"db\"\n")
+	writeF("dpg.toml", "kind = \"root\"\n[compiler]\ndefault_drop_behavior = \"restrict\"\n")
+	writeF("c/dpg.toml", "kind = \"cluster\"\n[cluster]\nname = \"c\"\nlink = \"env:DB_URL\"\n")
+	writeF("c/db/dpg.toml", "kind = \"database\"\n[database]\nname = \"db\"\n")
 
 	proj, _ := project.Discover(root)
 	if len(proj.Clusters) == 0 {
@@ -270,11 +273,11 @@ func TestCluster_ClusterObjectsDirExcludedFromDatabases(t *testing.T) {
 		_ = os.MkdirAll(filepath.Dir(p), 0o755)
 		_ = os.WriteFile(p, []byte(content), 0o644)
 	}
-	writeF("dpg.toml", "[compiler]\ndefault_drop_behavior = \"restrict\"\n")
-	writeF("c/dpg.toml", "[cluster]\nname = \"c\"\nurl = \"postgres://x\"\n[cluster.options]\n")
+	writeF("dpg.toml", "kind = \"root\"\n[compiler]\ndefault_drop_behavior = \"restrict\"\n")
+	writeF("c/dpg.toml", "kind = \"cluster\"\n[cluster]\nname = \"c\"\nurl = \"postgres://x\"\n")
 	// "cluster" is the default ClusterObjectsDir — it must not appear as a database.
 	writeF("c/cluster/roles.dpg", "ROLE app;")
-	writeF("c/db/dpg.toml", "[database]\nname = \"db\"\n")
+	writeF("c/db/dpg.toml", "kind = \"database\"\n[database]\nname = \"db\"\n")
 
 	proj, err := project.Discover(root)
 	if err != nil {
@@ -308,11 +311,11 @@ func TestDiscover_DatabaseNamedLikeClusterObjectsDirErrors(t *testing.T) {
 		_ = os.MkdirAll(filepath.Dir(p), 0o755)
 		_ = os.WriteFile(p, []byte(content), 0o644)
 	}
-	writeF("dpg.toml", "[compiler]\ndefault_drop_behavior = \"restrict\"\n")
-	writeF("c/dpg.toml", "[cluster]\nname = \"c\"\nurl = \"postgres://x\"\n")
+	writeF("dpg.toml", "kind = \"root\"\n[compiler]\ndefault_drop_behavior = \"restrict\"\n")
+	writeF("c/dpg.toml", "kind = \"cluster\"\n[cluster]\nname = \"c\"\nurl = \"postgres://x\"\n")
 	// "cluster" is the default ClusterObjectsDir, but this one has a real
 	// [database] dpg.toml inside it — a genuine naming conflict.
-	writeF("c/cluster/dpg.toml", "[database]\nname = \"oops\"\n")
+	writeF("c/cluster/dpg.toml", "kind = \"database\"\n[database]\nname = \"oops\"\n")
 
 	_, err := project.Discover(root)
 	if err == nil {
@@ -390,5 +393,91 @@ func TestDatabase_EffectiveMinPGVersion_FallsThroughToCluster(t *testing.T) {
 	root := config.RootConfig{Compiler: config.CompilerConfig{MinPGVersion: intPtr(15)}}
 	if got := db.EffectiveMinPGVersion(cl, root); got != 16 {
 		t.Errorf("expected fall-through to cluster's 16 (not root's 15), got %d", got)
+	}
+}
+
+// ── Typed configs and nesting (RFC Sections 3.1, 3.6) ────────────────────────
+
+func newTree(t *testing.T, files map[string]string) string {
+	t.Helper()
+	root := t.TempDir()
+	for rel, content := range files {
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+const (
+	rootTOML = "kind = \"root\"\n"
+)
+
+func clusterTOML(name string) string {
+	return "kind = \"cluster\"\n[cluster]\nname = \"" + name + "\"\n"
+}
+func dbTOML(name, parent string) string {
+	s := "kind = \"database\"\n"
+	if parent != "" {
+		s += "parent = \"" + parent + "\"\n"
+	}
+	return s + "[database]\nname = \"" + name + "\"\n"
+}
+
+func TestDiscover_NestedAtAnyDepth(t *testing.T) {
+	root := newTree(t, map[string]string{
+		"dpg.toml":                                       rootTOML,
+		"envs/prod/eu/dpg.toml":                          clusterTOML("prod-eu"),
+		"envs/prod/eu/apps/billing/dpg.toml":             dbTOML("billing", ""),
+		"envs/prod/eu/apps/billing/schemas/public/t.dpg": "TABLE t (a int);",
+		"databases/crm/dpg.toml":                         dbTOML("crm", "../../envs/prod/eu"),
+	})
+	proj, err := project.Discover(filepath.Join(root, "envs", "prod", "eu", "apps", "billing"))
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(proj.Clusters) != 1 || proj.Clusters[0].Name() != "prod-eu" {
+		t.Fatalf("clusters: %+v", proj.Clusters)
+	}
+	var names []string
+	for _, db := range proj.Clusters[0].Databases {
+		names = append(names, db.Name())
+	}
+	// Databases are listed in directory-path order.
+	if strings.Join(names, ",") != "crm,billing" {
+		t.Errorf("databases: got %v, want [crm billing]", names)
+	}
+}
+
+func TestDiscover_TypedConfigErrors(t *testing.T) {
+	cases := []struct {
+		desc  string
+		files map[string]string
+		code  string
+	}{
+		{"missing kind", map[string]string{"dpg.toml": rootTOML, "c/dpg.toml": "[cluster]\nname = \"c\"\n"}, "DPG-E041"},
+		{"root below root", map[string]string{"dpg.toml": rootTOML, "c/dpg.toml": rootTOML}, "DPG-E041"},
+		{"database outside any cluster", map[string]string{"dpg.toml": rootTOML, "db/dpg.toml": dbTOML("db", "")}, "DPG-E042"},
+		{"parent is not a cluster", map[string]string{"dpg.toml": rootTOML, "x/keep": "", "db/dpg.toml": dbTOML("db", "../x")}, "DPG-E042"},
+		{"parent outside root", map[string]string{"dpg.toml": rootTOML, "db/dpg.toml": dbTOML("db", "../..")}, "DPG-E042"},
+		{"parent contradicts enclosing cluster", map[string]string{
+			"dpg.toml": rootTOML, "a/dpg.toml": clusterTOML("a"), "b/dpg.toml": clusterTOML("b"),
+			"a/db/dpg.toml": dbTOML("db", "../../b")}, "DPG-E042"},
+		{"database in database", map[string]string{
+			"dpg.toml": rootTOML, "c/dpg.toml": clusterTOML("c"),
+			"c/db/dpg.toml": dbTOML("db", ""), "c/db/inner/dpg.toml": dbTOML("inner", "")}, "DPG-E043"},
+		{"cluster in cluster", map[string]string{
+			"dpg.toml": rootTOML, "c/dpg.toml": clusterTOML("c"), "c/d/dpg.toml": clusterTOML("d")}, "DPG-E043"},
+	}
+	for _, c := range cases {
+		root := newTree(t, c.files)
+		_, err := project.Discover(root)
+		if err == nil || !strings.Contains(err.Error(), c.code) {
+			t.Errorf("%s: expected %s, got %v", c.desc, c.code, err)
+		}
 	}
 }

@@ -269,20 +269,9 @@ func runApply(
 		}
 	}
 
-	connStr := cl.ConnectionString()
-	if connStr == "" {
-		return fmt.Errorf("DPG-E003: cluster %q has no connection configured (set url or link in cluster dpg.toml)", cl.Name())
-	}
-	if cl.IsLink() {
-		connStr, err = secretResolver.Resolve(connStr)
-		if err != nil {
-			return ui.WrapDB(fmt.Errorf("resolve connection secret: %w", err))
-		}
-	}
-
-	conn, err := executor.ConnectToDatabase(ctx, connStr, db.Name())
+	conn, err := connectDatabase(ctx, cl, db, secretResolver)
 	if err != nil {
-		return ui.WrapDB(err)
+		return err
 	}
 	defer conn.Close(ctx)
 

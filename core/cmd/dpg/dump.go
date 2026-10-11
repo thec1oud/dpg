@@ -13,7 +13,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/thec1oud/dpg/internal/compiler"
-	"github.com/thec1oud/dpg/internal/executor"
 	"github.com/thec1oud/dpg/internal/format"
 	"github.com/thec1oud/dpg/internal/introspect"
 	"github.com/thec1oud/dpg/internal/ir"
@@ -205,21 +204,9 @@ func runDump(
 	ctx := context.Background()
 	color := ui.IsColorEnabled(os.Stdout)
 
-	connStr := cl.ConnectionString()
-	if connStr == "" {
-		return fmt.Errorf("DPG-E003: cluster %q has no connection configured (set url or link in cluster dpg.toml)", cl.Name())
-	}
-	if cl.IsLink() {
-		var err error
-		connStr, err = secretResolver.Resolve(connStr)
-		if err != nil {
-			return ui.WrapDB(fmt.Errorf("resolve connection secret: %w", err))
-		}
-	}
-
-	conn, err := executor.ConnectToDatabase(ctx, connStr, db.Name())
+	conn, err := connectDatabase(ctx, cl, db, secretResolver)
 	if err != nil {
-		return ui.WrapDB(err)
+		return err
 	}
 	defer conn.Close(ctx)
 

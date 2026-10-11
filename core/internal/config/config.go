@@ -61,8 +61,17 @@ func (n *NameMapsConfig) UnmarshalTOML(data interface{}) error {
 	return nil
 }
 
+// Config kinds (RFC Section 3.1). Every dpg.toml declares exactly one.
+const (
+	KindRoot     = "root"
+	KindCluster  = "cluster"
+	KindDatabase = "database"
+)
+
 // RootConfig represents the contents of dpg.toml at the project root.
 type RootConfig struct {
+	// Kind must be "root".
+	Kind       string           `toml:"kind"`
 	Compiler   CompilerConfig   `toml:"compiler"`
 	Linter     LinterConfig     `toml:"linter"`
 	Fmt        FmtConfig        `toml:"fmt"`
@@ -197,6 +206,9 @@ func LoadRoot(dir string) (RootConfig, error) {
 	if err := checkUnknownKeys(meta, path); err != nil {
 		return RootConfig{}, err
 	}
+	if err := checkKind(path, cfg.Kind, KindRoot); err != nil {
+		return RootConfig{}, err
+	}
 	if err := cfg.Compiler.validate(); err != nil {
 		return RootConfig{}, fmt.Errorf("%s: [compiler]: %w", path, err)
 	}
@@ -228,6 +240,8 @@ func validateMinPGVersion(v *int) error {
 
 // ClusterConfig represents the dpg.toml file inside a cluster directory.
 type ClusterConfig struct {
+	// Kind must be "cluster".
+	Kind     string         `toml:"kind"`
 	Cluster  ClusterDef     `toml:"cluster"`
 	NameMaps NameMapsConfig `toml:"namemaps"`
 	// Compiler holds this cluster's compiler overrides — only MinPGVersion
@@ -251,8 +265,7 @@ type ClusterDef struct {
 	URL string `toml:"url"`
 	// Link is a secrets-provider URI (e.g. "env:PRIMARY_DB_URL") resolved at
 	// connection time. Mutually exclusive with URL.
-	Link    string         `toml:"link"`
-	Options ClusterOptions `toml:"options"`
+	Link string `toml:"link"`
 }
 
 // ConnectionURL returns the effective connection string, preferring URL over Link.
@@ -262,12 +275,6 @@ func (c ClusterDef) ConnectionURL() string {
 		return c.URL
 	}
 	return c.Link
-}
-
-// ClusterOptions holds per-cluster behavioural options.
-type ClusterOptions struct {
-	// SnapshotOnApply writes an updated snapshot after every successful apply.
-	SnapshotOnApply bool `toml:"snapshot_on_apply"`
 }
 
 // DefaultClusterConfig returns a ClusterConfig with sensible defaults.
@@ -287,6 +294,9 @@ func LoadCluster(path string) (ClusterConfig, error) {
 		return ClusterConfig{}, fmt.Errorf("loading %s: %w", path, err)
 	}
 	if err := checkUnknownKeys(meta, path); err != nil {
+		return ClusterConfig{}, err
+	}
+	if err := checkKind(path, cfg.Kind, KindCluster); err != nil {
 		return ClusterConfig{}, err
 	}
 	if err := cfg.Cluster.validate(path); err != nil {
@@ -310,6 +320,12 @@ func (c ClusterDef) validate(path string) error {
 
 // DatabaseConfig represents the dpg.toml file inside a database directory.
 type DatabaseConfig struct {
+	// Kind must be "database".
+	Kind string `toml:"kind"`
+	// Parent is the path, relative to this file's directory, of the cluster
+	// directory this database belongs to. Empty means the nearest ancestor
+	// directory whose dpg.toml has kind "cluster" (RFC Section 3.6).
+	Parent   string         `toml:"parent"`
 	Database DatabaseDef    `toml:"database"`
 	NameMaps NameMapsConfig `toml:"namemaps"`
 	// Compiler holds this database's compiler overrides — see
@@ -321,6 +337,20 @@ type DatabaseConfig struct {
 type DatabaseDef struct {
 	Name          string `toml:"name"`
 	DefaultSchema string `toml:"default_schema"`
+	// URL and Link optionally replace the cluster's connection for this
+	// database only (RFC Section 3.4). Mutually exclusive. The value is
+	// used verbatim; the database name in it is not rewritten.
+	URL  string `toml:"url"`
+	Link string `toml:"link"`
+}
+
+// ConnectionURL returns this database's own connection override, preferring
+// URL over Link, or "" when none is set.
+func (d DatabaseDef) ConnectionURL() string {
+	if d.URL != "" {
+		return d.URL
+	}
+	return d.Link
 }
 
 // DefaultDatabaseConfig returns a DatabaseConfig with sensible defaults.
@@ -342,6 +372,9 @@ func LoadDatabase(path string) (DatabaseConfig, error) {
 	if err := checkUnknownKeys(meta, path); err != nil {
 		return DatabaseConfig{}, err
 	}
+	if err := checkKind(path, cfg.Kind, KindDatabase); err != nil {
+		return DatabaseConfig{}, err
+	}
 	if err := cfg.Database.validate(path); err != nil {
 		return DatabaseConfig{}, err
 	}
@@ -355,5 +388,37 @@ func (d DatabaseDef) validate(path string) error {
 	if d.Name == "" {
 		return fmt.Errorf("DPG-E033: %s: database name is required (set name in [database])", path)
 	}
+	if d.URL != "" && d.Link != "" {
+		return fmt.Errorf("DPG-E002: %s: url and link are mutually exclusive", path)
+	}
 	return nil
+}
+
+// checkKind implements DPG-E041: a dpg.toml must declare the kind its
+// location requires.
+func checkKind(path, got, want string) error {
+	if got == want {
+		return nil
+	}
+	if got == "" {
+		return fmt.Errorf("DPG-E041: %s: missing kind; add kind = %q as the first line", path, want)
+	}
+	return fmt.Errorf("DPG-E041: %s: kind is %q, expected %q", path, got, want)
+}
+
+// PeekKind returns the kind a dpg.toml declares without validating the rest
+// of the file. A file with no kind returns "".
+func PeekKind(path string) (string, error) {
+	var probe struct {
+		Kind string `toml:"kind"`
+	}
+	if _, err := toml.DecodeFile(path, &probe); err != nil {
+		return "", fmt.Errorf("loading %s: %w", path, err)
+	}
+	switch probe.Kind {
+	case "", KindRoot, KindCluster, KindDatabase:
+		return probe.Kind, nil
+	default:
+		return "", fmt.Errorf("DPG-E041: %s: kind must be %q, %q, or %q, got %q", path, KindRoot, KindCluster, KindDatabase, probe.Kind)
+	}
 }

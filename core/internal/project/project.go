@@ -38,8 +38,10 @@ func (p *Project) MigrationsDir() string {
 // Cluster represents a single PostgreSQL cluster within the project.
 type Cluster struct {
 	// Dir is the absolute path to the cluster directory.
-	Dir    string
-	Config config.ClusterConfig
+	Dir string
+	// ProjectRoot is the absolute path to the project root.
+	ProjectRoot string
+	Config      config.ClusterConfig
 	// ObjectsDir is the absolute path to the cluster-level objects directory
 	// (roles, tablespaces, FDWs). May not exist yet.
 	ObjectsDir string
@@ -107,9 +109,9 @@ func (d *Database) EffectiveMinPGVersion(cl *Cluster, root config.RootConfig) in
 	return cl.EffectiveMinPGVersion(root)
 }
 
-// Discover walks up from startDir until it finds a dpg.toml, then builds
-// and returns the full Project. Returns an error if no dpg.toml is found or
-// if the project structure is invalid.
+// Discover walks up from startDir to the project root (the nearest dpg.toml
+// with kind = "root"), then discovers every cluster and database below it
+// (RFC Section 3.6).
 func Discover(startDir string) (*Project, error) {
 	rootDir, err := findRoot(startDir)
 	if err != nil {
@@ -121,7 +123,7 @@ func Discover(startDir string) (*Project, error) {
 		return nil, err
 	}
 
-	clusters, err := discoverClusters(rootDir)
+	clusters, err := discoverTree(rootDir)
 	if err != nil {
 		return nil, err
 	}
@@ -133,69 +135,160 @@ func Discover(startDir string) (*Project, error) {
 	}, nil
 }
 
-// findRoot walks up from dir looking for a dpg.toml that is the project root
-// config (i.e. contains [compiler], [linter], or [snapshots] — not [cluster]
-// or [database], which identify cluster/database-level configs).
+// findRoot walks up from dir looking for a dpg.toml whose kind is "root".
 func findRoot(dir string) (string, error) {
 	current := filepath.Clean(dir)
 	for {
 		candidate := filepath.Join(current, "dpg.toml")
-		if _, err := os.Stat(candidate); err == nil && isRootConfig(candidate) {
-			return current, nil
+		if _, err := os.Stat(candidate); err == nil {
+			kind, err := config.PeekKind(candidate)
+			if err != nil {
+				return "", err
+			}
+			if kind == "" {
+				return "", fmt.Errorf("DPG-E041: %s: missing kind; every dpg.toml must declare kind = \"root\", \"cluster\", or \"database\"", candidate)
+			}
+			if kind == config.KindRoot {
+				return current, nil
+			}
 		}
 		parent := filepath.Dir(current)
 		if parent == current {
-			return "", fmt.Errorf("no project root dpg.toml found in %s or any parent directory", dir)
+			return "", fmt.Errorf("no project root dpg.toml (kind = \"root\") found in %s or any parent directory", dir)
 		}
 		current = parent
 	}
 }
 
-// isRootConfig reports whether the dpg.toml at path is a project root config
-// rather than a cluster or database config. Root configs must not contain a
-// [cluster] or [database] section.
-func isRootConfig(path string) bool {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	for line := range strings.SplitSeq(string(data), "\n") {
-		t := strings.TrimSpace(line)
-		if t == "[cluster]" || strings.HasPrefix(t, "[cluster.") || t == "[database]" {
-			return false
+// discoverTree finds every cluster and database dpg.toml under rootDir, at
+// any depth, and assembles them into clusters (RFC Section 3.6). A database
+// belongs to the cluster its parent key names, else to its nearest ancestor
+// cluster directory.
+func discoverTree(rootDir string) ([]*Cluster, error) {
+	kinds := map[string]string{} // dir -> kind
+	var dirs []string
+	err := filepath.WalkDir(rootDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-	}
-	return true
-}
-
-// discoverClusters scans immediate subdirectories of rootDir. Any subdirectory
-// containing a dpg.toml is treated as a cluster directory.
-func discoverClusters(rootDir string) ([]*Cluster, error) {
-	entries, err := os.ReadDir(rootDir)
+		if !d.IsDir() {
+			return nil
+		}
+		if path != rootDir && strings.HasPrefix(d.Name(), ".") {
+			return filepath.SkipDir
+		}
+		cfgPath := filepath.Join(path, "dpg.toml")
+		if _, statErr := os.Stat(cfgPath); statErr != nil {
+			return nil
+		}
+		kind, kerr := config.PeekKind(cfgPath)
+		if kerr != nil {
+			return kerr
+		}
+		switch {
+		case path == rootDir:
+			return nil
+		case kind == "":
+			return fmt.Errorf("DPG-E041: %s: missing kind; add kind = \"cluster\" or kind = \"database\" as the first line", cfgPath)
+		case kind == config.KindRoot:
+			return fmt.Errorf("DPG-E041: %s: kind \"root\" may only appear at the project root %s", cfgPath, rootDir)
+		}
+		kinds[path] = kind
+		dirs = append(dirs, path)
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("reading project root %s: %w", rootDir, err)
+		return nil, err
 	}
 
+	// nearestAncestor returns the closest strict ancestor of dir (inside the
+	// project) whose kind is in want, or "".
+	nearestAncestor := func(dir string, want ...string) string {
+		for p := filepath.Dir(dir); p != rootDir && strings.HasPrefix(p, rootDir); p = filepath.Dir(p) {
+			for _, w := range want {
+				if kinds[p] == w {
+					return p
+				}
+			}
+		}
+		return ""
+	}
+
+	byDir := map[string]*Cluster{}
 	var clusters []*Cluster
-	for _, entry := range entries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+	for _, dir := range dirs {
+		if kinds[dir] != config.KindCluster {
 			continue
 		}
-		clusterDir := filepath.Join(rootDir, entry.Name())
-		cfgPath := filepath.Join(clusterDir, "dpg.toml")
-		if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
-			continue
+		if outer := nearestAncestor(dir, config.KindCluster, config.KindDatabase); outer != "" {
+			return nil, fmt.Errorf("DPG-E043: %s: a cluster directory cannot be nested inside the %s directory %s", dir, kinds[outer], outer)
 		}
-		cluster, err := loadCluster(clusterDir, cfgPath)
+		cl, err := loadCluster(dir, filepath.Join(dir, "dpg.toml"))
 		if err != nil {
 			return nil, err
 		}
-		clusters = append(clusters, cluster)
+		cl.ProjectRoot = rootDir
+		byDir[dir] = cl
+		clusters = append(clusters, cl)
+	}
+
+	for _, dir := range dirs {
+		if kinds[dir] != config.KindDatabase {
+			continue
+		}
+		if outer := nearestAncestor(dir, config.KindDatabase); outer != "" {
+			return nil, fmt.Errorf("DPG-E043: %s: a database directory cannot be nested inside the database directory %s", dir, outer)
+		}
+		db, err := loadDatabase(dir, filepath.Join(dir, "dpg.toml"))
+		if err != nil {
+			return nil, err
+		}
+		clusterDir, err := resolveDatabaseCluster(rootDir, dir, db.Config.Parent, kinds, nearestAncestor)
+		if err != nil {
+			return nil, err
+		}
+		cl := byDir[clusterDir]
+		if dir == cl.ObjectsDir || strings.HasPrefix(dir, cl.ObjectsDir+string(filepath.Separator)) {
+			return nil, fmt.Errorf("DPG-E004: %s: a database directory cannot be inside cluster %q's cluster objects directory (cluster_objects_dir) %s",
+				dir, cl.Name(), cl.ObjectsDir)
+		}
+		cl.Databases = append(cl.Databases, db)
+	}
+
+	for _, cl := range clusters {
+		if err := checkDuplicateDatabaseNames(cl.Databases); err != nil {
+			return nil, fmt.Errorf("cluster %q: %w", cl.Name(), err)
+		}
 	}
 	if err := checkDuplicateClusterNames(clusters); err != nil {
 		return nil, err
 	}
 	return clusters, nil
+}
+
+// resolveDatabaseCluster returns the cluster directory a database belongs
+// to: the directory its parent key names (relative to the database
+// directory, and inside the project), else its nearest ancestor cluster
+// directory. Errors are DPG-E042.
+func resolveDatabaseCluster(rootDir, dbDir, parent string, kinds map[string]string, nearestAncestor func(string, ...string) string) (string, error) {
+	cfgPath := filepath.Join(dbDir, "dpg.toml")
+	if parent == "" {
+		if cl := nearestAncestor(dbDir, config.KindCluster); cl != "" {
+			return cl, nil
+		}
+		return "", fmt.Errorf("DPG-E042: %s: database is not inside a cluster directory and sets no parent", cfgPath)
+	}
+	target := filepath.Clean(filepath.Join(dbDir, parent))
+	if target != rootDir && !strings.HasPrefix(target, rootDir+string(filepath.Separator)) {
+		return "", fmt.Errorf("DPG-E042: %s: parent %q resolves to %s, outside the project root %s", cfgPath, parent, target, rootDir)
+	}
+	if kinds[target] != config.KindCluster {
+		return "", fmt.Errorf("DPG-E042: %s: parent %q resolves to %s, which has no dpg.toml with kind = \"cluster\"", cfgPath, parent, target)
+	}
+	if cl := nearestAncestor(dbDir, config.KindCluster); cl != "" && cl != target {
+		return "", fmt.Errorf("DPG-E042: %s: parent %q names cluster directory %s, but the database is inside cluster directory %s", cfgPath, parent, target, cl)
+	}
+	return target, nil
 }
 
 // checkDuplicateClusterNames returns an error naming both directories when
@@ -227,11 +320,6 @@ func loadCluster(clusterDir, cfgPath string) (*Cluster, error) {
 
 	objectsDir := filepath.Join(clusterDir, cfg.Cluster.ClusterObjectsDir)
 
-	databases, err := discoverDatabases(clusterDir, cfg.Cluster.ClusterObjectsDir)
-	if err != nil {
-		return nil, fmt.Errorf("cluster %q: %w", cfg.Cluster.Name, err)
-	}
-
 	// Collect cluster-level .dpg source files; ignore error when ObjectsDir
 	// does not exist yet (first run before any dump or manual creation).
 	clusterFiles, _ := collectSourceFiles(objectsDir)
@@ -241,74 +329,7 @@ func loadCluster(clusterDir, cfgPath string) (*Cluster, error) {
 		Config:      cfg,
 		ObjectsDir:  objectsDir,
 		SourceFiles: clusterFiles,
-		Databases:   databases,
 	}, nil
-}
-
-// discoverDatabases scans immediate subdirectories of clusterDir. Any
-// subdirectory that contains a dpg.toml and is not the cluster objects
-// directory is treated as a database directory.
-func discoverDatabases(clusterDir, reservedDir string) ([]*Database, error) {
-	entries, err := os.ReadDir(clusterDir)
-	if err != nil {
-		return nil, fmt.Errorf("reading cluster directory %s: %w", clusterDir, err)
-	}
-
-	var databases []*Database
-	for _, entry := range entries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
-			continue
-		}
-		if entry.Name() == reservedDir {
-			// Normally this is just the (possibly not-yet-created) cluster
-			// objects directory itself — not a database, silently skip. But
-			// if it actually holds a [database]-declaring dpg.toml, that's a
-			// real naming conflict (RFC Section 3.5, DPG-E004): the user tried to
-			// declare a database here, and without this check it would be
-			// silently discarded with no error at all, identical in shape to
-			// the duplicate-name bugs fixed alongside this.
-			cfgPath := filepath.Join(clusterDir, entry.Name(), "dpg.toml")
-			if hasDatabaseSection(cfgPath) {
-				return nil, fmt.Errorf("DPG-E004: %s: database directory name %q conflicts with the cluster's reserved objects directory name (cluster_objects_dir) — rename one of them",
-					filepath.Join(clusterDir, entry.Name()), entry.Name())
-			}
-			continue
-		}
-		dbDir := filepath.Join(clusterDir, entry.Name())
-		cfgPath := filepath.Join(dbDir, "dpg.toml")
-		if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
-			continue
-		}
-		db, err := loadDatabase(dbDir, cfgPath)
-		if err != nil {
-			return nil, err
-		}
-		databases = append(databases, db)
-	}
-	if err := checkDuplicateDatabaseNames(databases); err != nil {
-		return nil, err
-	}
-	return databases, nil
-}
-
-// hasDatabaseSection reports whether the dpg.toml at path declares a
-// [database] section — mirroring isRootConfig's line-scan technique above.
-// Used to distinguish a genuine database directory that happens to share
-// the cluster's reserved objects-dir name (a real conflict, DPG-E004) from
-// the ordinary case of that name simply not existing yet or holding
-// non-database content (no dpg.toml at all, matching how a cluster objects
-// directory is actually used per RFC Section 3.5).
-func hasDatabaseSection(path string) bool {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	for line := range strings.SplitSeq(string(data), "\n") {
-		if strings.TrimSpace(line) == "[database]" {
-			return true
-		}
-	}
-	return false
 }
 
 // checkDuplicateDatabaseNames returns an error naming both directories when

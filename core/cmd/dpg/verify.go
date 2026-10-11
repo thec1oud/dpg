@@ -119,20 +119,9 @@ func runVerify(
 		return false, fmt.Errorf("load snapshot: %w", err)
 	}
 
-	connStr := cl.ConnectionString()
-	if connStr == "" {
-		return false, fmt.Errorf("DPG-E003: cluster %q has no connection configured (set url or link in cluster dpg.toml)", cl.Name())
-	}
-	if cl.IsLink() {
-		connStr, err = secretResolver.Resolve(connStr)
-		if err != nil {
-			return false, ui.WrapDB(fmt.Errorf("resolve connection secret: %w", err))
-		}
-	}
-
-	conn, err := executor.ConnectToDatabase(ctx, connStr, db.Name())
+	conn, err := connectDatabase(ctx, cl, db, secretResolver)
 	if err != nil {
-		return false, ui.WrapDB(err)
+		return false, err
 	}
 	defer conn.Close(ctx)
 

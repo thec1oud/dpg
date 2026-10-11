@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/thec1oud/dpg/internal/compiler"
+	"github.com/thec1oud/dpg/internal/executor"
+	"github.com/thec1oud/dpg/internal/pipeline"
 	"github.com/thec1oud/dpg/internal/project"
+	"github.com/thec1oud/dpg/internal/ui"
 )
 
 // resolveClusters returns which clusters to operate on.
@@ -77,4 +81,44 @@ func dbNames(dbs []*project.Database) []string {
 // its default_schema (RFC Section 3.4).
 func dbCompileOptions(db *project.Database) compiler.Options {
 	return compiler.Options{DefaultSchema: db.Config.Database.DefaultSchema}
+}
+
+// connectDatabase connects to db (RFC Section 3.4): through the database's own
+// url/link when it sets one, used verbatim, otherwise through the cluster's
+// url/link with the database name replaced by db's name. A link is resolved
+// through secretResolver. Returned errors are ready to print.
+func connectDatabase(ctx context.Context, cl *project.Cluster, db *project.Database, secretResolver pipeline.SecretResolver) (*executor.PgxConn, error) {
+	def := db.Config.Database
+	if own := def.ConnectionURL(); own != "" {
+		connStr := own
+		if def.URL == "" {
+			resolved, err := secretResolver.Resolve(own)
+			if err != nil {
+				return nil, ui.WrapDB(fmt.Errorf("resolve connection secret: %w", err))
+			}
+			connStr = resolved
+		}
+		conn, err := executor.Connect(ctx, connStr)
+		if err != nil {
+			return nil, ui.WrapDB(err)
+		}
+		return conn, nil
+	}
+
+	connStr := cl.ConnectionString()
+	if connStr == "" {
+		return nil, fmt.Errorf("DPG-E003: database %q has no connection configured (set url or link in its cluster's dpg.toml, or in its own)", db.Name())
+	}
+	if cl.IsLink() {
+		resolved, err := secretResolver.Resolve(connStr)
+		if err != nil {
+			return nil, ui.WrapDB(fmt.Errorf("resolve connection secret: %w", err))
+		}
+		connStr = resolved
+	}
+	conn, err := executor.ConnectToDatabase(ctx, connStr, db.Name())
+	if err != nil {
+		return nil, ui.WrapDB(err)
+	}
+	return conn, nil
 }

@@ -1,3 +1,5 @@
+kind = "database"
+
 [database]
 name = "smoke"
 default_schema = "public"

@@ -114,10 +114,10 @@ func runInit(root, cluster, database, schema, connURL string) error {
 func rootTOML() string {
 	return `# DPG project root configuration.
 # See: https://github.com/thec1oud/dpg
+kind = "root"
 
 [compiler]
 default_drop_behavior = "restrict"
-concurrent_indexes    = true
 
 [linter]
 warn_on_deprecated          = true
@@ -140,13 +140,17 @@ func clusterTOML(name, url string) string {
 		urlLine = `# url  = "postgres://user:pass@host:5432/dbname"` + "\n" +
 			`# link = "env:DATABASE_URL"   # resolve from environment at connect time` + "\n"
 	}
-	return fmt.Sprintf(`[cluster]
+	return fmt.Sprintf(`kind = "cluster"
+
+[cluster]
 name = %q
 %s`, name, urlLine)
 }
 
 func databaseTOML(name, schema string) string {
-	return fmt.Sprintf(`[database]
+	return fmt.Sprintf(`kind = "database"
+
+[database]
 name           = %q
 default_schema = %q
 `, name, schema)

@@ -110,7 +110,7 @@ func TestLinterConfigFromRFCWorkedExampleFromRealTOMLFile(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "dpg.toml")
 	// Verbatim shape of RFC Section 19.2's own worked config example.
-	tomlContent := "[linter.rules]\nsecurity_definer_search_path = \"error\"\n"
+	tomlContent := "kind = \"root\"\n[linter.rules]\nsecurity_definer_search_path = \"error\"\n"
 	if err := os.WriteFile(tomlPath, []byte(tomlContent), 0o644); err != nil {
 		t.Fatalf("write dpg.toml: %v", err)
 	}
