@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/thec1oud/dpg/internal/compiler"
+	"github.com/thec1oud/dpg/internal/config"
 	"github.com/thec1oud/dpg/internal/emit"
 	"github.com/thec1oud/dpg/internal/pipeline"
 	"github.com/thec1oud/dpg/internal/snapshot"
@@ -55,7 +56,7 @@ No snapshot or database connection is required.`,
 			}
 
 			// Compile the "from" source as the base state.
-			fromObjects, _, err := compiler.Compile(fromFiles, fromDir, pipeline.Default)
+			fromObjects, _, err := compiler.CompileWith(fromFiles, fromDir, pipeline.Default, dirCompileOptions(fromDir))
 			if err != nil {
 				return fmt.Errorf("compile --from: %w", err)
 			}
@@ -67,7 +68,7 @@ No snapshot or database connection is required.`,
 			}
 
 			// Compile the "to" source as the desired state.
-			toObjects, _, err := compiler.Compile(toFiles, toDir, pipeline.Default)
+			toObjects, _, err := compiler.CompileWith(toFiles, toDir, pipeline.Default, dirCompileOptions(toDir))
 			if err != nil {
 				return fmt.Errorf("compile --to: %w", err)
 			}
@@ -123,4 +124,14 @@ func collectDPGFiles(dir string) ([]string, error) {
 		return nil
 	})
 	return files, err
+}
+
+// dirCompileOptions returns compile options for a bare source directory: when
+// the directory holds a database dpg.toml, its default_schema applies.
+func dirCompileOptions(dir string) compiler.Options {
+	cfg, err := config.LoadDatabase(filepath.Join(dir, "dpg.toml"))
+	if err != nil {
+		return compiler.Options{}
+	}
+	return compiler.Options{DefaultSchema: cfg.Database.DefaultSchema}
 }

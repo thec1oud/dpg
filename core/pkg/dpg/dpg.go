@@ -543,6 +543,15 @@ func Compile(files []string, dbDir string) ([]IRObject, []LintDiagnostic, error)
 	return compiler.Compile(files, dbDir, pipeline.Default)
 }
 
+// CompileOptions configures CompileWith (see internal/compiler.Options).
+type CompileOptions = compiler.Options
+
+// CompileWith is Compile with explicit options, such as the database's
+// default_schema (RFC Section 3.4).
+func CompileWith(files []string, dbDir string, opts CompileOptions) ([]IRObject, []LintDiagnostic, error) {
+	return compiler.CompileWith(files, dbDir, pipeline.Default, opts)
+}
+
 // Lint runs the built-in linter rules over the compiled IR and returns
 // diagnostics. It uses the Linter registered in the Default registry.
 func Lint(objects []IRObject, cfg LinterConfig) ([]LintDiagnostic, error) {

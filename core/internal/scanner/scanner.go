@@ -959,6 +959,12 @@ func (s *state) readSchemaDecl(pos pipeline.SourcePos) (nested []pipeline.RawObj
 	part1 := name
 	if quoted {
 		part1 = `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+	} else {
+		// An unquoted schema name is case-folded exactly as PostgreSQL
+		// folds it in CREATE SCHEMA, so nested objects are scoped to the
+		// schema PostgreSQL actually creates (RFC Section 4.10).
+		name = strings.ToLower(name)
+		part1 = name
 	}
 
 	s.skipWS()

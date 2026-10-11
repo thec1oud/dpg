@@ -312,16 +312,76 @@ DEFAULT PRIVILEGES {
 	}
 }
 
-// ── Schema block forbidden inside schemas/ hierarchy ─────────────────────────
+// ── Schema scoping (RFC Sections 3.1, 4.4) ──────────────────────────────────
 
-func TestCompile_SchemaBlockInSchemasDirErrors(t *testing.T) {
+// A schemas/<name>/ directory may declare SCHEMA <name> { ... } for the
+// schema's own directives, but no other schema.
+func TestCompile_SchemaBlockInSchemasDir(t *testing.T) {
 	dbDir := t.TempDir()
 	f := filepath.Join(dbDir, "schemas", "iam", "schema.dpg")
-	writeDPG(t, f, `SCHEMA iam {}`)
+	writeDPG(t, f, `SCHEMA iam { COMMENT 'identity'; }`)
+	objs, _, err := compiler.Compile([]string{f}, dbDir, pipeline.Default)
+	if err != nil {
+		t.Fatalf("SCHEMA iam in schemas/iam/ should compile: %v", err)
+	}
+	var found bool
+	for _, o := range objs {
+		if s, ok := o.(*ir.Schema); ok && s.Name == "iam" {
+			found = s.Comment != nil && *s.Comment == "identity"
+		}
+	}
+	if !found {
+		t.Error("schema iam with its comment not found")
+	}
 
+	writeDPG(t, f, `SCHEMA other {}`)
+	_, _, err = compiler.Compile([]string{f}, dbDir, pipeline.Default)
+	if diags, ok := err.(pipeline.Diagnostics); !ok || diags[0].Code != "DPG-E040" {
+		t.Fatalf("expected DPG-E040 for SCHEMA other in schemas/iam/, got %v", err)
+	}
+}
+
+// A schema qualifier that names a different schema than the enclosing scope
+// is DPG-E040; repeating the enclosing schema is allowed.
+func TestCompile_QualifierMustMatchScope(t *testing.T) {
+	dbDir := t.TempDir()
+	f := filepath.Join(dbDir, "a.dpg")
+	writeDPG(t, f, `SCHEMA app { TABLE app.t (a int); }`)
+	if _, _, err := compiler.Compile([]string{f}, dbDir, pipeline.Default); err != nil {
+		t.Fatalf("matching qualifier should compile: %v", err)
+	}
+	writeDPG(t, f, `SCHEMA app { TABLE other.t (a int); }`)
 	_, _, err := compiler.Compile([]string{f}, dbDir, pipeline.Default)
-	if err == nil {
-		t.Fatal("expected error for SCHEMA block inside schemas/ directory")
+	if diags, ok := err.(pipeline.Diagnostics); !ok || diags[0].Code != "DPG-E040" {
+		t.Fatalf("expected DPG-E040, got %v", err)
+	}
+	d := filepath.Join(dbDir, "schemas", "app", "t.dpg")
+	writeDPG(t, d, `TABLE other.t (a int);`)
+	_, _, err = compiler.Compile([]string{d}, dbDir, pipeline.Default)
+	if diags, ok := err.(pipeline.Diagnostics); !ok || diags[0].Code != "DPG-E040" {
+		t.Fatalf("expected DPG-E040 for a mismatched qualifier in a schema directory, got %v", err)
+	}
+}
+
+// Unqualified objects outside any schema scope use the database's
+// default_schema (RFC Section 3.4); an unquoted SCHEMA name is case-folded.
+func TestCompile_DefaultSchemaAndSchemaFolding(t *testing.T) {
+	dbDir := t.TempDir()
+	f := filepath.Join(dbDir, "a.dpg")
+	writeDPG(t, f, `TABLE t (a int);
+SCHEMA Analytics { TABLE events (id int); }`)
+	objs, _, err := compiler.CompileWith([]string{f}, dbDir, pipeline.Default, compiler.Options{DefaultSchema: "core"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, o := range objs {
+		got[o.QualifiedName()] = true
+	}
+	for _, want := range []string{"core.t", "analytics.events", "analytics"} {
+		if !got[want] {
+			t.Errorf("missing %s in %v", want, got)
+		}
 	}
 }
 

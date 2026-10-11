@@ -43,7 +43,7 @@ Use --format json for machine-readable output.`,
 			if len(args) > 0 {
 				// Use the directory of the first file as dbDir so schema inference works.
 				dbDir := filepath.Dir(args[0])
-				errored, err := runValidate("(none)", "(standalone)", args, dbDir, linter, pipeline.LinterConfig{}, format, strict)
+				errored, err := runValidate("(none)", "(standalone)", args, dbDir, compiler.Options{}, linter, pipeline.LinterConfig{}, format, strict)
 				if err != nil {
 					return err
 				}
@@ -70,7 +70,7 @@ Use --format json for machine-readable output.`,
 				if len(cl.SourceFiles) > 0 {
 					clusterLintCfg := lintCfg
 					clusterLintCfg.MinPGVersion = cl.EffectiveMinPGVersion(proj.RootConfig)
-					errored, err := runValidate(cl.Name(), "(cluster)", cl.SourceFiles, cl.ObjectsDir, linter, clusterLintCfg, format, strict)
+					errored, err := runValidate(cl.Name(), "(cluster)", cl.SourceFiles, cl.ObjectsDir, compiler.Options{}, linter, clusterLintCfg, format, strict)
 					if err != nil {
 						return err
 					}
@@ -86,7 +86,7 @@ Use --format json for machine-readable output.`,
 				for _, db := range databases {
 					dbLintCfg := lintCfg
 					dbLintCfg.MinPGVersion = db.EffectiveMinPGVersion(cl, proj.RootConfig)
-					errored, err := runValidate(cl.Name(), db.Name(), db.SourceFiles, db.Dir, linter, dbLintCfg, format, strict)
+					errored, err := runValidate(cl.Name(), db.Name(), db.SourceFiles, db.Dir, dbCompileOptions(db), linter, dbLintCfg, format, strict)
 					if err != nil {
 						return err
 					}
@@ -130,6 +130,7 @@ type diagnosticOut struct {
 func runValidate(
 	clusterName, dbName string,
 	files []string, dbDir string,
+	opts compiler.Options,
 	linter pipeline.Linter,
 	lintCfg pipeline.LinterConfig,
 	format string,
@@ -137,7 +138,7 @@ func runValidate(
 ) (bool, error) {
 	color := ui.IsColorEnabled(os.Stderr)
 
-	desired, mergeDiags, err := compiler.Compile(files, dbDir, pipeline.Default)
+	desired, mergeDiags, err := compiler.CompileWith(files, dbDir, pipeline.Default, opts)
 	if err != nil {
 		if format == "json" {
 			errors := compileErrsToDiagnostics(err)

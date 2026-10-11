@@ -4,6 +4,7 @@ package ir
 
 import (
 	"fmt"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -31,7 +32,7 @@ func NewBuilder() *Builder { return &Builder{} }
 // For passthrough kinds (KindVirtualType), pg.Kind is set and pg.Raw is a string.
 func (b *Builder) Build(pg pipeline.PGParseResult, block pipeline.BlockAST) (pipeline.IRObject, error) {
 	if pg.Kind == pipeline.KindVirtualType {
-		return b.buildVirtualType(pg.Raw.(string), block, pg.Pos, pg.SchemaContext)
+		return b.buildVirtualType(pg.Raw.(string), block, pg.Pos, pg)
 	}
 
 	node := ast.FirstStmt(pg)
@@ -140,17 +141,63 @@ func (b *Builder) Build(pg pipeline.PGParseResult, block pipeline.BlockAST) (pip
 	if err != nil {
 		return nil, err
 	}
-	// Apply schema context from enclosing SCHEMA block or directory inference.
-	// Fall back to "public" so desired IR always uses explicit schema names that
-	// match what the introspector returns from pg_namespace.
-	schemaCtx := pg.SchemaContext
-	if schemaCtx == "" {
-		schemaCtx = "public"
+	if obj == nil {
+		return nil, nil
 	}
-	if obj != nil {
-		applySchemaContext(obj, schemaCtx)
+	// Inside a schema scope (SCHEMA { } block or schemas/<name>/ directory),
+	// a schema qualifier on the declared name may only repeat that schema
+	// (RFC Section 4.4).
+	if pg.SchemaContext != "" {
+		if declared := declaredSchema(obj); declared != "" && declared != pg.SchemaContext {
+			return nil, pipeline.ErrorfCode(pos, "DPG-E040",
+				"%s is qualified with schema %s but declared inside schema %s; inside a schema scope, a qualifier may only name that schema",
+				obj.QualifiedName(), declared, pg.SchemaContext)
+		}
 	}
+	// An unqualified object takes the enclosing scope's schema, else the
+	// database's default_schema (RFC Section 3.4), else "public", so desired
+	// IR always carries the explicit schema name the introspector returns.
+	applySchemaContext(obj, effectiveSchema(pg))
 	return obj, nil
+}
+
+// foldIdentPart applies PostgreSQL identifier rules to one name part: a
+// double-quoted part is unquoted, anything else is lowercased (RFC Section
+// 4.10).
+func foldIdentPart(part string) string {
+	part = strings.TrimSpace(part)
+	if len(part) >= 2 && part[0] == '"' && part[len(part)-1] == '"' {
+		return strings.ReplaceAll(part[1:len(part)-1], `""`, `"`)
+	}
+	return strings.ToLower(part)
+}
+
+// effectiveSchema returns the schema for an unqualified object: the enclosing
+// schema scope, else the database's default_schema, else "public".
+func effectiveSchema(pg pipeline.PGParseResult) string {
+	switch {
+	case pg.SchemaContext != "":
+		return pg.SchemaContext
+	case pg.DefaultSchema != "":
+		return pg.DefaultSchema
+	default:
+		return "public"
+	}
+}
+
+// declaredSchema returns the schema qualifier written on a schema-scoped
+// object's own name, or "" when the object has none (or has no Schema
+// field at all).
+func declaredSchema(obj pipeline.IRObject) string {
+	v := reflect.ValueOf(obj)
+	if v.Kind() != reflect.Pointer || v.Elem().Kind() != reflect.Struct {
+		return ""
+	}
+	f := v.Elem().FieldByName("Schema")
+	if !f.IsValid() || f.Kind() != reflect.String {
+		return ""
+	}
+	return f.String()
 }
 
 // applySchemaContext sets the Schema field on schema-scoped IR objects when it
@@ -3842,7 +3889,7 @@ func blockTriggerToIR(tr pipeline.TriggerDef) *Trigger {
 
 // buildVirtualType parses a VIRTUAL TYPE declaration from the raw Part1 text.
 // Part1 format: [schema.]name AS body
-func (b *Builder) buildVirtualType(part1 string, block pipeline.BlockAST, pos pipeline.SourcePos, schemaCtx string) (*VirtualType, error) {
+func (b *Builder) buildVirtualType(part1 string, block pipeline.BlockAST, pos pipeline.SourcePos, pg pipeline.PGParseResult) (*VirtualType, error) {
 	// Find the standalone AS keyword by scanning word-by-word.
 	upper := strings.ToUpper(part1)
 	asIdx := -1
@@ -3876,17 +3923,18 @@ func (b *Builder) buildVirtualType(part1 string, block pipeline.BlockAST, pos pi
 	// Parse the name (possibly schema-qualified: schema.name).
 	var schema, name string
 	if dotIdx := strings.LastIndex(namePart, "."); dotIdx >= 0 {
-		schema = namePart[:dotIdx]
-		name = namePart[dotIdx+1:]
+		schema = foldIdentPart(namePart[:dotIdx])
+		name = foldIdentPart(namePart[dotIdx+1:])
 	} else {
-		name = namePart
+		name = foldIdentPart(namePart)
+	}
+	if schema != "" && pg.SchemaContext != "" && schema != pg.SchemaContext {
+		return nil, pipeline.ErrorfCode(pos, "DPG-E040",
+			"VIRTUAL TYPE %s.%s is declared inside schema %s; inside a schema scope, a qualifier may only name that schema",
+			schema, name, pg.SchemaContext)
 	}
 	if schema == "" {
-		if schemaCtx != "" {
-			schema = schemaCtx
-		} else {
-			schema = "public"
-		}
+		schema = effectiveSchema(pg)
 	}
 
 	body, err := parseVtypeBody(bodyText, pos)

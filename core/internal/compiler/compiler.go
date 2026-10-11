@@ -24,6 +24,19 @@ import (
 // duplicate Name Map tool keys); callers apply [linter.rules] overrides to
 // it before reporting.
 func Compile(files []string, dbDir string, reg *pipeline.Registry) ([]pipeline.IRObject, []pipeline.LintDiagnostic, error) {
+	return CompileWith(files, dbDir, reg, Options{})
+}
+
+// Options configures CompileWith.
+type Options struct {
+	// DefaultSchema is the database's default_schema (RFC Section 3.4),
+	// used for objects with no schema qualifier outside any schema scope.
+	// Empty means "public".
+	DefaultSchema string
+}
+
+// CompileWith is Compile with explicit Options.
+func CompileWith(files []string, dbDir string, reg *pipeline.Registry, opts Options) ([]pipeline.IRObject, []pipeline.LintDiagnostic, error) {
 	tokenizer, err := pipeline.MustResolve[pipeline.Tokenizer](reg, pipeline.KeyTokenizer)
 	if err != nil {
 		return nil, nil, err
@@ -90,10 +103,15 @@ func Compile(files []string, dbDir string, reg *pipeline.Registry) ([]pipeline.I
 
 		dirSchema := inferSchemaFromPath(dbDir, path)
 		for i := range raws {
+			// A file under schemas/<name>/ may declare SCHEMA <name> { ... }
+			// to hold the schema's own directives (owner, comment, grants,
+			// default privileges, RENAMED FROM), but no other schema.
 			if dirSchema != "" && raws[i].Kind == pipeline.KindSchema {
-				diags = append(diags, pipeline.Errorf(raws[i].Pos,
-					"SCHEMA blocks are not allowed inside the schemas/ directory hierarchy; "+
-						"the schema is inferred from the directory name"))
+				if declared := schemaDeclName(raws[i].Part1); declared != dirSchema {
+					diags = append(diags, pipeline.ErrorfCode(raws[i].Pos, "DPG-E040",
+						"SCHEMA %s is declared under schemas/%s/; a schema directory may only declare its own schema",
+						declared, dirSchema))
+				}
 				continue
 			}
 			if raws[i].Schema == "" {
@@ -168,6 +186,11 @@ func Compile(files []string, dbDir string, reg *pipeline.Registry) ([]pipeline.I
 			}
 			if dpBlock.InSchema == nil && raw.Schema != "" {
 				dpBlock.InSchema = &pipeline.Identifier{Name: raw.Schema}
+			} else if dpBlock.InSchema != nil && raw.Schema != "" && dpBlock.InSchema.Name != raw.Schema {
+				diags = append(diags, pipeline.ErrorfCode(raw.Pos, "DPG-E040",
+					"DEFAULT PRIVILEGES IN SCHEMA %s is declared inside schema %s; inside a schema scope, IN SCHEMA may only name that schema",
+					dpBlock.InSchema.Name, raw.Schema))
+				continue
 			}
 			objs, buildErr := irBuilder.BuildDefaultPrivileges(dpBlock)
 			if buildErr != nil {
@@ -209,6 +232,7 @@ func Compile(files []string, dbDir string, reg *pipeline.Registry) ([]pipeline.I
 
 		pgResult, pgErr := pgParser.Parse(raw.Kind, raw.Part1, raw.Pos)
 		pgResult.SchemaContext = raw.Schema
+		pgResult.DefaultSchema = opts.DefaultSchema
 		if pgErr != nil {
 			if ce, ok := pgErr.(*pipeline.CompilerError); ok {
 				diags = append(diags, ce)
@@ -265,6 +289,17 @@ func Compile(files []string, dbDir string, reg *pipeline.Registry) ([]pipeline.I
 	}
 
 	return sorted, nameMapWarnings, nil
+}
+
+// schemaDeclName returns the schema name a SCHEMA declaration's Part 1
+// declares: a quoted name is unquoted, an unquoted one is already
+// case-folded by the scanner.
+func schemaDeclName(part1 string) string {
+	name := strings.TrimSpace(part1)
+	if len(name) >= 2 && name[0] == '"' && name[len(name)-1] == '"' {
+		return strings.ReplaceAll(name[1:len(name)-1], `""`, `"`)
+	}
+	return name
 }
 
 // inferSchemaFromPath returns the schema name inferred from the file's position

@@ -1,6 +1,7 @@
 package ir_test
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -3733,8 +3734,6 @@ func TestBuildVirtualTypeSchemaQualifiedName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pg parse error: %v", err)
 	}
-	// Explicit schema context must NOT override the qualified name.
-	pgResult.SchemaContext = "public"
 	bp := blockparser.New()
 	blockAST, _ := bp.Parse(pipeline.KindVirtualType, ``, zeroPos)
 	obj, buildErr := ir.NewBuilder().Build(pgResult, blockAST)
@@ -3747,6 +3746,22 @@ func TestBuildVirtualTypeSchemaQualifiedName(t *testing.T) {
 	}
 	if vt.Name != "status" {
 		t.Errorf("Name: got %q, want %q", vt.Name, "status")
+	}
+}
+
+// TestBuildVirtualTypeQualifierMustMatchScope guards RFC Section 4.4: inside
+// a schema scope, a qualifier naming another schema is DPG-E040.
+func TestBuildVirtualTypeQualifierMustMatchScope(t *testing.T) {
+	pgResult, err := pgparser.New().Parse(pipeline.KindVirtualType, `billing.status AS text`, zeroPos)
+	if err != nil {
+		t.Fatalf("pg parse error: %v", err)
+	}
+	pgResult.SchemaContext = "public"
+	blockAST, _ := blockparser.New().Parse(pipeline.KindVirtualType, ``, zeroPos)
+	_, buildErr := ir.NewBuilder().Build(pgResult, blockAST)
+	var cerr *pipeline.CompilerError
+	if !errors.As(buildErr, &cerr) || cerr.Code != "DPG-E040" {
+		t.Fatalf("expected DPG-E040, got %v", buildErr)
 	}
 }
 

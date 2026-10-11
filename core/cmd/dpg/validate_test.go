@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/thec1oud/dpg/internal/compiler"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,7 +36,7 @@ func TestRunValidateStrictOff(t *testing.T) {
 		{Rule: "deprecated", Message: "old table", IsError: false},
 	}}
 
-	hasError, err := runValidate("cl", "db", []string{file}, dir, stub, pipeline.LinterConfig{}, "text", false)
+	hasError, err := runValidate("cl", "db", []string{file}, dir, compiler.Options{}, stub, pipeline.LinterConfig{}, "text", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -50,7 +51,7 @@ func TestRunValidateStrictOn(t *testing.T) {
 		{Rule: "deprecated", Message: "old table", IsError: false},
 	}}
 
-	hasError, err := runValidate("cl", "db", []string{file}, dir, stub, pipeline.LinterConfig{}, "text", true)
+	hasError, err := runValidate("cl", "db", []string{file}, dir, compiler.Options{}, stub, pipeline.LinterConfig{}, "text", true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -66,8 +67,8 @@ func TestRunValidateStrictNoEffect_AlreadyErrors(t *testing.T) {
 		{Rule: "hardcoded-password", Message: "bad password", IsError: true},
 	}}
 
-	withoutStrict, _ := runValidate("cl", "db", []string{file}, dir, stub, pipeline.LinterConfig{}, "text", false)
-	withStrict, _ := runValidate("cl", "db", []string{file}, dir, stub, pipeline.LinterConfig{}, "text", true)
+	withoutStrict, _ := runValidate("cl", "db", []string{file}, dir, compiler.Options{}, stub, pipeline.LinterConfig{}, "text", false)
+	withStrict, _ := runValidate("cl", "db", []string{file}, dir, compiler.Options{}, stub, pipeline.LinterConfig{}, "text", true)
 
 	if !withoutStrict {
 		t.Error("expected error for error-level diagnostic (no strict)")
@@ -81,7 +82,7 @@ func TestRunValidateStrictNoErrorsOrWarnings(t *testing.T) {
 	file, dir := dpgTempFile(t, "")
 	stub := &stubLinter{diags: nil}
 
-	hasError, err := runValidate("cl", "db", []string{file}, dir, stub, pipeline.LinterConfig{}, "text", true)
+	hasError, err := runValidate("cl", "db", []string{file}, dir, compiler.Options{}, stub, pipeline.LinterConfig{}, "text", true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -108,7 +109,7 @@ func TestRunValidateReportsScalarConflict(t *testing.T) {
 	orig := os.Stdout
 	os.Stdout = w
 
-	hasErr, err := runValidate("cl", "db", []string{f1, f2}, dir, nil,
+	hasErr, err := runValidate("cl", "db", []string{f1, f2}, dir, compiler.Options{}, nil,
 		pipeline.LinterConfig{}, "json", false)
 
 	w.Close()
@@ -167,7 +168,7 @@ func TestRunValidateMinPGVersion(t *testing.T) {
 	orig := os.Stdout
 	os.Stdout = w
 
-	_, err := runValidate("cl", "db", []string{file}, dir, l,
+	_, err := runValidate("cl", "db", []string{file}, dir, compiler.Options{}, l,
 		pipeline.LinterConfig{MinPGVersion: 14}, "json", false)
 
 	w.Close()
@@ -218,7 +219,7 @@ func TestRunValidateMinPGVersionSatisfiedOK(t *testing.T) {
 	orig := os.Stdout
 	os.Stdout = w
 
-	_, err := runValidate("cl", "db", []string{file}, dir, l,
+	_, err := runValidate("cl", "db", []string{file}, dir, compiler.Options{}, l,
 		pipeline.LinterConfig{MinPGVersion: 15}, "json", false)
 
 	w.Close()
@@ -260,7 +261,7 @@ func TestRunValidateJSONFormat(t *testing.T) {
 	orig := os.Stdout
 	os.Stdout = w
 
-	hasError, err := runValidate("mycluster", "mydb", []string{file}, dir, stub, pipeline.LinterConfig{}, "json", true)
+	hasError, err := runValidate("mycluster", "mydb", []string{file}, dir, compiler.Options{}, stub, pipeline.LinterConfig{}, "json", true)
 
 	w.Close()
 	os.Stdout = orig

@@ -266,7 +266,7 @@ func buildPlan(
 ) (pipeline.Migration, error) {
 	errColor := ui.IsColorEnabled(os.Stderr)
 
-	desired, mergeDiags, err := compiler.Compile(db.SourceFiles, db.Dir, pipeline.Default)
+	desired, mergeDiags, err := compiler.CompileWith(db.SourceFiles, db.Dir, pipeline.Default, dbCompileOptions(db))
 	if err != nil {
 		return pipeline.Migration{}, err
 	}

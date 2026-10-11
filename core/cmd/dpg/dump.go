@@ -352,7 +352,7 @@ func runDump(
 	// what `plan` reads back).
 	dbSnapObjects := dbObjects
 	if len(dpgFiles) > 0 {
-		if compiled, _, compileErr := compiler.Compile(dpgFiles, outDir, pipeline.Default); compileErr == nil {
+		if compiled, _, compileErr := compiler.CompileWith(dpgFiles, outDir, pipeline.Default, dbCompileOptions(db)); compileErr == nil {
 			dbSnapObjects = compiled
 		} else {
 			fmt.Fprintf(os.Stderr, "%s  dumped source did not recompile for %s/%s; snapshot built from live catalog instead: %v\n",
@@ -409,7 +409,7 @@ func mergeExistingVirtualTypes(db *project.Database) []pipeline.IRObject {
 	if len(db.SourceFiles) == 0 {
 		return nil
 	}
-	compiled, _, err := compiler.Compile(db.SourceFiles, db.Dir, pipeline.Default)
+	compiled, _, err := compiler.CompileWith(db.SourceFiles, db.Dir, pipeline.Default, dbCompileOptions(db))
 	if err != nil {
 		// Not fatal to the dump itself — the live catalog's own objects are
 		// still valid and worth writing. Surfaced so the loss isn't silent.

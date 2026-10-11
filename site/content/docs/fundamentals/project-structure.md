@@ -44,6 +44,17 @@ myproject/
 - Clusters = immediate subdirectories of the root with a `dpg.toml`.
 - Databases = immediate subdirectories of a cluster directory with a `dpg.toml`, excluding the cluster objects directory.
 - All `.dpg` files beneath a database directory compile as one unit.
+- Files under `schemas/<name>/` (at any depth) belong to schema `<name>`, as if wrapped in `SCHEMA <name> { }`. The schema's own settings (owner, comment, grants, default privileges) go in `schemas/<name>/schema.dpg`:
+
+```sql
+-- schemas/analytics/schema.dpg
+SCHEMA analytics {
+    OWNER analytics_role;
+    COMMENT 'Derived tables and event aggregations';
+}
+```
+
+- Inside a schema scope, a schema qualifier on a declared name may only repeat that schema; `TABLE other.t` inside `schemas/analytics/` is an error (DPG-E040).
 
 ## Root `dpg.toml`
 
@@ -107,6 +118,8 @@ snapshot_on_apply = true
 name           = "myapp"
 default_schema = "public"
 ```
+
+`default_schema` (optional, default `public`) is the schema for objects declared with no qualifier outside any `SCHEMA { }` block or `schemas/<name>/` directory.
 
 All `.dpg` files beneath this directory are scoped to the `myapp` database on the `production` cluster.
 
