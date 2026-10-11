@@ -40,7 +40,7 @@ TABLE users (
 )
 {
     COMMENT 'Primary identity store';
-    OWNER   "app_role";
+    OWNER   app_role;
 
     COLUMN email {
         COMMENT    "Verified email address";
@@ -48,7 +48,7 @@ TABLE users (
         GRANTS     { SELECT TO reporting_role; }
     }
 
-    INDICES {
+    INDEXES {
         idx_email  (email);
         idx_status (status) WHERE (status != 'deleted');
     }
@@ -71,7 +71,7 @@ TABLE users (
         SELECT                 TO app_readonly;
     }
 
-    REVOCATIONS {
+    REVOKES {
         ALL PRIVILEGES FROM PUBLIC;
     }
 }

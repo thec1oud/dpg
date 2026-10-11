@@ -541,7 +541,7 @@ func checkUnnecessaryRevocation(grants []ir.Grant, revocations []ir.Revocation, 
 				diags = append(diags, pipeline.LintDiagnostic{
 					Pos:  rev.Pos,
 					Rule: "unnecessary-revocation",
-					Message: fmt.Sprintf("%s: REVOCATION of %s from %s has no matching GRANT in this declaration",
+					Message: fmt.Sprintf("%s: REVOKE of %s from %s has no matching GRANT in this declaration",
 						objDesc, priv, role),
 				})
 			}

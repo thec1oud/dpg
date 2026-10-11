@@ -113,7 +113,7 @@ class DpgParserTest : ParsingTestCase("", "dpg", DpgParserDefinition()) {
     // ── Enum ──────────────────────────────────────────────────────────────────
 
     fun testEnum() {
-        val file = parseFile("enum", "ENUM status ('active', 'inactive', 'deleted');")
+        val file = parseFile("enum", "TYPE status AS ENUM ('active', 'inactive', 'deleted');")
         val decls = PsiTreeUtil.getChildrenOfType(file, DpgObjectDeclaration::class.java)
         assertNotNull(decls)
         assertEquals("status", decls!![0].name)

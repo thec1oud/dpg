@@ -27,7 +27,6 @@ func Reconstruct(kind pipeline.ObjectKind, part1 string) string {
 		return "CREATE PROCEDURE " + part1
 	case pipeline.KindAggregate:
 		return "CREATE AGGREGATE " + part1
-	// ENUM scanner emits: "name AS ENUM (...)"
 	case pipeline.KindEnum:
 		return "CREATE TYPE " + part1
 	case pipeline.KindCompositeType:

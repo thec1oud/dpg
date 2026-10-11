@@ -24,12 +24,12 @@ CREATE TABLESPACE "archive"  LOCATION '/mnt/hdd/pg_archive';
 `OWNER` sits inline in the native `CREATE TABLESPACE` clause, matching real PostgreSQL's own grammar exactly — it is not a `{ }` block directive here (unlike Table/View/etc., where `OWNER` has no place in the native `CREATE` statement).
 
 ```sql
-TABLESPACE fast_ssd OWNER "pg_admin" LOCATION '/mnt/nvme/pg_data';
+TABLESPACE fast_ssd OWNER pg_admin LOCATION '/mnt/nvme/pg_data';
 ```
 
 ```sql
 -- emits
-CREATE TABLESPACE "fast_ssd" OWNER "pg_admin" LOCATION '/mnt/nvme/pg_data';
+CREATE TABLESPACE "fast_ssd" OWNER pg_admin LOCATION '/mnt/nvme/pg_data';
 ```
 
 A later change to the declared `OWNER` emits `ALTER TABLESPACE name OWNER TO role`.
@@ -43,7 +43,7 @@ TABLE events ( ... ) TABLESPACE fast_ssd { ... }
 ```
 
 ```sql
-{ INDICES { idx_events_ts (created_at) TABLESPACE archive; } }
+{ INDEXES { idx_events_ts (created_at) TABLESPACE archive; } }
 ```
 
 See [Tables Overview](../../schema-objects/tables/overview/) and [Indexes](../../schema-objects/tables/indexes/).

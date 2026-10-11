@@ -17,7 +17,7 @@ import (
 )
 
 // TestRoundtripGrantGrantedBy guards RFC audit item #90 (Section 7.10/11.3):
-// GRANTED BY role-spec on a table-level GRANTS/REVOCATIONS entry. Real
+// GRANTED BY role-spec on a table-level GRANTS/REVOKES entry. Real
 // PostgreSQL restricts the effective grantor to current_user regardless of
 // who is named (confirmed live via a direct psql probe before writing this
 // test: even a superuser gets "grantor must be current user" naming any
@@ -28,7 +28,7 @@ import (
 // live ACL entry's grantor is the connecting role, (b) a second plan
 // against the same declaration is a genuine no-op both offline (against the
 // stored snapshot) and against live-introspected state, and (c) an explicit
-// REVOCATIONS entry with GRANTED BY CURRENT_USER actually revokes it live.
+// REVOKES entry with GRANTED BY CURRENT_USER actually revokes it live.
 //
 // The live-introspection no-op check in particular guards a real regression:
 // introspectTableGrants now populates ir.Grant.GrantedBy from the real
@@ -124,12 +124,12 @@ TABLE orders (id INT) {
 	// exercises grantedByMatches.
 	assertNoLiveDrift(t, ctx, conn, []string{f}, dir, differ, store)
 
-	// v2: an explicit REVOCATIONS entry with GRANTED BY CURRENT_USER must
+	// v2: an explicit REVOKES entry with GRANTED BY CURRENT_USER must
 	// actually revoke it live.
 	v2 := `ROLE reader NOLOGIN;
 
 TABLE orders (id INT) {
-    REVOCATIONS { SELECT FROM reader GRANTED BY CURRENT_USER; }
+    REVOKES { SELECT FROM reader GRANTED BY CURRENT_USER; }
 }`
 	if err := os.WriteFile(f, []byte(v2), 0o644); err != nil {
 		t.Fatalf("write v2: %v", err)
@@ -137,7 +137,7 @@ TABLE orders (id INT) {
 	applyFixture(t, ctx, conn, []string{f}, dir, differ, emitter, applyExec, store)
 
 	if _, ok := grantorOf("reader"); ok {
-		t.Fatal("reader still has a live SELECT grant on orders after an explicit REVOCATIONS entry with GRANTED BY — REVOKE never applied")
+		t.Fatal("reader still has a live SELECT grant on orders after an explicit REVOKES entry with GRANTED BY — REVOKE never applied")
 	}
 }
 

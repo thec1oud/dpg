@@ -206,10 +206,10 @@ func TestRefreshVersionUnspecifiedIsFalse(t *testing.T) {
 	}
 }
 
-// ── INDICES ───────────────────────────────────────────────────────────────────
+// ── INDEXES ───────────────────────────────────────────────────────────────────
 
 func TestSimpleIndex(t *testing.T) {
-	ast := parse(t, `INDICES { idx_email (email); }`)
+	ast := parse(t, `INDEXES { idx_email (email); }`)
 	if len(ast.Indices) != 1 {
 		t.Fatalf("expected 1 index, got %d", len(ast.Indices))
 	}
@@ -226,7 +226,7 @@ func TestSimpleIndex(t *testing.T) {
 }
 
 func TestUniqueIndex(t *testing.T) {
-	ast := parse(t, `INDICES { UNIQUE idx_uq (email, name); }`)
+	ast := parse(t, `INDEXES { UNIQUE idx_uq (email, name); }`)
 	if len(ast.Indices) != 1 {
 		t.Fatalf("expected 1 index, got %d", len(ast.Indices))
 	}
@@ -247,7 +247,7 @@ func TestUniqueIndex(t *testing.T) {
 // grammar: CONCURRENTLY as a bare prefix keyword, positioned exactly where
 // real PG puts it, stacking with UNIQUE in the same PG order.
 func TestIndexConcurrentlyPrefix(t *testing.T) {
-	ast := parse(t, `INDICES { CONCURRENTLY idx_c (email); }`)
+	ast := parse(t, `INDEXES { CONCURRENTLY idx_c (email); }`)
 	idx := ast.Indices[0]
 	if !idx.Concurrently {
 		t.Error("expected Concurrently = true")
@@ -255,7 +255,7 @@ func TestIndexConcurrentlyPrefix(t *testing.T) {
 }
 
 func TestIndexUniqueConcurrentlyPrefixOrder(t *testing.T) {
-	ast := parse(t, `INDICES { UNIQUE CONCURRENTLY idx_uc (email); }`)
+	ast := parse(t, `INDEXES { UNIQUE CONCURRENTLY idx_uc (email); }`)
 	idx := ast.Indices[0]
 	if !idx.Unique {
 		t.Error("expected Unique = true")
@@ -298,7 +298,7 @@ func TestIndexModeBUniqueWithoutIndexErrors(t *testing.T) {
 }
 
 func TestIndexWithWhere(t *testing.T) {
-	ast := parse(t, `INDICES { idx_active (status) WHERE (status != 'deleted'); }`)
+	ast := parse(t, `INDEXES { idx_active (status) WHERE (status != 'deleted'); }`)
 	if len(ast.Indices) == 0 {
 		t.Fatal("expected index")
 	}
@@ -316,7 +316,7 @@ func TestIndexWithUsing(t *testing.T) {
 	// CREATE INDEX ... USING method (columns) order and the RFC's own
 	// worked examples (idx_location USING gist (location);) — this used
 	// to be accepted only after the columns, rejecting the RFC's syntax.
-	ast := parse(t, `INDICES { idx_text USING gin (content); }`)
+	ast := parse(t, `INDEXES { idx_text USING gin (content); }`)
 	idx := ast.Indices[0]
 	if idx.Method == nil || idx.Method.Name != "gin" {
 		t.Errorf("Method: got %v", idx.Method)
@@ -324,7 +324,7 @@ func TestIndexWithUsing(t *testing.T) {
 }
 
 func TestMultipleIndices(t *testing.T) {
-	src := `INDICES {
+	src := `INDEXES {
 		idx_email  (email);
 		idx_status (status) WHERE (status != 'deleted');
 	}`
@@ -336,7 +336,7 @@ func TestMultipleIndices(t *testing.T) {
 
 // Mode B (Section 4.8 Dual Definition Modes): the singular INDEX keyword precedes a
 // single entry outside a plural block and must parse without a wrapping '{ }'
-// (previously this went through the same brace-requiring parser as INDICES
+// (previously this went through the same brace-requiring parser as INDEXES
 // and was a hard parse error, not just "unsupported").
 func TestIndexModeBSingularKeyword(t *testing.T) {
 	ast := parse(t, `INDEX idx_email (email);`)
@@ -368,7 +368,7 @@ func TestIndexModeBWithWhereAndUsing(t *testing.T) {
 
 func TestIndexModeAAndBCanMix(t *testing.T) {
 	src := `
-		INDICES { idx_a (a); }
+		INDEXES { idx_a (a); }
 		INDEX idx_b (b);
 	`
 	ast := parse(t, src)
@@ -380,7 +380,7 @@ func TestIndexModeAAndBCanMix(t *testing.T) {
 // TestIndexRenamedFrom guards RFC Section 7.7's RENAMED FROM directive on an
 // index entry.
 func TestIndexRenamedFrom(t *testing.T) {
-	ast := parse(t, `INDICES { idx_email (email) RENAMED FROM idx_email_old; }`)
+	ast := parse(t, `INDEXES { idx_email (email) RENAMED FROM idx_email_old; }`)
 	idx := ast.Indices[0]
 	if idx.RenamedFrom == nil || idx.RenamedFrom.Name != "idx_email_old" {
 		t.Fatalf("RenamedFrom: got %v, want \"idx_email_old\"", idx.RenamedFrom)
@@ -392,7 +392,7 @@ func TestIndexRenamedFrom(t *testing.T) {
 // clause loop matches whichever known keyword comes next, not a fixed
 // sequence.
 func TestIndexRenamedFromWithOtherClauses(t *testing.T) {
-	ast := parse(t, `INDICES { idx_active (status) WHERE (status != 'deleted') RENAMED FROM idx_active_old; }`)
+	ast := parse(t, `INDEXES { idx_active (status) WHERE (status != 'deleted') RENAMED FROM idx_active_old; }`)
 	idx := ast.Indices[0]
 	if idx.RenamedFrom == nil || idx.RenamedFrom.Name != "idx_active_old" {
 		t.Fatalf("RenamedFrom: got %v, want \"idx_active_old\"", idx.RenamedFrom)
@@ -403,7 +403,7 @@ func TestIndexRenamedFromWithOtherClauses(t *testing.T) {
 }
 
 func TestIndexNullsNotDistinct(t *testing.T) {
-	ast := parse(t, `INDICES { UNIQUE idx_uq (email) NULLS NOT DISTINCT; }`)
+	ast := parse(t, `INDEXES { UNIQUE idx_uq (email) NULLS NOT DISTINCT; }`)
 	idx := ast.Indices[0]
 	if !idx.NullsNotDistinct {
 		t.Error("expected NullsNotDistinct = true")
@@ -413,7 +413,7 @@ func TestIndexNullsNotDistinct(t *testing.T) {
 // The explicit-default spelling ("NULLS DISTINCT") must parse (not error) but
 // records no special state — it's PG's default made explicit.
 func TestIndexNullsDistinctExplicitDefault(t *testing.T) {
-	ast := parse(t, `INDICES { UNIQUE idx_uq (email) NULLS DISTINCT; }`)
+	ast := parse(t, `INDEXES { UNIQUE idx_uq (email) NULLS DISTINCT; }`)
 	idx := ast.Indices[0]
 	if idx.NullsNotDistinct {
 		t.Error("expected NullsNotDistinct = false for explicit NULLS DISTINCT")
@@ -421,13 +421,13 @@ func TestIndexNullsDistinctExplicitDefault(t *testing.T) {
 }
 
 func TestIndexNullsInvalidSuffix(t *testing.T) {
-	if err := parseErr(t, `INDICES { UNIQUE idx_uq (email) NULLS MAYBE; }`); err == nil {
+	if err := parseErr(t, `INDEXES { UNIQUE idx_uq (email) NULLS MAYBE; }`); err == nil {
 		t.Error("expected parse error for NULLS MAYBE")
 	}
 }
 
 func TestIndexWithStorageParams(t *testing.T) {
-	ast := parse(t, `INDICES { idx_a (a) WITH (fillfactor = 70, deduplicate_items = off); }`)
+	ast := parse(t, `INDEXES { idx_a (a) WITH (fillfactor = 70, deduplicate_items = off); }`)
 	idx := ast.Indices[0]
 	if len(idx.With) != 2 {
 		t.Fatalf("expected 2 storage params, got %d: %v", len(idx.With), idx.With)
@@ -561,7 +561,7 @@ func TestColumnsBlock(t *testing.T) {
 	}
 }
 
-// ── GRANTS / REVOCATIONS ──────────────────────────────────────────────────────
+// ── GRANTS / REVOKES ──────────────────────────────────────────────────────
 
 func TestGrants(t *testing.T) {
 	src := `GRANTS { SELECT, INSERT TO app_service; SELECT TO app_readonly; }`
@@ -795,7 +795,7 @@ func TestGrantNoGrantedByLeavesNil(t *testing.T) {
 // TestRevocationGrantedByAndCascade guards RFC audit item #90's
 // revoke-entry: GRANTED BY role-spec, ordered before CASCADE.
 func TestRevocationGrantedByAndCascade(t *testing.T) {
-	ast := parse(t, `REVOCATIONS { SELECT FROM reader GRANTED BY admin CASCADE; }`)
+	ast := parse(t, `REVOKES { SELECT FROM reader GRANTED BY admin CASCADE; }`)
 	if len(ast.Revocations) != 1 {
 		t.Fatalf("expected 1 revocation, got %d", len(ast.Revocations))
 	}
@@ -809,7 +809,7 @@ func TestRevocationGrantedByAndCascade(t *testing.T) {
 }
 
 func TestRevocations(t *testing.T) {
-	src := `REVOCATIONS { ALL PRIVILEGES FROM PUBLIC; }`
+	src := `REVOKES { ALL PRIVILEGES FROM PUBLIC; }`
 	ast := parse(t, src)
 	if len(ast.Revocations) != 1 {
 		t.Fatalf("expected 1 revocation, got %d", len(ast.Revocations))
@@ -820,11 +820,11 @@ func TestRevocations(t *testing.T) {
 	}
 }
 
-// Mode B (Section 4.8 Dual Definition Modes): the singular GRANT/REVOCATION keyword
+// Mode B (Section 4.8 Dual Definition Modes): the singular GRANT/REVOKE keyword
 // precedes a single entry outside a plural block and must parse without a
 // wrapping '{ }' — previously this went through the same brace-requiring
-// parser as GRANTS/REVOCATIONS and was a hard parse error, exactly the same
-// conflation bug fixed for INDEX/INDICES.
+// parser as GRANTS/REVOKES and was a hard parse error, exactly the same
+// conflation bug fixed for INDEX/INDEXES.
 func TestGrantModeBSingularKeyword(t *testing.T) {
 	ast := parse(t, `GRANT SELECT, INSERT TO app_service;`)
 	if len(ast.Grants) != 1 {
@@ -837,7 +837,7 @@ func TestGrantModeBSingularKeyword(t *testing.T) {
 }
 
 func TestRevocationModeBSingularKeyword(t *testing.T) {
-	ast := parse(t, `REVOCATION ALL PRIVILEGES FROM PUBLIC;`)
+	ast := parse(t, `REVOKE ALL PRIVILEGES FROM PUBLIC;`)
 	if len(ast.Revocations) != 1 {
 		t.Fatalf("expected 1 revocation, got %d", len(ast.Revocations))
 	}
@@ -851,8 +851,8 @@ func TestGrantRevocationModeAAndBCanMix(t *testing.T) {
 	src := `
 		GRANTS { SELECT TO reader; }
 		GRANT INSERT TO writer;
-		REVOCATIONS { ALL PRIVILEGES FROM PUBLIC; }
-		REVOCATION UPDATE FROM guest;
+		REVOKES { ALL PRIVILEGES FROM PUBLIC; }
+		REVOKE UPDATE FROM guest;
 	`
 	ast := parse(t, src)
 	if len(ast.Grants) != 2 {
@@ -863,11 +863,11 @@ func TestGrantRevocationModeAAndBCanMix(t *testing.T) {
 	}
 }
 
-// GRANT/REVOCATION Mode B inside a COLUMN block exercises the second of the
+// GRANT/REVOKE Mode B inside a COLUMN block exercises the second of the
 // three dispatch sites that had this conflation (table-level, column-level,
 // DEFAULT PRIVILEGES-level).
 func TestGrantModeBInColumnBlock(t *testing.T) {
-	ast := parse(t, `COLUMN email { GRANT SELECT TO reader; REVOCATION UPDATE FROM guest; }`)
+	ast := parse(t, `COLUMN email { GRANT SELECT TO reader; REVOKE UPDATE FROM guest; }`)
 	if len(ast.Columns) != 1 {
 		t.Fatalf("expected 1 column, got %d", len(ast.Columns))
 	}
@@ -877,10 +877,10 @@ func TestGrantModeBInColumnBlock(t *testing.T) {
 	}
 }
 
-// GRANT/REVOCATION Mode B inside a DEFAULT PRIVILEGES block exercises the
+// GRANT/REVOKE Mode B inside a DEFAULT PRIVILEGES block exercises the
 // third of the three dispatch sites that had this conflation.
 func TestGrantModeBInDefaultPrivilegesBlock(t *testing.T) {
-	ast := parse(t, `DEFAULT PRIVILEGES { GRANT SELECT ON TABLES TO reader; REVOCATION UPDATE ON TABLES FROM guest; }`)
+	ast := parse(t, `DEFAULT PRIVILEGES { GRANT SELECT ON TABLES TO reader; REVOKE UPDATE ON TABLES FROM guest; }`)
 	if len(ast.DefaultPrivileges) != 1 {
 		t.Fatalf("expected 1 default privileges block, got %d", len(ast.DefaultPrivileges))
 	}
@@ -952,7 +952,7 @@ func TestDefaultPrivilegesHeaderOrderIndependent(t *testing.T) {
 func TestDefaultPrivilegesWithGrantOptionAndAllPrivileges(t *testing.T) {
 	ast := parse(t, `DEFAULT PRIVILEGES {
 		GRANTS { ALL PRIVILEGES ON TABLES TO app_admin WITH GRANT OPTION; }
-		REVOCATIONS { ALL ON TABLES FROM app_readonly CASCADE; }
+		REVOKES { ALL ON TABLES FROM app_readonly CASCADE; }
 	}`)
 	dp := ast.DefaultPrivileges[0]
 	if dp.Grants[0].Privileges != nil {
@@ -1094,7 +1094,7 @@ func TestParameterPrivilegesMultiplePrivileges(t *testing.T) {
 func TestParameterPrivilegesWithGrantOptionAndAllPrivileges(t *testing.T) {
 	pp, err := blockparser.ParseParameterPrivileges("", `
 		GRANTS { ALL PRIVILEGES ON PARAMETER work_mem TO app_admin WITH GRANT OPTION; }
-		REVOCATIONS { ALL ON PARAMETER work_mem FROM app_readonly CASCADE; }
+		REVOKES { ALL ON PARAMETER work_mem FROM app_readonly CASCADE; }
 	`, zeroPos)
 	if err != nil {
 		t.Fatalf("ParseParameterPrivileges: %v", err)
@@ -1113,11 +1113,11 @@ func TestParameterPrivilegesWithGrantOptionAndAllPrivileges(t *testing.T) {
 	}
 }
 
-// TestParameterPrivilegesRevocation guards a plain REVOCATIONS entry.
+// TestParameterPrivilegesRevocation guards a plain REVOKES entry.
 func TestParameterPrivilegesRevocation(t *testing.T) {
 	pp, err := blockparser.ParseParameterPrivileges(
 		"",
-		`REVOCATIONS { SET ON PARAMETER statement_timeout FROM app_readonly; }`,
+		`REVOKES { SET ON PARAMETER statement_timeout FROM app_readonly; }`,
 		zeroPos,
 	)
 	if err != nil {
@@ -1138,7 +1138,7 @@ func TestParameterPrivilegesRevocation(t *testing.T) {
 func TestParameterPrivilegesGrantedBy(t *testing.T) {
 	pp, err := blockparser.ParseParameterPrivileges("", `
 		GRANTS { SET ON PARAMETER work_mem TO app_admin WITH GRANT OPTION GRANTED BY admin_role; }
-		REVOCATIONS { SET ON PARAMETER work_mem FROM app_readonly GRANTED BY admin_role CASCADE; }
+		REVOKES { SET ON PARAMETER work_mem FROM app_readonly GRANTED BY admin_role CASCADE; }
 	`, zeroPos)
 	if err != nil {
 		t.Fatalf("ParseParameterPrivileges: %v", err)
@@ -1216,7 +1216,7 @@ func TestPolicyRenamedFromWithTrailingComment(t *testing.T) {
 
 // Mode B (Section 4.8 Dual Definition Modes): the singular POLICY keyword precedes a
 // single entry outside a plural block — previously this would have hit the
-// same conflation bug already fixed for INDEX/INDICES and GRANT/REVOCATION
+// same conflation bug already fixed for INDEX/INDEXES and GRANT/REVOKE
 // (POLICY wasn't even in the dispatch switch at all, so it was "unknown block
 // directive", not just brace-mismatched).
 func TestPolicyModeBSingularKeyword(t *testing.T) {
@@ -1548,7 +1548,7 @@ func TestTriggerWithWhen(t *testing.T) {
 }
 
 // Mode B: the singular TRIGGER keyword precedes a single entry outside a
-// plural block — same conflation-bug family as POLICY/INDEX/GRANT/REVOCATION.
+// plural block — same conflation-bug family as POLICY/INDEX/GRANT/REVOKE.
 func TestTriggerModeBSingularKeyword(t *testing.T) {
 	ast := parse(t, `TRIGGER after_insert AFTER INSERT FOR EACH ROW EXECUTE FUNCTION on_insert();`)
 	if len(ast.Triggers) != 1 {
@@ -1626,7 +1626,7 @@ func TestConstraintRenamedFromWithNotValid(t *testing.T) {
 
 // Mode A (Section 4.8 Dual Definition Modes): CONSTRAINTS { } is the plural-block
 // wrapper completing the pattern already offered for the other 7 collection
-// types (INDICES, POLICIES, TRIGGERS, GRANTS, REVOCATIONS, PARTITIONS,
+// types (INDEXES, POLICIES, TRIGGERS, GRANTS, REVOKES, PARTITIONS,
 // COLUMNS) — previously CONSTRAINTS had no parser at all, only the singular
 // CONSTRAINT form worked.
 func TestConstraintsBlock(t *testing.T) {
@@ -1825,7 +1825,7 @@ func TestPartitionRenamedFromWithSubPartitioning(t *testing.T) {
 
 // Mode B: the singular PARTITION keyword precedes a single entry outside a
 // plural block — same conflation-bug family as POLICY/TRIGGER/INDEX/GRANT/
-// REVOCATION. PartitionDef wraps a slice (unlike the others, nothing else
+// REVOKE. PartitionDef wraps a slice (unlike the others, nothing else
 // merges multiple PARTITIONS{} declarations), so Mode B must lazily create it
 // on first use rather than assume it already exists.
 func TestPartitionModeBSingularKeyword(t *testing.T) {
@@ -2261,14 +2261,12 @@ func TestMigrateRemove(t *testing.T) {
 	}
 }
 
-// ── RENAME VALUE ─────────────────────────────────────────────────────────────
+// ── VALUE ... RENAMED FROM ──────────────────────────────────────────────────
 
-// TestEnumRenameValue guards RFC Section 5.1.1's "RENAME VALUE 'old' TO
-// 'new'" enum-block directive (audit item #19) — parsed as a plain block
-// directive rather than the RFC's literal (but PG-invalid) inline per-value
-// placement inside the enum-values list.
+// TestEnumRenameValue guards RFC Section 5.1.1's "VALUE 'new' RENAMED FROM
+// 'old'" enum-block directive.
 func TestEnumRenameValue(t *testing.T) {
-	ast := parse(t, `RENAME VALUE 'pending' TO 'awaiting';`)
+	ast := parse(t, `VALUE 'awaiting' RENAMED FROM 'pending';`)
 	if len(ast.EnumValueRenames) != 1 {
 		t.Fatalf("expected 1 rename, got %d", len(ast.EnumValueRenames))
 	}
@@ -2278,17 +2276,26 @@ func TestEnumRenameValue(t *testing.T) {
 	}
 }
 
-// TestEnumRenameValueMultiple guards that more than one RENAME VALUE
-// directive in the same block accumulates rather than overwriting.
+// TestEnumRenameValueMultiple guards that more than one VALUE ... RENAMED
+// FROM directive in the same block accumulates rather than overwriting.
 func TestEnumRenameValueMultiple(t *testing.T) {
-	src := `RENAME VALUE 'pending' TO 'awaiting';
-	RENAME VALUE 'shipped' TO 'dispatched';`
+	src := `VALUE 'awaiting' RENAMED FROM 'pending';
+	VALUE 'dispatched' RENAMED FROM 'shipped';`
 	ast := parse(t, src)
 	if len(ast.EnumValueRenames) != 2 {
 		t.Fatalf("expected 2 renames, got %d", len(ast.EnumValueRenames))
 	}
 	if ast.EnumValueRenames[0].From != "pending" || ast.EnumValueRenames[1].From != "shipped" {
 		t.Errorf("unexpected rename order/content: %+v", ast.EnumValueRenames)
+	}
+}
+
+// TestEnumRenameValueOldSyntaxRejected guards that the former RENAME VALUE
+// spelling errors with a pointer at the current one.
+func TestEnumRenameValueOldSyntaxRejected(t *testing.T) {
+	err := parseErr(t, `RENAME VALUE 'pending' TO 'awaiting';`)
+	if err == nil || !strings.Contains(err.Error(), "VALUE 'new' RENAMED FROM 'old'") {
+		t.Fatalf("expected error naming the new syntax, got %v", err)
 	}
 }
 
@@ -2304,7 +2311,7 @@ func TestFullTableBlock(t *testing.T) {
 			STATISTICS 300;
 		}
 
-		INDICES {
+		INDEXES {
 			idx_email  (email);
 			idx_status (status) WHERE (status != 'deleted');
 		}
@@ -2326,7 +2333,7 @@ func TestFullTableBlock(t *testing.T) {
 			SELECT                 TO app_readonly;
 		}
 
-		REVOCATIONS {
+		REVOKES {
 			ALL PRIVILEGES FROM PUBLIC;
 		}
 	`
@@ -2637,7 +2644,7 @@ func TestRegistration(t *testing.T) {
 // as part of the column name), and INCLUDE columns must be unquoted — matching
 // key columns — so the differ doesn't double-quote them.
 func TestIndexSortOrderAndInclude(t *testing.T) {
-	ast := parse(t, `INDICES { i (a DESC NULLS LAST, b) INCLUDE ("c", d); }`)
+	ast := parse(t, `INDEXES { i (a DESC NULLS LAST, b) INCLUDE ("c", d); }`)
 	idx := ast.Indices[0]
 	if len(idx.Columns) != 2 {
 		t.Fatalf("expected 2 key columns, got %d: %+v", len(idx.Columns), idx.Columns)
@@ -2657,7 +2664,7 @@ func TestIndexSortOrderAndInclude(t *testing.T) {
 // positioned exactly where real PostgreSQL's CREATE INDEX ... ON ONLY table
 // puts it, after CONCURRENTLY and before the index name.
 func TestIndexOnlyPrefix(t *testing.T) {
-	ast := parse(t, `INDICES { ONLY idx_p (a); }`)
+	ast := parse(t, `INDEXES { ONLY idx_p (a); }`)
 	idx := ast.Indices[0]
 	if !idx.Only {
 		t.Error("expected Only = true")
@@ -2665,7 +2672,7 @@ func TestIndexOnlyPrefix(t *testing.T) {
 }
 
 func TestIndexUniqueConcurrentlyOnlyPrefixOrder(t *testing.T) {
-	ast := parse(t, `INDICES { UNIQUE CONCURRENTLY ONLY idx_p (a); }`)
+	ast := parse(t, `INDEXES { UNIQUE CONCURRENTLY ONLY idx_p (a); }`)
 	idx := ast.Indices[0]
 	if !idx.Unique || !idx.Concurrently || !idx.Only {
 		t.Errorf("expected Unique/Concurrently/Only all true, got %+v", idx)
@@ -2682,7 +2689,7 @@ func TestIndexUniqueConcurrentlyOnlyPrefixOrder(t *testing.T) {
 // plus an opclass with parameters, RFC Section 7.7's own worked example),
 // was silently swallowed whole into one bogus expression column.
 func TestIndexOpclassWithParams(t *testing.T) {
-	ast := parse(t, `INDICES { idx_doc USING gist (doc tsvector_ops(siglen = 32)); }`)
+	ast := parse(t, `INDEXES { idx_doc USING gist (doc tsvector_ops(siglen = 32)); }`)
 	idx := ast.Indices[0]
 	if len(idx.Columns) != 1 {
 		t.Fatalf("expected 1 column, got %d: %+v", len(idx.Columns), idx.Columns)
@@ -2702,7 +2709,7 @@ func TestIndexOpclassWithParams(t *testing.T) {
 // TestIndexOpclassBareNoParams guards the simpler, far more common bare-
 // opclass form (no parameters) still works after the rewrite.
 func TestIndexOpclassBareNoParams(t *testing.T) {
-	ast := parse(t, `INDICES { idx_a (a varchar_pattern_ops); }`)
+	ast := parse(t, `INDEXES { idx_a (a varchar_pattern_ops); }`)
 	col := ast.Indices[0].Columns[0]
 	if col.Name != "a" {
 		t.Errorf("Name: got %q", col.Name)
@@ -2719,7 +2726,7 @@ func TestIndexOpclassBareNoParams(t *testing.T) {
 // real PostgreSQL's own fixed order: name, COLLATE, opclass, DESC, NULLS
 // LAST all on one column.
 func TestIndexCollateOpclassSortOrder(t *testing.T) {
-	ast := parse(t, `INDICES { idx_a (a COLLATE "en_US" text_pattern_ops DESC NULLS LAST); }`)
+	ast := parse(t, `INDEXES { idx_a (a COLLATE "en_US" text_pattern_ops DESC NULLS LAST); }`)
 	col := ast.Indices[0].Columns[0]
 	if col.Name != "a" {
 		t.Errorf("Name: got %q", col.Name)
@@ -2740,7 +2747,7 @@ func TestIndexCollateOpclassSortOrder(t *testing.T) {
 // rewrite from suffix-stripping to left-to-right parsing — including a
 // trailing DESC after the expression's own closing paren.
 func TestIndexExpressionColumnStillParses(t *testing.T) {
-	ast := parse(t, `INDICES { idx_e ((lower(email)) DESC); }`)
+	ast := parse(t, `INDEXES { idx_e ((lower(email)) DESC); }`)
 	col := ast.Indices[0].Columns[0]
 	if col.Expr == nil || col.Expr.Text != "lower(email)" {
 		t.Fatalf("Expr: got %+v", col.Expr)
@@ -2757,7 +2764,7 @@ func TestIndexExpressionColumnStillParses(t *testing.T) {
 // followed by a bogus empty opclass — real PostgreSQL's own
 // func_expr_windowless index_elem alternative allows this form directly.
 func TestIndexExpressionColumnBareFunctionCall(t *testing.T) {
-	ast := parse(t, `INDICES { idx_e (lower(email) DESC); }`)
+	ast := parse(t, `INDEXES { idx_e (lower(email) DESC); }`)
 	col := ast.Indices[0].Columns[0]
 	if col.Name != "" {
 		t.Errorf("Name: got %q, want empty (this must parse as an expression)", col.Name)
@@ -2889,5 +2896,57 @@ func TestOpFamilyMemberForGarbageErrors(t *testing.T) {
 func TestOpFamilyMemberNonNumericNumberErrors(t *testing.T) {
 	if err := parseErr(t, `OPERATOR x <(int4, int8)`); err == nil {
 		t.Fatal("expected an error for a non-numeric strategy number")
+	}
+}
+
+func TestRenamedKeywordsErrorWithReplacement(t *testing.T) {
+	cases := []struct{ src, want string }{
+		{`INDICES { idx_a (a); }`, "INDICES was renamed to INDEXES"},
+		{`REVOCATIONS { SELECT FROM PUBLIC; }`, "REVOCATIONS was renamed to REVOKES"},
+		{`REVOCATION SELECT FROM PUBLIC;`, "REVOCATION was renamed to REVOKE"},
+		{`COLUMN a { REVOCATIONS { SELECT FROM PUBLIC; } }`, "REVOCATIONS was renamed to REVOKES"},
+	}
+	for _, c := range cases {
+		err := parseErr(t, c.src)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: expected error containing %q, got %v", c.src, c.want, err)
+		}
+	}
+}
+
+func TestRenamedKeywordsParse(t *testing.T) {
+	ast := parse(t, `INDEXES { idx_a (a); }
+REVOKES { SELECT FROM PUBLIC; }
+REVOKE INSERT FROM PUBLIC;`)
+	if len(ast.Indices) != 1 || len(ast.Revocations) != 2 {
+		t.Fatalf("expected 1 index and 2 revocations, got %d and %d", len(ast.Indices), len(ast.Revocations))
+	}
+}
+
+// TestUnquotedIdentifiersFold guards RFC Section 4.10: unquoted identifiers
+// in a { } block are case-folded exactly as PostgreSQL folds them in Part 1,
+// quoted ones are kept verbatim, and role keywords stay uppercase.
+func TestUnquotedIdentifiersFold(t *testing.T) {
+	ast := parse(t, `OWNER App_Admin;
+COLUMN Email { COMMENT 'x'; }
+COLUMN "MixedCase" { COMMENT 'y'; }
+INDEX Idx_A (ColA, "ColB") INCLUDE (ColC, "ColD");
+REVOKE SELECT FROM public, Some_Role;`)
+	if ast.Owner == nil || ast.Owner.Name != "app_admin" {
+		t.Errorf("owner: got %v, want app_admin", ast.Owner)
+	}
+	if ast.Columns[0].Name.Name != "email" || ast.Columns[1].Name.Name != "MixedCase" {
+		t.Errorf("columns: got %q, %q", ast.Columns[0].Name.Name, ast.Columns[1].Name.Name)
+	}
+	idx := ast.Indices[0]
+	if idx.Name.Name != "idx_a" || idx.Columns[0].Name != "cola" || idx.Columns[1].Name != "ColB" {
+		t.Errorf("index: got name %q cols %+v", idx.Name.Name, idx.Columns)
+	}
+	if len(idx.Include) != 2 || idx.Include[0].Name != "colc" || idx.Include[1].Name != "ColD" {
+		t.Errorf("include: got %+v", idx.Include)
+	}
+	roles := ast.Revocations[0].Roles
+	if roles[0].Name != "PUBLIC" || roles[1].Name != "some_role" {
+		t.Errorf("roles: got %+v", roles)
 	}
 }

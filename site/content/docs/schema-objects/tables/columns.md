@@ -129,7 +129,7 @@ GRANT SELECT ("email") ON TABLE "public"."users" TO "reporting_role";
 | `DEPRECATED "msg"` | `COMMENT ON COLUMN t.c IS '[DEPRECATED] msg'` |
 | `RENAMED FROM old` | `ALTER TABLE t RENAME COLUMN old TO new` |
 | `GRANTS { }` | `GRANT privilege (col) ON TABLE t TO role` |
-| `REVOCATIONS { }` | `REVOKE privilege (col) ON TABLE t FROM role` |
+| `REVOKES { }` | `REVOKE privilege (col) ON TABLE t FROM role` |
 
 ## Column rename
 

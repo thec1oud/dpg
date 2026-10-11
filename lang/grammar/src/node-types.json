@@ -4,6 +4,14 @@
     "named": true,
     "subtypes": [
       {
+        "type": "attribute_block",
+        "named": true
+      },
+      {
+        "type": "attributes_block",
+        "named": true
+      },
+      {
         "type": "check_directive",
         "named": true
       },
@@ -32,6 +40,10 @@
         "named": true
       },
       {
+        "type": "enum_value_rename_directive",
+        "named": true
+      },
+      {
         "type": "grant_directive",
         "named": true
       },
@@ -40,7 +52,7 @@
         "named": true
       },
       {
-        "type": "indices_block",
+        "type": "indexes_block",
         "named": true
       },
       {
@@ -92,11 +104,11 @@
         "named": true
       },
       {
-        "type": "revocations_block",
+        "type": "revoke_directive",
         "named": true
       },
       {
-        "type": "revoke_directive",
+        "type": "revokes_block",
         "named": true
       },
       {
@@ -311,6 +323,81 @@
         },
         {
           "type": "string_literal",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "attribute_block",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "comment_directive",
+          "named": true
+        },
+        {
+          "type": "renamed_from_directive",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "attribute_entry",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "comment_directive",
+          "named": true
+        },
+        {
+          "type": "renamed_from_directive",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "attributes_block",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "attribute_entry",
           "named": true
         }
       ]
@@ -801,6 +888,32 @@
     }
   },
   {
+    "type": "enum_value_rename_directive",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "string_literal",
+            "named": true
+          }
+        ]
+      },
+      "old_name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "string_literal",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "event_trigger_declaration",
     "named": true,
     "fields": {
@@ -1125,7 +1238,7 @@
     }
   },
   {
-    "type": "indices_block",
+    "type": "indexes_block",
     "named": true,
     "fields": {},
     "children": {
@@ -1930,21 +2043,6 @@
     }
   },
   {
-    "type": "revocations_block",
-    "named": true,
-    "fields": {},
-    "children": {
-      "multiple": true,
-      "required": false,
-      "types": [
-        {
-          "type": "revoke_directive",
-          "named": true
-        }
-      ]
-    }
-  },
-  {
     "type": "revoke_directive",
     "named": true,
     "fields": {
@@ -1965,6 +2063,21 @@
       "types": [
         {
           "type": "identifier",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "revokes_block",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "revoke_directive",
           "named": true
         }
       ]
@@ -2757,6 +2870,14 @@
     "named": false
   },
   {
+    "type": "ATTRIBUTE",
+    "named": false
+  },
+  {
+    "type": "ATTRIBUTES",
+    "named": false
+  },
+  {
     "type": "BEFORE",
     "named": false
   },
@@ -2985,7 +3106,7 @@
     "named": false
   },
   {
-    "type": "INDICES",
+    "type": "INDEXES",
     "named": false
   },
   {
@@ -3233,7 +3354,7 @@
     "named": false
   },
   {
-    "type": "REVOCATIONS",
+    "type": "REVOKES",
     "named": false
   },
   {
@@ -3418,6 +3539,10 @@
   },
   {
     "type": "VALIDATOR",
+    "named": false
+  },
+  {
+    "type": "VALUE",
     "named": false
   },
   {

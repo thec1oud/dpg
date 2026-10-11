@@ -35,6 +35,20 @@ func buildObject(t *testing.T, kind pipeline.ObjectKind, part1, part2 string) pi
 	return obj
 }
 
+// buildObjectErr is buildObject for cases expected to fail at build time.
+func buildObjectErr(t *testing.T, kind pipeline.ObjectKind, part1, part2 string) (pipeline.IRObject, error) {
+	t.Helper()
+	pgResult, err := pgparser.New().Parse(kind, part1, zeroPos)
+	if err != nil {
+		t.Fatalf("pg parse error: %v", err)
+	}
+	blockAST, err := blockparser.New().Parse(kind, part2, zeroPos)
+	if err != nil {
+		t.Fatalf("block parse error: %v", err)
+	}
+	return ir.NewBuilder().Build(pgResult, blockAST)
+}
+
 // ── Table ─────────────────────────────────────────────────────────────────────
 
 // TestBuildUnloggedTableSetsFlag guards a real, pre-existing bug found while
@@ -76,7 +90,7 @@ func TestBuildTableAndIndexTablespace(t *testing.T) {
 			id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 			data JSONB
 		) TABLESPACE archive_space`,
-		`INDICES { idx_data (data) TABLESPACE archive_space; }`,
+		`INDEXES { idx_data (data) TABLESPACE archive_space; }`,
 	)
 	tbl, ok := obj.(*ir.Table)
 	if !ok {
@@ -692,7 +706,7 @@ func TestBuildTableWithBlock(t *testing.T) {
 			COMMENT 'Primary user store';
 			OWNER   "app_role";
 			COLUMN email { COMMENT 'Email address'; STATISTICS 300; }
-			INDICES { idx_email (email); }
+			INDEXES { idx_email (email); }
 			ENABLE ROW LEVEL SECURITY;
 			GRANTS { SELECT TO app_readonly; }
 		`,
@@ -1124,7 +1138,7 @@ func TestBuildRecursiveViewSetsFlag(t *testing.T) {
 func TestBuildTableGrantedBy(t *testing.T) {
 	obj := buildObject(t, pipeline.KindTable,
 		`orders (id INT)`,
-		`GRANTS { SELECT TO reader GRANTED BY admin; } REVOCATIONS { SELECT FROM reader GRANTED BY admin; }`,
+		`GRANTS { SELECT TO reader GRANTED BY admin; } REVOKES { SELECT FROM reader GRANTED BY admin; }`,
 	)
 	tbl, ok := obj.(*ir.Table)
 	if !ok {
@@ -1141,7 +1155,7 @@ func TestBuildTableGrantedBy(t *testing.T) {
 func TestBuildTablespaceGrantsAndRevocations(t *testing.T) {
 	obj := buildObject(t, pipeline.KindTablespace,
 		`gl_ts LOCATION '/var/lib/postgresql/ts1'`,
-		`GRANTS { CREATE TO app_service; } REVOCATIONS { CREATE FROM PUBLIC; }`,
+		`GRANTS { CREATE TO app_service; } REVOKES { CREATE FROM PUBLIC; }`,
 	)
 	ts, ok := obj.(*ir.Tablespace)
 	if !ok {
@@ -1223,7 +1237,7 @@ func TestBuildTablespaceOwnerUnspecified(t *testing.T) {
 func TestBuildFDWGrantsAndRevocations(t *testing.T) {
 	obj := buildObject(t, pipeline.KindFDW,
 		`gl_fdw HANDLER file_fdw_handler`,
-		`GRANTS { USAGE TO app_service; } REVOCATIONS { USAGE FROM PUBLIC; }`,
+		`GRANTS { USAGE TO app_service; } REVOKES { USAGE FROM PUBLIC; }`,
 	)
 	f, ok := obj.(*ir.ForeignDataWrapper)
 	if !ok {
@@ -1240,7 +1254,7 @@ func TestBuildFDWGrantsAndRevocations(t *testing.T) {
 func TestBuildServerGrantsAndRevocations(t *testing.T) {
 	obj := buildObject(t, pipeline.KindServer,
 		`gl_srv FOREIGN DATA WRAPPER gl_fdw2`,
-		`GRANTS { USAGE TO app_service; } REVOCATIONS { USAGE FROM PUBLIC; }`,
+		`GRANTS { USAGE TO app_service; } REVOKES { USAGE FROM PUBLIC; }`,
 	)
 	s, ok := obj.(*ir.ForeignServer)
 	if !ok {
@@ -1378,13 +1392,13 @@ func TestBuildViewNoTablespaceOrStorageParams(t *testing.T) {
 }
 
 // TestBuildMaterializedViewIndices guards RFC Section 8.2's matview-block: a
-// materialized view's { } block MAY contain INDICES { } — previously
+// materialized view's { } block MAY contain INDEXES { } — previously
 // entirely unimplemented (no IR field existed to hold it, and the
 // blockparser's generically-parsed block.Indices was just never read here).
 func TestBuildMaterializedViewIndices(t *testing.T) {
 	obj := buildObject(t, pipeline.KindMaterializedView,
 		`order_status_summary AS SELECT status, count(*) AS order_count FROM orders GROUP BY status`,
-		`INDICES { UNIQUE order_status_summary_status_uq (status); }`,
+		`INDEXES { UNIQUE order_status_summary_status_uq (status); }`,
 	)
 	v := obj.(*ir.View)
 	if len(v.Indexes) != 1 {
@@ -1396,7 +1410,7 @@ func TestBuildMaterializedViewIndices(t *testing.T) {
 	}
 }
 
-// TestBuildViewIndicesRejected guards the RFC's own restriction: INDICES is
+// TestBuildViewIndicesRejected guards the RFC's own restriction: INDEXES is
 // only valid in a MATERIALIZED VIEW's block (matview-directive), never a
 // plain or recursive VIEW's (view-directive omits indices-block) — real
 // PostgreSQL doesn't support indexes on a non-materialized view at all, so
@@ -1410,17 +1424,17 @@ func TestBuildViewIndicesRejected(t *testing.T) {
 	}
 	bp := blockparser.New()
 	blockAST, err := bp.Parse(pipeline.KindView,
-		`INDICES { idx_active (id); }`, zeroPos)
+		`INDEXES { idx_active (id); }`, zeroPos)
 	if err != nil {
 		t.Fatalf("block parse error: %v", err)
 	}
 	builder := ir.NewBuilder()
 	_, err = builder.Build(pgResult, blockAST)
 	if err == nil {
-		t.Fatal("expected an error declaring INDICES on a plain VIEW, got nil")
+		t.Fatal("expected an error declaring INDEXES on a plain VIEW, got nil")
 	}
-	if !strings.Contains(err.Error(), "INDICES") || !strings.Contains(err.Error(), "MATERIALIZED VIEW") {
-		t.Errorf("error should mention INDICES and MATERIALIZED VIEW, got: %v", err)
+	if !strings.Contains(err.Error(), "INDEXES") || !strings.Contains(err.Error(), "MATERIALIZED VIEW") {
+		t.Errorf("error should mention INDEXES and MATERIALIZED VIEW, got: %v", err)
 	}
 }
 
@@ -1454,7 +1468,7 @@ func TestBuildEnum(t *testing.T) {
 func TestBuildEnumRenameValue(t *testing.T) {
 	obj := buildObject(t, pipeline.KindEnum,
 		`status AS ENUM ('active', 'awaiting', 'inactive')`,
-		`RENAME VALUE 'pending' TO 'awaiting';`,
+		`VALUE 'awaiting' RENAMED FROM 'pending';`,
 	)
 	tp, ok := obj.(*ir.Type)
 	if !ok {
@@ -1471,11 +1485,11 @@ func TestBuildEnumRenameValue(t *testing.T) {
 
 // TestBuildEnumGrantsAndRevocations guards RFC audit item #3: ir.Type had
 // no Grants/Revocations field at all, for any of the 5 variants — a
-// declared GRANT/REVOCATION in a TYPE block was silently discarded.
+// declared GRANT/REVOKE in a TYPE block was silently discarded.
 func TestBuildEnumGrantsAndRevocations(t *testing.T) {
 	obj := buildObject(t, pipeline.KindEnum,
 		`status AS ENUM ('active', 'pending', 'inactive')`,
-		`GRANTS { USAGE TO app_service; } REVOCATIONS { USAGE FROM PUBLIC; }`,
+		`GRANTS { USAGE TO app_service; } REVOKES { USAGE FROM PUBLIC; }`,
 	)
 	tp := obj.(*ir.Type)
 	if len(tp.Grants) != 1 {
@@ -1557,18 +1571,12 @@ func TestBuildCompositeTypeAttributeCollation(t *testing.T) {
 	}
 }
 
-// TestBuildCompositeTypeColumnBlockSetsRenamedFrom is the regression guard
-// for RFC audit item #12: buildCompositeType built CompositeAttrs purely
-// from the native CREATE TYPE ... AS ( ) coldeflist and never read
-// block.Columns at all — a COLUMN attr { RENAMED FROM old; } sub-block (RFC
-// Section 5.2: "the same [COLUMN] mechanism applies to composite type attributes")
-// was silently discarded before it ever reached the differ, which then saw
-// an unrelated drop+add of two differently-named attributes instead of a
-// rename.
-func TestBuildCompositeTypeColumnBlockSetsRenamedFrom(t *testing.T) {
+// TestBuildCompositeTypeAttributeBlock guards RFC Section 5.2's ATTRIBUTE
+// name { RENAMED FROM old; COMMENT '...'; } sub-block on a composite type.
+func TestBuildCompositeTypeAttributeBlock(t *testing.T) {
 	obj := buildObject(t, pipeline.KindCompositeType,
 		`address AS (new_name text, city text)`,
-		`COLUMN new_name { RENAMED FROM old_name; }`,
+		`ATTRIBUTE new_name { RENAMED FROM old_name; COMMENT 'renamed'; }`,
 	)
 	tp := obj.(*ir.Type)
 	if len(tp.CompositeAttrs) != 2 {
@@ -1581,16 +1589,39 @@ func TestBuildCompositeTypeColumnBlockSetsRenamedFrom(t *testing.T) {
 	if attr.RenamedFrom == nil || *attr.RenamedFrom != "old_name" {
 		t.Errorf("CompositeAttrs[0].RenamedFrom: got %v, want %q", attr.RenamedFrom, "old_name")
 	}
+	if attr.Comment == nil || *attr.Comment != "renamed" {
+		t.Errorf("CompositeAttrs[0].Comment: got %v, want %q", attr.Comment, "renamed")
+	}
 	if tp.CompositeAttrs[1].RenamedFrom != nil {
 		t.Errorf("CompositeAttrs[1] (city) should have no RenamedFrom, got %v", tp.CompositeAttrs[1].RenamedFrom)
 	}
 }
 
-// TestBuildCompositeTypeRejectsUnknownColumnBlock mirrors
-// TestBuildTableRejectsUnknownColumnBlock for composite types: a COLUMN
+// TestBuildCompositeTypeRejectsColumnBlock guards that COLUMN (a table
+// keyword) is rejected on a composite type, pointing at ATTRIBUTE.
+func TestBuildCompositeTypeRejectsColumnBlock(t *testing.T) {
+	_, err := buildObjectErr(t, pipeline.KindCompositeType,
+		`address AS (street text)`, `COLUMN street { COMMENT 'x'; }`)
+	if err == nil || !strings.Contains(err.Error(), "ATTRIBUTE") {
+		t.Fatalf("expected error pointing at ATTRIBUTE, got %v", err)
+	}
+}
+
+// TestBuildTableRejectsAttributeBlock guards that ATTRIBUTE is rejected
+// outside a composite type.
+func TestBuildTableRejectsAttributeBlock(t *testing.T) {
+	_, err := buildObjectErr(t, pipeline.KindTable,
+		`t (a int)`, `ATTRIBUTE a { COMMENT 'x'; }`)
+	if err == nil || !strings.Contains(err.Error(), "ATTRIBUTE is only valid") {
+		t.Fatalf("expected ATTRIBUTE-on-table error, got %v", err)
+	}
+}
+
+// TestBuildCompositeTypeRejectsUnknownAttributeBlock mirrors
+// TestBuildTableRejectsUnknownColumnBlock for composite types: an ATTRIBUTE
 // block naming an attribute absent from the type's ( ) list must be a build
 // error, not a silently-invented phantom attribute.
-func TestBuildCompositeTypeRejectsUnknownColumnBlock(t *testing.T) {
+func TestBuildCompositeTypeRejectsUnknownAttributeBlock(t *testing.T) {
 	p := pgparser.New()
 	pgResult, err := p.Parse(pipeline.KindCompositeType, `address AS (street text, city text)`, zeroPos)
 	if err != nil {
@@ -1598,13 +1629,13 @@ func TestBuildCompositeTypeRejectsUnknownColumnBlock(t *testing.T) {
 	}
 	bp := blockparser.New()
 	blockAST, err := bp.Parse(pipeline.KindCompositeType,
-		`COLUMN streets { RENAMED FROM street; }`, zeroPos)
+		`ATTRIBUTE streets { RENAMED FROM street; }`, zeroPos)
 	if err != nil {
 		t.Fatalf("block parse: %v", err)
 	}
 	_, err = ir.NewBuilder().Build(pgResult, blockAST)
 	if err == nil {
-		t.Fatal("expected build error for unknown COLUMN block target, got nil")
+		t.Fatal("expected build error for unknown ATTRIBUTE block target, got nil")
 	}
 	msg := err.Error()
 	for _, want := range []string{`"streets"`, "street"} {
@@ -1764,7 +1795,7 @@ func TestBuildDomainBlockSyntax(t *testing.T) {
 func TestBuildDomainGrantsAndRevocations(t *testing.T) {
 	obj := buildObject(t, pipeline.KindDomainType,
 		`positive_integer AS integer`,
-		`GRANTS { USAGE TO app_service; } REVOCATIONS { USAGE FROM PUBLIC; }`,
+		`GRANTS { USAGE TO app_service; } REVOKES { USAGE FROM PUBLIC; }`,
 	)
 	tp := obj.(*ir.Type)
 	if len(tp.Grants) != 1 {
@@ -1823,8 +1854,8 @@ func TestBuildFunction(t *testing.T) {
 }
 
 // TestBuildFunctionGrantsAndRevocations guards a real bug found live-testing
-// REVOCATIONS against a demo project: ir.Function had no Revocations field at
-// all, so a declared REVOCATIONS block was parsed generically by the
+// REVOKES against a demo project: ir.Function had no Revocations field at
+// all, so a declared REVOKES block was parsed generically by the
 // blockparser but silently dropped by buildFunction — only the GRANT half of
 // the block ever reached the IR.
 // TestBuildFunctionLeakproofAndTransform guards RFC audit items #25/#26:
@@ -1970,7 +2001,7 @@ func TestBuildProcedureAtomicBodyAndTransform(t *testing.T) {
 func TestBuildFunctionGrantsAndRevocations(t *testing.T) {
 	obj := buildObject(t, pipeline.KindFunction,
 		`add(a INT, b INT) RETURNS INT LANGUAGE sql AS $$ SELECT a + b $$;`,
-		`GRANTS { EXECUTE TO app_service; } REVOCATIONS { EXECUTE FROM PUBLIC; }`,
+		`GRANTS { EXECUTE TO app_service; } REVOKES { EXECUTE FROM PUBLIC; }`,
 	)
 	fn, ok := obj.(*ir.Function)
 	if !ok {
@@ -1992,7 +2023,7 @@ func TestBuildFunctionGrantsAndRevocations(t *testing.T) {
 func TestBuildProcedureGrantsAndRevocations(t *testing.T) {
 	obj := buildObject(t, pipeline.KindProcedure,
 		`mark_order_paid(bigint) LANGUAGE plpgsql AS $$ BEGIN NULL; END; $$;`,
-		`GRANTS { EXECUTE TO app_service; } REVOCATIONS { EXECUTE FROM PUBLIC; }`,
+		`GRANTS { EXECUTE TO app_service; } REVOKES { EXECUTE FROM PUBLIC; }`,
 	)
 	proc, ok := obj.(*ir.Procedure)
 	if !ok {
@@ -2011,12 +2042,12 @@ func TestBuildProcedureGrantsAndRevocations(t *testing.T) {
 
 // TestBuildAggregateGrantsAndRevocations is TestBuildFunctionGrantsAndRevocations's
 // AGGREGATE counterpart — ir.Aggregate had the identical missing-field bug
-// (REVOCATIONS parsed generically by the blockparser but silently dropped by
+// (REVOKES parsed generically by the blockparser but silently dropped by
 // the AGGREGATE case in buildObject).
 func TestBuildAggregateGrantsAndRevocations(t *testing.T) {
 	obj := buildObject(t, pipeline.KindAggregate,
 		`amount_product (numeric) (SFUNC = numeric_mul, STYPE = numeric, INITCOND = '1')`,
-		`GRANTS { EXECUTE TO app_service; } REVOCATIONS { EXECUTE FROM PUBLIC; }`,
+		`GRANTS { EXECUTE TO app_service; } REVOKES { EXECUTE FROM PUBLIC; }`,
 	)
 	agg, ok := obj.(*ir.Aggregate)
 	if !ok {
@@ -4863,7 +4894,7 @@ func TestBuildParameterPrivileges(t *testing.T) {
 func TestBuildParameterPrivilegesGrantedBy(t *testing.T) {
 	pp := buildParameterPrivileges(t, "", `
 		GRANTS { SET ON PARAMETER work_mem TO app_admin GRANTED BY admin_role; }
-		REVOCATIONS { SET ON PARAMETER work_mem FROM app_readonly GRANTED BY admin_role; }
+		REVOKES { SET ON PARAMETER work_mem FROM app_readonly GRANTED BY admin_role; }
 	`)
 	if pp.Grants[0].GrantedBy == nil || *pp.Grants[0].GrantedBy != "admin_role" {
 		t.Errorf("Grant.GrantedBy: got %v", pp.Grants[0].GrantedBy)
@@ -4889,7 +4920,7 @@ func TestBuildParameterPrivilegesQualifiedNameIsConstant(t *testing.T) {
 // including Cascade.
 func TestBuildParameterPrivilegesRevocation(t *testing.T) {
 	pp := buildParameterPrivileges(t, "", `
-		REVOCATIONS {
+		REVOKES {
 			ALTER SYSTEM ON PARAMETER shared_preload_libraries FROM app_readonly CASCADE;
 		}
 	`)

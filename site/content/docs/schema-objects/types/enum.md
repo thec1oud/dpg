@@ -7,7 +7,7 @@ weight: 1
 ## Basic ENUM
 
 ```sql
-ENUM user_status ('active', 'suspended', 'deleted');
+TYPE user_status AS ENUM ('active', 'suspended', 'deleted');
 ```
 
 ```sql
@@ -18,7 +18,7 @@ CREATE TYPE "public"."user_status" AS ENUM ('active', 'suspended', 'deleted');
 ## ENUM with comment
 
 ```sql
-ENUM invoice_status ('draft', 'sent', 'paid', 'void', 'overdue') {
+TYPE invoice_status AS ENUM ('draft', 'sent', 'paid', 'void', 'overdue') {
     COMMENT 'Billing lifecycle states for customer invoices';
 }
 ```
@@ -35,10 +35,10 @@ Add a value to the end of the list (or use `BEFORE`/`AFTER` positioning in sourc
 
 ```sql
 -- before
-ENUM order_status ('pending', 'confirmed', 'shipped', 'delivered');
+TYPE order_status AS ENUM ('pending', 'confirmed', 'shipped', 'delivered');
 
 -- after (add 'refunded')
-ENUM order_status ('pending', 'confirmed', 'shipped', 'delivered', 'refunded');
+TYPE order_status AS ENUM ('pending', 'confirmed', 'shipped', 'delivered', 'refunded');
 ```
 
 ```sql
@@ -48,11 +48,11 @@ ALTER TYPE "public"."order_status" ADD VALUE 'refunded';
 
 ## Renaming a value
 
-Renaming is a `{ }` block directive, not inline value-list syntax — a value's position is inferred purely from list order, so `RENAME VALUE` is the only way to express a rename.
+Renaming a value is a `{ }` block directive, `VALUE 'new' RENAMED FROM 'old';` — PostgreSQL's enum value list accepts only bare string literals, so a rename can't be written inline.
 
 ```sql
-ENUM order_status ('pending', 'confirmed', 'shipped', 'delivered') {
-    RENAME VALUE 'fulfilled' TO 'delivered';
+TYPE order_status AS ENUM ('pending', 'confirmed', 'shipped', 'delivered') {
+    VALUE 'delivered' RENAMED FROM 'fulfilled';
 }
 ```
 
@@ -66,7 +66,7 @@ ALTER TYPE "public"."order_status" RENAME VALUE 'fulfilled' TO 'delivered';
 PostgreSQL has no `ALTER TYPE DROP VALUE`. DPG handles removal through a safe six-step migration.
 
 ```sql
-ENUM order_status ('pending', 'confirmed', 'shipped', 'delivered') {
+TYPE order_status AS ENUM ('pending', 'confirmed', 'shipped', 'delivered') {
     MIGRATE REMOVE ('cancelled') {
         UPDATE orders SET status = 'delivered' WHERE status = 'cancelled';
     }

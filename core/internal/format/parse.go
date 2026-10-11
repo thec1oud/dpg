@@ -30,11 +30,9 @@ func kindKeyword(k pipeline.ObjectKind) string {
 		return "PROCEDURE"
 	case pipeline.KindAggregate:
 		return "AGGREGATE"
-	case pipeline.KindEnum:
-		return "ENUM"
 	case pipeline.KindVirtualType:
 		return "VIRTUAL TYPE"
-	case pipeline.KindCompositeType, pipeline.KindRangeType, pipeline.KindBaseType:
+	case pipeline.KindEnum, pipeline.KindCompositeType, pipeline.KindRangeType, pipeline.KindBaseType:
 		return "TYPE"
 	case pipeline.KindDomainType:
 		return "DOMAIN"

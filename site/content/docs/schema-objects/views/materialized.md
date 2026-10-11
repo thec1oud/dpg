@@ -41,7 +41,7 @@ TABLESPACE analytics_space AS
     FROM order_items
     GROUP BY product_id
 WITH NO DATA {
-    INDICES { idx_product_stats_id (product_id); }
+    INDEXES { idx_product_stats_id (product_id); }
     GRANTS  { SELECT TO app_readonly; }
 }
 ```

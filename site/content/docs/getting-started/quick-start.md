@@ -12,7 +12,7 @@ weight: 2
 
 **Safety-classified.** Every generated statement is tagged `SAFE`, `CAUTION`, `DESTRUCTIVE`, or `MANUAL`. Destructive operations are blocked by default; they require `--allow-destructive` to proceed.
 
-**Additive grants.** DPG only emits `GRANT`. It never auto-revokes. Removing a `GRANTS` entry emits nothing — write an explicit `REVOCATIONS { }` block to revoke.
+**Additive grants.** DPG only emits `GRANT`. It never auto-revokes. Removing a `GRANTS` entry emits nothing — write an explicit `REVOKES { }` block to revoke.
 
 **No new DSL.** Part 1 of every declaration is valid PostgreSQL DDL syntax with the leading `CREATE` verb stripped. `FUNCTION` bodies, `VIEW` queries, `TABLE` column lists — all are written exactly as PostgreSQL requires.
 
@@ -72,7 +72,7 @@ TABLE users (
     CONSTRAINT pk_users       PRIMARY KEY (id),
     CONSTRAINT uq_users_email UNIQUE (email)
 ) {
-    INDICES { idx_users_email (email); }
+    INDEXES { idx_users_email (email); }
     GRANTS {
         SELECT TO app_readonly;
         SELECT, INSERT, UPDATE TO app_service;

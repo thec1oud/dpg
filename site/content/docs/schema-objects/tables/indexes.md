@@ -4,7 +4,7 @@ description: "All index methods, partial indexes, expression indexes, covering i
 weight: 4
 ---
 
-Indexes are declared in the `INDICES { }` block inside a table's `{ }`. By default, DPG emits plain `CREATE INDEX` for additions on existing tables. Write `CONCURRENTLY` on an individual index to make it `CREATE INDEX CONCURRENTLY` instead — emitted as a non-transactional step after `COMMIT`.
+Indexes are declared in the `INDEXES { }` block inside a table's `{ }`. By default, DPG emits plain `CREATE INDEX` for additions on existing tables. Write `CONCURRENTLY` on an individual index to make it `CREATE INDEX CONCURRENTLY` instead — emitted as a non-transactional step after `COMMIT`.
 
 `UNIQUE` and `CONCURRENTLY` are both prefix keywords, written before the index name — mirroring real PostgreSQL's own `CREATE UNIQUE INDEX CONCURRENTLY name ON table` order exactly. `CONCURRENTLY` is a bare presence keyword, same as in real PostgreSQL: there is no `CONCURRENTLY false` and no project-wide setting that changes the default — writing the keyword is the only way an index is ever created concurrently.
 
@@ -13,7 +13,7 @@ Indexes are declared in the `INDICES { }` block inside a table's `{ }`. By defau
 ```sql
 TABLE users ( email TEXT NOT NULL, ... )
 {
-    INDICES { idx_users_email (email); }
+    INDEXES { idx_users_email (email); }
 }
 ```
 
@@ -26,7 +26,7 @@ CREATE INDEX IF NOT EXISTS "idx_users_email"
 ## Unique index
 
 ```sql
-{ INDICES { UNIQUE idx_unique_slug (slug); } }
+{ INDEXES { UNIQUE idx_unique_slug (slug); } }
 ```
 
 ```sql
@@ -37,7 +37,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS "idx_unique_slug"
 ## Composite index with sort order
 
 ```sql
-{ INDICES { idx_tenant_created (tenant_id ASC, created_at DESC); } }
+{ INDEXES { idx_tenant_created (tenant_id ASC, created_at DESC); } }
 ```
 
 ```sql
@@ -48,7 +48,7 @@ CREATE INDEX IF NOT EXISTS "idx_tenant_created"
 ## Partial index
 
 ```sql
-{ INDICES { idx_active_users (email) WHERE (status = 'active'); } }
+{ INDEXES { idx_active_users (email) WHERE (status = 'active'); } }
 ```
 
 ```sql
@@ -59,7 +59,7 @@ CREATE INDEX IF NOT EXISTS "idx_active_users"
 ## Expression index
 
 ```sql
-{ INDICES { idx_lower_email (lower(email)); } }
+{ INDEXES { idx_lower_email (lower(email)); } }
 ```
 
 ```sql
@@ -70,7 +70,7 @@ CREATE INDEX IF NOT EXISTS "idx_lower_email"
 ## Covering index (INCLUDE)
 
 ```sql
-{ INDICES { idx_covering (user_id) INCLUDE (email, created_at); } }
+{ INDEXES { idx_covering (user_id) INCLUDE (email, created_at); } }
 ```
 
 ```sql
@@ -81,7 +81,7 @@ CREATE INDEX IF NOT EXISTS "idx_covering"
 ## GIN index
 
 ```sql
-{ INDICES {
+{ INDEXES {
     idx_tags USING gin (tags);
     idx_fts  USING gin (search_vec);
 } }
@@ -98,7 +98,7 @@ CREATE INDEX IF NOT EXISTS "idx_fts"
 ## GiST index
 
 ```sql
-{ INDICES { idx_location USING gist (location); } }
+{ INDEXES { idx_location USING gist (location); } }
 ```
 
 ```sql
@@ -109,7 +109,7 @@ CREATE INDEX IF NOT EXISTS "idx_location"
 ## BRIN index with storage parameter
 
 ```sql
-{ INDICES { idx_brin USING brin (created_at) WITH (pages_per_range = 128); } }
+{ INDEXES { idx_brin USING brin (created_at) WITH (pages_per_range = 128); } }
 ```
 
 ```sql
@@ -120,7 +120,7 @@ CREATE INDEX IF NOT EXISTS "idx_brin"
 ## Index with tablespace
 
 ```sql
-{ INDICES { idx_archived (archived_at) TABLESPACE archive_space; } }
+{ INDEXES { idx_archived (archived_at) TABLESPACE archive_space; } }
 ```
 
 ```sql
@@ -133,7 +133,7 @@ CREATE INDEX IF NOT EXISTS "idx_archived"
 Write `CONCURRENTLY` to avoid locking the table during index creation on a large, live table:
 
 ```sql
-{ INDICES { CONCURRENTLY idx_email (email); } }
+{ INDEXES { CONCURRENTLY idx_email (email); } }
 ```
 
 ```sql
@@ -145,7 +145,7 @@ This has no effect on an index declared alongside its own brand-new table — Po
 
 ## Index removal
 
-Removing an index from the `INDICES` block emits `DROP INDEX` — classified as `CAUTION` (acquires `ACCESS EXCLUSIVE` lock; no data loss, but blocks concurrent reads during the drop).
+Removing an index from the `INDEXES` block emits `DROP INDEX` — classified as `CAUTION` (acquires `ACCESS EXCLUSIVE` lock; no data loss, but blocks concurrent reads during the drop).
 
 ```sql
 -- emits

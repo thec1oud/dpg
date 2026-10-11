@@ -369,9 +369,10 @@ class DpgParser : PsiParser {
 
     companion object {
         private val PLURAL_BLOCK_KEYWORDS = setOf(
-            DpgTokenTypes.INDICES_KW,    DpgTokenTypes.POLICIES_KW,  DpgTokenTypes.TRIGGERS_KW,
-            DpgTokenTypes.GRANTS_KW,     DpgTokenTypes.REVOCATIONS_KW,
-            DpgTokenTypes.PARTITIONS_KW, DpgTokenTypes.COLUMNS_KW,   DpgTokenTypes.CONSTRAINTS_KW
+            DpgTokenTypes.INDEXES_KW,    DpgTokenTypes.POLICIES_KW,  DpgTokenTypes.TRIGGERS_KW,
+            DpgTokenTypes.GRANTS_KW,     DpgTokenTypes.REVOKES_KW,
+            DpgTokenTypes.PARTITIONS_KW, DpgTokenTypes.COLUMNS_KW,   DpgTokenTypes.CONSTRAINTS_KW,
+            DpgTokenTypes.ATTRIBUTES_KW
         )
 
         private val SECOND_WORD_IDENTIFIERS = setOf(

@@ -798,7 +798,7 @@ func TestLintMinPGVersionTableMaintainPrivilege(t *testing.T) {
 }
 
 // TestLintMinPGVersionTableMaintainPrivilegeViaRevocation guards that the
-// check also scans REVOCATIONS, not just GRANTS. The fixture's revocation
+// check also scans REVOKES, not just GRANTS. The fixture's revocation
 // has no matching grant, so unnecessary-revocation also legitimately fires
 // alongside it (an unrelated, correct rule) — this only asserts
 // min-pg-version is among the diagnostics, not that it's the sole one.

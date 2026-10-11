@@ -202,7 +202,7 @@ TABLE users (
     CONSTRAINT users_pkey PRIMARY KEY (id),
     CONSTRAINT users_email_key UNIQUE (email)
 ) {
-    INDICES { idx_users_status (status); }
+    INDEXES { idx_users_status (status); }
 }
 
 TABLE posts (
@@ -315,7 +315,7 @@ TABLE users (
     CONSTRAINT users_pkey PRIMARY KEY (id),
     CONSTRAINT users_email_key UNIQUE (email)
 ) {
-    INDICES { idx_users_status (status); }
+    INDEXES { idx_users_status (status); }
 }
 
 TABLE posts (
@@ -403,18 +403,10 @@ VIEW active_users AS
 	}
 }
 
-// TestRoundtripEnumBareShorthand is the regression guard for RFC Section
-// 5.1's documented "ENUM name ('a', 'b', ...);" shorthand — the form used
-// throughout this specification (including Appendix B's worked example) and
-// by lang/grammar's tree-sitter grammar, distinct from the generic "TYPE
-// name AS ENUM (...)" form every other roundtrip test in this file uses.
-// readPart1's KindEnum case in internal/scanner/scanner.go must synthesize
-// the "AS ENUM" real PostgreSQL's CREATE TYPE grammar requires but DPG
-// source never spells out; before that case existed, this exact source text
-// failed to even compile ("PG parse error: syntax error at or near
-// 'active'"), since Part 1 was reconstructed as the literally invalid
-// "CREATE TYPE user_status ('active', ...)".
-func TestRoundtripEnumBareShorthand(t *testing.T) {
+// TestRoundtripEnumDeclaration guards RFC Section 5.1's "TYPE name AS ENUM
+// ('a', 'b', ...)" declaration with a { } block: it must compile, apply, and
+// introspect back with no drift.
+func TestRoundtripEnumDeclaration(t *testing.T) {
 	connStr := testpg.Start(t)
 	ctx := context.Background()
 
@@ -432,7 +424,7 @@ func TestRoundtripEnumBareShorthand(t *testing.T) {
 
 	dir := t.TempDir()
 	f := filepath.Join(dir, "schema.dpg")
-	src := `ENUM user_status ('active', 'suspended', 'deleted') {
+	src := `TYPE user_status AS ENUM ('active', 'suspended', 'deleted') {
     COMMENT 'Account lifecycle states';
 }`
 	if err := os.WriteFile(f, []byte(src), 0o644); err != nil {
@@ -472,7 +464,7 @@ func TestRoundtripEnumBareShorthand(t *testing.T) {
 		t.Fatalf("drift diff: %v", err)
 	}
 	if len(driftOps) != 0 {
-		t.Errorf("drift after applying bare ENUM shorthand (%d ops):", len(driftOps))
+		t.Errorf("drift after applying TYPE AS ENUM declaration (%d ops):", len(driftOps))
 		for _, op := range driftOps {
 			t.Errorf("  [%s] %s", op.Safety(), op.SQL())
 		}

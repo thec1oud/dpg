@@ -47,7 +47,7 @@ func TestRoundtripTableReplicaIdentityAndClusterOn(t *testing.T) {
     external_ref TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 ) {
-    INDICES {
+    INDEXES {
         idx_orders_created_at (created_at);
     }
     UNIQUE INDEX idx_orders_external_ref (external_ref);
@@ -136,7 +136,7 @@ func TestRoundtripTableReplicaIdentityAndClusterOn(t *testing.T) {
     external_ref TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 ) {
-    INDICES {
+    INDEXES {
         idx_orders_created_at (created_at);
     }
     UNIQUE INDEX idx_orders_external_ref (external_ref);

@@ -51,10 +51,10 @@ func TestUpdateDocument_ReplacesText(t *testing.T) {
 
 func TestUpdateDocument_CreatesIfMissing(t *testing.T) {
 	ws := New()
-	ws.UpdateDocument("/fake/new.dpg", "ENUM status ('a');")
+	ws.UpdateDocument("/fake/new.dpg", "TYPE status AS ENUM ('a');")
 
 	got := ws.GetText("/fake/new.dpg")
-	if got != "ENUM status ('a');" {
+	if got != "TYPE status AS ENUM ('a');" {
 		t.Fatalf("GetText for new doc = %q", got)
 	}
 }
@@ -139,7 +139,7 @@ func TestParseObjects_BasicTypes(t *testing.T) {
 	src := `TABLE users (id bigint);
 VIEW active_users AS SELECT * FROM users;
 FUNCTION get_user() RETURNS text LANGUAGE sql AS $$ SELECT 'x' $$;
-ENUM status ('a', 'b');
+TYPE status AS ENUM ('a', 'b');
 `
 	objs := ParseObjects(src, "test.dpg")
 

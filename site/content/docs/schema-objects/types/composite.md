@@ -46,12 +46,45 @@ TYPE contact AS (name TEXT, email TEXT, phone TEXT);
 ALTER TYPE "public"."contact" ADD ATTRIBUTE "phone" text;
 ```
 
-## Removing or changing an attribute
+## Attribute comments and renames
 
-Removing an attribute or changing an attribute's type emits `DROP TYPE CASCADE` then `CREATE TYPE` — `DESTRUCTIVE`. All columns of this type in dependent tables must be retyped.
+Each attribute can carry its own `{ }` block, written with PostgreSQL's own `ATTRIBUTE` keyword. It accepts `COMMENT` and `RENAMED FROM`.
+
+```sql
+TYPE address AS (
+    street_line TEXT,
+    city        TEXT
+) {
+    ATTRIBUTE street_line {
+        RENAMED FROM street;
+        COMMENT 'First line of the street address';
+    }
+}
+```
+
+```sql
+-- emits
+ALTER TYPE "public"."address" RENAME ATTRIBUTE "street" TO "street_line";
+COMMENT ON COLUMN "public"."address"."street_line" IS 'First line of the street address';
+```
+
+Several attributes can be grouped in a plural block:
+
+```sql
+TYPE address AS (street TEXT, city TEXT) {
+    ATTRIBUTES {
+        street { COMMENT 'Street and number'; }
+        city   { COMMENT 'City name'; }
+    }
+}
+```
+
+## Changes and safety
 
 | Change | DDL emitted | Safety |
 |--------|-------------|--------|
-| Attribute added | `ALTER TYPE name ADD ATTRIBUTE col type` | `SAFE` |
-| Attribute removed | `DROP TYPE CASCADE` + `CREATE TYPE` | `DESTRUCTIVE` |
-| Attribute type changed | `DROP TYPE CASCADE` + `CREATE TYPE` | `DESTRUCTIVE` |
+| Attribute added | `ALTER TYPE name ADD ATTRIBUTE attr type` | `SAFE` |
+| Attribute removed | `ALTER TYPE name DROP ATTRIBUTE attr` | `DESTRUCTIVE` |
+| Attribute type or `COLLATE` changed | `ALTER TYPE name ALTER ATTRIBUTE attr TYPE type` | `DESTRUCTIVE` |
+| Attribute renamed (`RENAMED FROM`) | `ALTER TYPE name RENAME ATTRIBUTE old TO new` | `SAFE` |
+| Attribute comment changed | `COMMENT ON COLUMN name.attr IS '...'` | `SAFE` |

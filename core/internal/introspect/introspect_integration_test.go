@@ -1019,7 +1019,7 @@ func TestIntrospectView(t *testing.T) {
 }
 
 // TestIntrospectMaterializedViewIndex is the live-catalog guard for RFC
-// Section 8.2's matview-block INDICES support: real PostgreSQL only supports
+// Section 8.2's matview-block INDEXES support: real PostgreSQL only supports
 // indexes on a materialized view or a table, never a plain view — before
 // this, introspection never populated ir.View.Indexes at all (the field
 // didn't exist), so a materialized view's index was silently invisible to

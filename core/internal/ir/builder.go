@@ -55,6 +55,14 @@ func (b *Builder) Build(pg pipeline.PGParseResult, block pipeline.BlockAST) (pip
 		}
 	}
 
+	// ATTRIBUTE/ATTRIBUTES blocks (RFC Section 5.2) belong to composite
+	// types only, checked here for the same reason as OPERATOR/FUNCTION
+	// members above.
+	if len(block.Attributes) > 0 && pg.Kind != pipeline.KindCompositeType {
+		return nil, pipeline.ErrorfCode(block.Attributes[0].Pos, "DPG-E024",
+			"ATTRIBUTE is only valid in a composite TYPE block; table columns use COLUMN name { ... }")
+	}
+
 	var obj pipeline.IRObject
 	var err error
 	switch n := node.Node.(type) {
@@ -1487,7 +1495,7 @@ func (b *Builder) buildView(vs *pg_query.ViewStmt, block pipeline.BlockAST, pos 
 	}
 	if len(block.Indices) > 0 {
 		return nil, pipeline.Errorf(block.Indices[0].Pos,
-			"INDICES is not supported for VIEW/RECURSIVE VIEW objects; it is only valid for MATERIALIZED VIEW (real PostgreSQL does not support indexes on a plain view)")
+			"INDEXES is not supported for VIEW/RECURSIVE VIEW objects; it is only valid for MATERIALIZED VIEW (real PostgreSQL does not support indexes on a plain view)")
 	}
 	if block.Comment != nil {
 		v.Comment = &block.Comment.Value
@@ -1991,24 +1999,29 @@ func (b *Builder) buildCompositeType(cs *pg_query.CompositeTypeStmt, block pipel
 	t.SecurityLabels = block.SecurityLabels
 	t.NameMaps = block.NameMaps
 
-	// COLUMN attr { RENAMED FROM old; } sub-blocks (RFC Section 5.2: "the same
-	// mechanism applies to composite type attributes") — buildCompositeType
-	// previously never read block.Columns at all, so a declared rename was
-	// silently ignored and diffType saw an unrelated drop+add instead of the
-	// attribute rename it should have detected.
+	// ATTRIBUTE attr { RENAMED FROM old; COMMENT '...'; } sub-blocks (RFC
+	// Section 5.2). COLUMN is a table keyword; a composite type's members
+	// are attributes, matching PostgreSQL's ALTER TYPE ... ATTRIBUTE.
+	if len(block.Columns) > 0 {
+		return nil, pipeline.ErrorfCode(block.Columns[0].Pos, "DPG-E024",
+			"COLUMN is not valid in a composite TYPE block; composite type members are declared with ATTRIBUTE name { ... }")
+	}
 	attrMap := make(map[string]*Column, len(t.CompositeAttrs))
 	for _, a := range t.CompositeAttrs {
 		attrMap[a.Name] = a
 	}
-	for _, cb := range block.Columns {
-		attr, ok := attrMap[cb.Name.Name]
+	for _, ab := range block.Attributes {
+		attr, ok := attrMap[ab.Name.Name]
 		if !ok {
-			return nil, pipeline.ErrorfCode(cb.Pos, "DPG-E018",
-				"COLUMN %q is not declared in TYPE %s; the COLUMN block must reference an attribute listed in the type's ( ) section%s",
-				cb.Name.Name, qualName(t.Schema, t.Name), suggestColumns(cb.Name.Name, t.CompositeAttrs))
+			return nil, pipeline.ErrorfCode(ab.Pos, "DPG-E018",
+				"ATTRIBUTE %q is not declared in TYPE %s; the ATTRIBUTE block must reference an attribute listed in the type's ( ) section%s",
+				ab.Name.Name, qualName(t.Schema, t.Name), suggestColumns(ab.Name.Name, t.CompositeAttrs))
 		}
-		if cb.RenamedFrom != nil {
-			attr.RenamedFrom = &cb.RenamedFrom.Name
+		if ab.RenamedFrom != nil {
+			attr.RenamedFrom = &ab.RenamedFrom.Name
+		}
+		if ab.Comment != nil {
+			attr.Comment = &ab.Comment.Value
 		}
 	}
 	return t, nil

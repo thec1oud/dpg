@@ -861,7 +861,7 @@ func renderObjectDPGWithRoleInheritDefaults(b *strings.Builder, obj pipeline.IRO
 						if len(r.Privileges) > 0 {
 							priv = strings.Join(r.Privileges, ", ")
 						}
-						fmt.Fprintf(b, "%s%s %s %s %s", colInd, kw("REVOCATION"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
+						fmt.Fprintf(b, "%s%s %s %s %s", colInd, kw("REVOKE"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
 						if r.Cascade {
 							fmt.Fprintf(b, " %s", kw("CASCADE"))
 						}
@@ -877,9 +877,9 @@ func renderObjectDPGWithRoleInheritDefaults(b *strings.Builder, obj pipeline.IRO
 				if blockHasContent {
 					b.WriteString("\n")
 				}
-				// Mode A (INDICES { … }) — the form the scanner accepts. Each entry
+				// Mode A (INDEXES { … }) — the form the scanner accepts. Each entry
 				// omits the INDEX verb: "name [UNIQUE] (cols) [USING m] [WHERE …];".
-				fmt.Fprintf(b, "%s%s {\n", ind, kw("INDICES"))
+				fmt.Fprintf(b, "%s%s {\n", ind, kw("INDEXES"))
 				for _, idx := range o.Indexes {
 					renderIndex(b, idx, fmtOpts)
 				}
@@ -970,7 +970,7 @@ func renderObjectDPGWithRoleInheritDefaults(b *strings.Builder, obj pipeline.IRO
 					if len(r.Privileges) > 0 {
 						priv = strings.Join(r.Privileges, ", ")
 					}
-					fmt.Fprintf(b, "%s%s %s %s %s", ind, kw("REVOCATION"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
+					fmt.Fprintf(b, "%s%s %s %s %s", ind, kw("REVOKE"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
 					if r.Cascade {
 						fmt.Fprintf(b, " %s", kw("CASCADE"))
 					}
@@ -1132,13 +1132,8 @@ func renderObjectDPGWithRoleInheritDefaults(b *strings.Builder, obj pipeline.IRO
 	case *ir.Type:
 		switch o.Variant {
 		case "ENUM":
-			// DPG enum form (RFC Section 5.1): ENUM <name> ('a', 'b', …);
-			// — no "AS ENUM"; the ENUM keyword itself is DPG's sugar for
-			// PostgreSQL's "CREATE TYPE name AS ENUM (...)", synthesized
-			// back in by the scanner (readPart1's KindEnum case) when this
-			// gets recompiled. Emitting "AS ENUM" here doubled it up on
-			// recompile ("mood AS ENUM AS ENUM (...)", a PG parse error).
-			fmt.Fprintf(b, "\n%s %s (", kw("ENUM"), quoteIdentIfNeeded(o.Name))
+			// RFC Section 5.1: TYPE <name> AS ENUM ('a', 'b', …)
+			fmt.Fprintf(b, "\n%s %s %s %s (", kw("TYPE"), quoteIdentIfNeeded(o.Name), kw("AS"), kw("ENUM"))
 			for i, v := range o.EnumValues {
 				if i > 0 {
 					b.WriteString(", ")
@@ -1194,7 +1189,7 @@ func renderObjectDPGWithRoleInheritDefaults(b *strings.Builder, obj pipeline.IRO
 					if len(r.Privileges) > 0 {
 						priv = strings.Join(r.Privileges, ", ")
 					}
-					fmt.Fprintf(b, "%s%s %s %s %s", ind, kw("REVOCATION"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
+					fmt.Fprintf(b, "%s%s %s %s %s", ind, kw("REVOKE"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
 					if r.Cascade {
 						fmt.Fprintf(b, " %s", kw("CASCADE"))
 					}
@@ -1223,7 +1218,7 @@ func renderObjectDPGWithRoleInheritDefaults(b *strings.Builder, obj pipeline.IRO
 				}
 			}
 			b.WriteString(")")
-			writeTypeOwnerCommentBlock(b, ind, fmtOpts, o.Owner, o.Comment, o.Grants, o.Revocations, o.SecurityLabels)
+			writeTypeBlock(b, ind, fmtOpts, o.Owner, o.Comment, o.Grants, o.Revocations, o.SecurityLabels, o.CompositeAttrs)
 		case "RANGE":
 			// o.Body is introspectRangeBodies' reconstructed options text
 			// (e.g. "SUBTYPE = numeric") — same trailing-clause-only shape
@@ -1336,7 +1331,7 @@ func renderObjectDPGWithRoleInheritDefaults(b *strings.Builder, obj pipeline.IRO
 				if len(r.Privileges) > 0 {
 					priv = strings.Join(r.Privileges, ", ")
 				}
-				fmt.Fprintf(b, "%s%s %s %s %s", ind, kw("REVOCATION"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
+				fmt.Fprintf(b, "%s%s %s %s %s", ind, kw("REVOKE"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
 				if r.Cascade {
 					fmt.Fprintf(b, " %s", kw("CASCADE"))
 				}
@@ -1538,7 +1533,7 @@ func renderObjectDPGWithRoleInheritDefaults(b *strings.Builder, obj pipeline.IRO
 			if len(r.Privileges) > 0 {
 				priv = strings.Join(r.Privileges, ", ")
 			}
-			fmt.Fprintf(b, "%s%s %s %s %s", ind, kw("REVOCATION"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
+			fmt.Fprintf(b, "%s%s %s %s %s", ind, kw("REVOKE"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
 			if r.Cascade {
 				fmt.Fprintf(b, " %s", kw("CASCADE"))
 			}
@@ -1722,14 +1717,14 @@ func writeViewBlock(b *strings.Builder, ind string, fmtOpts format.Options, o *i
 		if len(r.Privileges) > 0 {
 			priv = strings.Join(r.Privileges, ", ")
 		}
-		fmt.Fprintf(b, "%s%s %s %s %s", ind, kw("REVOCATION"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
+		fmt.Fprintf(b, "%s%s %s %s %s", ind, kw("REVOKE"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
 		if r.Cascade {
 			fmt.Fprintf(b, " %s", kw("CASCADE"))
 		}
 		b.WriteString(";\n")
 	}
 	if len(o.Indexes) > 0 {
-		fmt.Fprintf(b, "%s%s {\n", ind, kw("INDICES"))
+		fmt.Fprintf(b, "%s%s {\n", ind, kw("INDEXES"))
 		for _, idx := range o.Indexes {
 			renderIndex(b, idx, fmtOpts)
 		}
@@ -1741,12 +1736,25 @@ func writeViewBlock(b *strings.Builder, ind string, fmtOpts format.Options, o *i
 
 // writeTypeOwnerCommentBlock terminates an ENUM/COMPOSITE/RANGE/BASE type
 // declaration: a bare ";" when there's nothing to declare, or a "{ }" block
-// carrying OWNER/COMMENT/GRANT/REVOCATION when there is. DOMAIN has its own
+// carrying OWNER/COMMENT/GRANT/REVOKE when there is. DOMAIN has its own
 // richer block (DEFAULT/NOT NULL/CONSTRAINT alongside OWNER/COMMENT) and
 // doesn't use this. Grants/Revocations rendering is RFC audit item #3.
 func writeTypeOwnerCommentBlock(b *strings.Builder, ind string, fmtOpts format.Options, owner, comment *string, grants []ir.Grant, revocations []ir.Revocation, securityLabels []pipeline.SecurityLabel) {
+	writeTypeBlock(b, ind, fmtOpts, owner, comment, grants, revocations, securityLabels, nil)
+}
+
+// writeTypeBlock is writeTypeOwnerCommentBlock plus a composite type's
+// per-attribute ATTRIBUTE name { COMMENT '...'; } entries (RFC Section 5.2).
+func writeTypeBlock(b *strings.Builder, ind string, fmtOpts format.Options, owner, comment *string, grants []ir.Grant, revocations []ir.Revocation, securityLabels []pipeline.SecurityLabel, attrs []*ir.Column) {
 	kw := fmtOpts.Keyword
-	if owner == nil && comment == nil && len(grants) == 0 && len(revocations) == 0 && len(securityLabels) == 0 {
+	hasAttrComment := false
+	for _, a := range attrs {
+		if a.Comment != nil {
+			hasAttrComment = true
+			break
+		}
+	}
+	if owner == nil && comment == nil && len(grants) == 0 && len(revocations) == 0 && len(securityLabels) == 0 && !hasAttrComment {
 		b.WriteString(";\n")
 		return
 	}
@@ -1773,13 +1781,18 @@ func writeTypeOwnerCommentBlock(b *strings.Builder, ind string, fmtOpts format.O
 		if len(r.Privileges) > 0 {
 			priv = strings.Join(r.Privileges, ", ")
 		}
-		fmt.Fprintf(b, "%s%s %s %s %s", ind, kw("REVOCATION"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
+		fmt.Fprintf(b, "%s%s %s %s %s", ind, kw("REVOKE"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
 		if r.Cascade {
 			fmt.Fprintf(b, " %s", kw("CASCADE"))
 		}
 		b.WriteString(";\n")
 	}
 	writeSecurityLabels(b, ind, fmtOpts, securityLabels)
+	for _, a := range attrs {
+		if a.Comment != nil {
+			fmt.Fprintf(b, "%s%s %s { %s %s; }\n", ind, kw("ATTRIBUTE"), quoteIdentIfNeeded(a.Name), kw("COMMENT"), sqlStringLit(*a.Comment))
+		}
+	}
 	b.WriteString("}\n")
 }
 
@@ -1826,7 +1839,7 @@ func writeFuncBlockWithLabels(b *strings.Builder, ind string, fmtOpts format.Opt
 		if len(r.Privileges) > 0 {
 			priv = strings.Join(r.Privileges, ", ")
 		}
-		fmt.Fprintf(b, "%s%s %s %s %s", ind, kw("REVOCATION"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
+		fmt.Fprintf(b, "%s%s %s %s %s", ind, kw("REVOKE"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
 		if r.Cascade {
 			fmt.Fprintf(b, " %s", kw("CASCADE"))
 		}
@@ -1871,7 +1884,7 @@ func writeFuncBlockWithOwnerAndLabels(b *strings.Builder, ind string, fmtOpts fo
 		if len(r.Privileges) > 0 {
 			priv = strings.Join(r.Privileges, ", ")
 		}
-		fmt.Fprintf(b, "%s%s %s %s %s", ind, kw("REVOCATION"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
+		fmt.Fprintf(b, "%s%s %s %s %s", ind, kw("REVOKE"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
 		if r.Cascade {
 			fmt.Fprintf(b, " %s", kw("CASCADE"))
 		}
@@ -1921,7 +1934,7 @@ func writeFuncBlockWithDepends(b *strings.Builder, ind string, fmtOpts format.Op
 		if len(r.Privileges) > 0 {
 			priv = strings.Join(r.Privileges, ", ")
 		}
-		fmt.Fprintf(b, "%s%s %s %s %s", ind, kw("REVOCATION"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
+		fmt.Fprintf(b, "%s%s %s %s %s", ind, kw("REVOKE"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
 		if r.Cascade {
 			fmt.Fprintf(b, " %s", kw("CASCADE"))
 		}
@@ -1960,7 +1973,7 @@ func writeSecurityLabels(b *strings.Builder, ind string, fmtOpts format.Options,
 // comment was present in pg_description and correctly introspected onto the
 // IR object's Comment field, but dump emitted a bare ";" regardless).
 // renderDefaultPrivileges writes one "DEFAULT PRIVILEGES [FOR ROLE x]
-// [IN SCHEMA y] { GRANTS { ... } REVOCATIONS { ... } }" declaration — never
+// [IN SCHEMA y] { GRANTS { ... } REVOKES { ... } }" declaration — never
 // rendered by dump at all before this (no case existed for *ir.DefaultPrivileges),
 // and introspection never populated the object in the first place (see
 // introspectDefaultPrivileges). o.ObjectType applies to every grant/revoke
@@ -1998,7 +2011,7 @@ func renderDefaultPrivileges(b *strings.Builder, ind string, fmtOpts format.Opti
 		fmt.Fprintf(b, "%s}\n", ind)
 	}
 	if len(o.Revocations) > 0 {
-		fmt.Fprintf(b, "%s%s {\n", ind, kw("REVOCATIONS"))
+		fmt.Fprintf(b, "%s%s {\n", ind, kw("REVOKES"))
 		for _, r := range o.Revocations {
 			priv := "ALL"
 			if len(r.Privileges) > 0 {
@@ -2016,7 +2029,7 @@ func renderDefaultPrivileges(b *strings.Builder, ind string, fmtOpts format.Opti
 }
 
 // renderParameterPrivileges writes one "PARAMETER PRIVILEGES { GRANTS { ... }
-// REVOCATIONS { ... } }" declaration (RFC Section 11.6, PG15+). Unlike
+// REVOKES { ... } }" declaration (RFC Section 11.6, PG15+). Unlike
 // renderDefaultPrivileges there is no FOR ROLE/IN SCHEMA header and no
 // per-object-type split: every grant carries its own PARAMETER identifier
 // list directly, and introspectParameterPrivileges always produces exactly
@@ -2045,7 +2058,7 @@ func renderParameterPrivileges(b *strings.Builder, ind string, fmtOpts format.Op
 		fmt.Fprintf(b, "%s}\n", ind)
 	}
 	if len(o.Revocations) > 0 {
-		fmt.Fprintf(b, "%s%s {\n", ind, kw("REVOCATIONS"))
+		fmt.Fprintf(b, "%s%s {\n", ind, kw("REVOKES"))
 		for _, r := range o.Revocations {
 			priv := "ALL"
 			if len(r.Privileges) > 0 {
@@ -2108,7 +2121,7 @@ func renderForeignDataWrapperBody(b *strings.Builder, ind string, fmtOpts format
 		if len(r.Privileges) > 0 {
 			priv = strings.Join(r.Privileges, ", ")
 		}
-		fmt.Fprintf(b, "%s%s %s %s %s", ind, kw("REVOCATION"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
+		fmt.Fprintf(b, "%s%s %s %s %s", ind, kw("REVOKE"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
 		if r.Cascade {
 			fmt.Fprintf(b, " %s", kw("CASCADE"))
 		}
@@ -2159,7 +2172,7 @@ func renderForeignServerBody(b *strings.Builder, ind string, fmtOpts format.Opti
 		if len(r.Privileges) > 0 {
 			priv = strings.Join(r.Privileges, ", ")
 		}
-		fmt.Fprintf(b, "%s%s %s %s %s", ind, kw("REVOCATION"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
+		fmt.Fprintf(b, "%s%s %s %s %s", ind, kw("REVOKE"), priv, kw("FROM"), strings.Join(r.Roles, ", "))
 		if r.Cascade {
 			fmt.Fprintf(b, " %s", kw("CASCADE"))
 		}
@@ -2583,7 +2596,7 @@ func inlineConstraintClause(cst *ir.Constraint) string {
 	return cst.Expr
 }
 
-// renderIndex writes one entry inside a table's INDICES { } block.
+// renderIndex writes one entry inside a table's INDEXES { } block.
 // Format: [UNIQUE] [CONCURRENTLY] name [USING method] (cols) [WHERE pred];
 // (two-level indent, no INDEX verb — that is the grammar parseOneIndex
 // accepts). UNIQUE and CONCURRENTLY are both prefix keywords before the
@@ -2687,7 +2700,7 @@ func renderPartitionEntry(b *strings.Builder, p *ir.Partition, ind string, fmtOp
 // own CREATE POLICY: [AS PERMISSIVE|RESTRICTIVE] FOR command [TO roles]
 // [USING (...)] [WITH CHECK (...)] — not the RFC's ABNF listing (FOR before
 // AS), which contradicts its own worked example and real PG's grammar.
-// writeEntryCommentBlock terminates one INDICES/POLICIES/TRIGGERS/
+// writeEntryCommentBlock terminates one INDEXES/POLICIES/TRIGGERS/
 // CONSTRAINTS entry, written at ind+ind (nested one level inside the
 // owning table's { } block already): a bare ";" when there's no comment,
 // or a "{ COMMENT '...'; }" block when there is — mirrors
@@ -2828,13 +2841,13 @@ func renderIndex(b *strings.Builder, idx *ir.Index, fmtOpts format.Options) {
 			// Index column names are emitted bare: the blockparser stores the
 			// column text verbatim and the differ's createIndex quotes it when
 			// generating SQL, so quoting here would double-quote it.
-			b.WriteString(col.Name)
+			b.WriteString(quoteIdentIfNeeded(col.Name))
 		}
 		if col.Collation != nil {
 			fmt.Fprintf(b, " %s %s", kw("COLLATE"), quoteIdentIfNeeded(col.Collation.Name))
 		}
 		if col.OpClass != nil {
-			fmt.Fprintf(b, " %s", col.OpClass.Name)
+			fmt.Fprintf(b, " %s", quoteQualIdentIfNeeded(col.OpClass.Name))
 			if len(col.OpClassParams) > 0 {
 				parts := make([]string, len(col.OpClassParams))
 				for i, p := range col.OpClassParams {
@@ -2854,7 +2867,11 @@ func renderIndex(b *strings.Builder, idx *ir.Index, fmtOpts format.Options) {
 	b.WriteString(")")
 	if len(idx.Include) > 0 {
 		// Bare column names; createIndex quotes them when generating SQL.
-		fmt.Fprintf(b, " %s (%s)", kw("INCLUDE"), strings.Join(idx.Include, ", "))
+		inc := make([]string, len(idx.Include))
+		for i, c := range idx.Include {
+			inc[i] = quoteIdentIfNeeded(c)
+		}
+		fmt.Fprintf(b, " %s (%s)", kw("INCLUDE"), strings.Join(inc, ", "))
 	}
 	if idx.NullsNotDistinct {
 		fmt.Fprintf(b, " %s %s %s", kw("NULLS"), kw("NOT"), kw("DISTINCT"))

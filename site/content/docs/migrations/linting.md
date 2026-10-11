@@ -167,18 +167,18 @@ Covers both `GENERATED ... AS IDENTITY` columns and `SERIAL`/`BIGSERIAL`/`SMALLS
 
 **Severity:** Warning — **Config:** always enabled
 
-Warns when a `REVOCATIONS` entry names a (role, privilege) pair with no matching `GRANTS` entry for that same pair in the *same object's* declaration — usually a copy-paste or typo, since revoking a privilege that was never declared as granted is a no-op.
+Warns when a `REVOKES` entry names a (role, privilege) pair with no matching `GRANTS` entry for that same pair in the *same object's* declaration — usually a copy-paste or typo, since revoking a privilege that was never declared as granted is a no-op.
 
 ```sql
 TABLE orders ( ... )
 {
     GRANTS      { SELECT TO app_readonly; }
-    REVOCATIONS { DELETE FROM app_readonly; }   -- triggers warning: no GRANT of DELETE above
+    REVOKES { DELETE FROM app_readonly; }   -- triggers warning: no GRANT of DELETE above
 }
 ```
 
 ```
-warn  [unnecessary-revocation] table public.orders: REVOCATION of DELETE from app_readonly has no matching GRANT in this declaration
+warn  [unnecessary-revocation] table public.orders: REVOKE of DELETE from app_readonly has no matching GRANT in this declaration
 ```
 
 This is scoped to a single object's own declaration, not full grant history — it won't catch a revocation targeting a privilege that was granted by a previous `apply` but isn't declared in the current source.

@@ -1,10 +1,10 @@
 ---
 title: "Grants"
-description: "GRANTS and REVOCATIONS blocks — the additive model: DPG only emits GRANT, never auto-revokes."
+description: "GRANTS and REVOKES blocks — the additive model: DPG only emits GRANT, never auto-revokes."
 weight: 2
 ---
 
-DPG follows an additive grants model identical to raw PostgreSQL: declaring a grant emits `GRANT`. Removing a `GRANTS` entry from source emits **nothing**. To revoke, add an explicit `REVOCATIONS { }` entry.
+DPG follows an additive grants model identical to raw PostgreSQL: declaring a grant emits `GRANT`. Removing a `GRANTS` entry from source emits **nothing**. To revoke, add an explicit `REVOKES { }` entry.
 
 ## Table grants
 
@@ -31,7 +31,7 @@ GRANT ALL PRIVILEGES ON TABLE "public"."orders" TO "app_admin";
 ```sql
 TABLE orders ( ... )
 {
-    REVOCATIONS {
+    REVOKES {
         ALL PRIVILEGES FROM PUBLIC;
     }
 }
@@ -58,7 +58,7 @@ TABLE users ( email TEXT, ssn TEXT, ... )
 
     COLUMN ssn {
         GRANTS     { SELECT TO compliance_role; }
-        REVOCATIONS { ALL PRIVILEGES FROM PUBLIC; }
+        REVOKES { ALL PRIVILEGES FROM PUBLIC; }
     }
 }
 ```

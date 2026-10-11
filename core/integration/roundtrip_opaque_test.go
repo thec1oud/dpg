@@ -1554,7 +1554,7 @@ TYPE rt_base (INPUT = rt_base_in, OUTPUT = rt_base_out, INTERNALLENGTH = 4);`)
 
 func TestRoundtripIndexVariants(t *testing.T) {
 	assertOpaqueRoundtrip(t, `TABLE t (a INTEGER, b INTEGER, c TEXT, e TEXT) {
-    INDICES {
+    INDEXES {
         UNIQUE i_uniq (a);
         i_sort (c DESC NULLS LAST, b);
         i_partial (b) WHERE (b > 0);
@@ -1568,24 +1568,24 @@ func TestRoundtripIndexVariants(t *testing.T) {
 }
 
 // TestRoundtripIndexModeB is the live-catalog guard for the Mode-B (RFC Section 4.8
-// singular keyword) fix: previously "INDEX name (...)" outside an INDICES{}
+// singular keyword) fix: previously "INDEX name (...)" outside an INDEXES{}
 // block was a hard parse error, so it could never reach a live database at
 // all. This proves the whole pipeline — parse Mode-B, build IR, emit CREATE
 // INDEX, introspect back — round-trips against real PostgreSQL with zero
-// drift, and that it can be freely mixed with a Mode-A INDICES{} block on the
+// drift, and that it can be freely mixed with a Mode-A INDEXES{} block on the
 // same table.
 func TestRoundtripIndexModeB(t *testing.T) {
 	assertOpaqueRoundtrip(t, `TABLE t (a INTEGER, b INTEGER) {
     INDEX i_modeb_a (a);
     UNIQUE INDEX i_modeb_uniq (b) NULLS NOT DISTINCT;
-    INDICES { i_modea_ab (a, b); }
+    INDEXES { i_modea_ab (a, b); }
 }`)
 }
 
 // TestRoundtripPolicyTriggerPartitionModeB is the live-catalog guard for the
 // Mode-B fix applied to POLICY, TRIGGER, and PARTITION (RFC Section 4.8 singular
 // keyword): previously these three keywords weren't in the block dispatch
-// switch at all (unlike INDEX/GRANT/REVOCATION, which at least hit the wrong,
+// switch at all (unlike INDEX/GRANT/REVOKE, which at least hit the wrong,
 // brace-requiring parser), so "POLICY ...;"/"TRIGGER ...;"/"PARTITION ...;"
 // outside their plural blocks were "unknown block directive" errors. This
 // proves all three parse, apply, and round-trip against real PostgreSQL with
@@ -1619,7 +1619,7 @@ $$ {}
 
 TABLE t (a INTEGER, created_at DATE NOT NULL) PARTITION BY RANGE (created_at) {
     CONSTRAINT ck_a CHECK (a > 0);
-    INDICES { i_a (a); }
+    INDEXES { i_a (a); }
     POLICY p_modeb FOR SELECT USING (true);
     POLICIES { p_modea FOR INSERT WITH CHECK (true); }
     TRIGGER trg_modeb AFTER INSERT FOR EACH ROW EXECUTE FUNCTION trg_touch();
@@ -1665,20 +1665,20 @@ func TestRoundtripConstraintsBlockModeA(t *testing.T) {
 }
 
 // TestRoundtripGrantRevocationModeBAppliesLive is the live-catalog guard for
-// the GRANT/GRANTS + REVOCATION/REVOCATIONS Mode-B fix (RFC Section 4.8 singular
-// keyword): previously "GRANT ...;"/"REVOCATION ...;" outside a
-// GRANTS{}/REVOCATIONS{} block was a hard parse error — the identical
-// conflation bug fixed for INDEX/INDICES, both keywords routed to the same
+// the GRANT/GRANTS + REVOKE/REVOKES Mode-B fix (RFC Section 4.8 singular
+// keyword): previously "GRANT ...;"/"REVOKE ...;" outside a
+// GRANTS{}/REVOKES{} block was a hard parse error — the identical
+// conflation bug fixed for INDEX/INDEXES, both keywords routed to the same
 // brace-requiring block parser. This proves Mode-B grants/revocations parse,
 // apply, and take effect against a real PostgreSQL instance, mixed freely
 // with Mode A on the same table.
 //
-// The REVOCATION assertion here also exercises the fix for the separate bug
+// The REVOKE assertion here also exercises the fix for the separate bug
 // this test originally surfaced: internal/diff/differ.go never read
-// ir.Table/Column/View.Revocations at all, so a table-level REVOCATION was a
+// ir.Table/Column/View.Revocations at all, so a table-level REVOKE was a
 // silent no-op regardless of syntax mode. That's now fixed (diffRevocationSet
 // / tableExplicitRevokeOp in internal/diff/differ.go) — see CHANGELOG and
-// .dpg-notes for detail. UPDATE is granted directly first so the REVOCATION
+// .dpg-notes for detail. UPDATE is granted directly first so the REVOKE
 // has a real privilege to remove; otherwise "rt_writer lacks UPDATE" would
 // hold whether or not REVOKE actually ran, since it never had it either way.
 func TestRoundtripGrantRevocationModeBAppliesLive(t *testing.T) {
@@ -1721,7 +1721,7 @@ func TestRoundtripGrantRevocationModeBAppliesLive(t *testing.T) {
 	v2 := `TABLE t (a INTEGER) {
     GRANT SELECT TO rt_reader;
     GRANTS { INSERT TO rt_writer; }
-    REVOCATION UPDATE FROM rt_writer;
+    REVOKE UPDATE FROM rt_writer;
 }`
 	if err := os.WriteFile(f, []byte(v2), 0o644); err != nil {
 		t.Fatalf("write v2: %v", err)
@@ -1742,7 +1742,7 @@ func TestRoundtripGrantRevocationModeBAppliesLive(t *testing.T) {
 		}
 	}
 	if !sawRevoke {
-		t.Fatalf("expected a structured REVOKE for the Mode B REVOCATION, got %d ops", len(ops))
+		t.Fatalf("expected a structured REVOKE for the Mode B REVOKE, got %d ops", len(ops))
 	}
 	migration, err := emitter.Emit(ops, pipeline.MigrationMeta{Cluster: "test", Database: "dpgtest"})
 	if err != nil {
@@ -1774,12 +1774,12 @@ func TestRoundtripGrantRevocationModeBAppliesLive(t *testing.T) {
 		t.Error("rt_writer should have INSERT (Mode A GRANTS block)")
 	}
 	if writerUpdate {
-		t.Error("rt_writer should have had UPDATE actually revoked by the Mode B REVOCATION, but still has it")
+		t.Error("rt_writer should have had UPDATE actually revoked by the Mode B REVOKE, but still has it")
 	}
 }
 
 // TestRoundtripColumnRevocationAppliesLive is the live-catalog guard for the
-// column-level half of the Table/Column/View REVOCATION emission fix — its
+// column-level half of the Table/Column/View REVOKE emission fix — its
 // SQL shape (privilege (column), ...) differs from the table-level form
 // already proven by TestRoundtripGrantRevocationModeBAppliesLive, so it's
 // worth its own real-PostgreSQL check rather than trusting it by analogy.
@@ -1815,7 +1815,7 @@ func TestRoundtripColumnRevocationAppliesLive(t *testing.T) {
 	v2 := `TABLE docs (id INTEGER, body TEXT) {
     COLUMN body {
         GRANTS { SELECT TO rt_col_reader; }
-        REVOCATIONS { SELECT FROM rt_col_reader; }
+        REVOKES { SELECT FROM rt_col_reader; }
     }
 }`
 	if err := os.WriteFile(f, []byte(v2), 0o644); err != nil {
@@ -1882,7 +1882,7 @@ func TestRoundtripIndexDefinitionChangeAppliesLive(t *testing.T) {
 	dir := t.TempDir()
 	f := filepath.Join(dir, "schema.dpg")
 	v1 := `TABLE t (a INTEGER, e TEXT) {
-    INDICES { t_idx (a); }
+    INDEXES { t_idx (a); }
 }`
 	if err := os.WriteFile(f, []byte(v1), 0o644); err != nil {
 		t.Fatalf("write v1: %v", err)
@@ -1894,7 +1894,7 @@ func TestRoundtripIndexDefinitionChangeAppliesLive(t *testing.T) {
 	// apply — this must route through diffIndexes' new content-comparison
 	// branch, not the name-only-existence check.
 	v2 := `TABLE t (a INTEGER, e TEXT) {
-    INDICES { t_idx USING gin (to_tsvector('english', e)) WHERE (a > 0); }
+    INDEXES { t_idx USING gin (to_tsvector('english', e)) WHERE (a > 0); }
 }`
 	if err := os.WriteFile(f, []byte(v2), 0o644); err != nil {
 		t.Fatalf("write v2: %v", err)

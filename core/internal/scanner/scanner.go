@@ -608,7 +608,8 @@ func (s *state) detectKind(pos pipeline.SourcePos) (pipeline.ObjectKind, error) 
 		return pipeline.KindAggregate, nil
 
 	case "ENUM":
-		return pipeline.KindEnum, nil
+		return pipeline.KindUnknown, pipeline.Errorf(pos,
+			"enum types are declared as TYPE name AS ENUM (...), matching PostgreSQL's CREATE TYPE")
 	case "TYPE":
 		return s.detectTypeKind(pos)
 	case "DOMAIN":
@@ -710,7 +711,7 @@ func (s *state) detectKind(pos pipeline.SourcePos) (pipeline.ObjectKind, error) 
 		return pipeline.KindVirtualType, nil
 
 	default:
-		return pipeline.KindUnknown, pipeline.Errorf(pos, "unrecognised declaration keyword %q", word)
+		return pipeline.KindUnknown, pipeline.Errorf(pos, "unrecognised declaration keyword %q%s", word, pipeline.RenamedKeywordHint(strings.ToUpper(word)))
 	}
 }
 
@@ -757,8 +758,11 @@ func (s *state) detectTypeKind(pos pipeline.SourcePos) (pipeline.ObjectKind, err
 		s.skipWS()
 		after := strings.ToUpper(s.peekWord())
 		s.restore(c2)
-		if after == "RANGE" {
+		switch after {
+		case "RANGE":
 			return pipeline.KindRangeType, nil
+		case "ENUM":
+			return pipeline.KindEnum, nil
 		}
 		return pipeline.KindCompositeType, nil
 	default:
@@ -774,7 +778,7 @@ func (s *state) detectTypeKind(pos pipeline.SourcePos) (pipeline.ObjectKind, err
 var schemaAttrKeywords = func() map[string]bool {
 	words := []string{
 		"OWNER", "COMMENT", "RENAMED", "GRANTS", "GRANT",
-		"REVOCATIONS", "REVOCATION", "DEPRECATED", "PROTECTED", "SECURITY",
+		"REVOKES", "REVOKE", "DEPRECATED", "PROTECTED", "SECURITY",
 	}
 	m := make(map[string]bool, len(words))
 	for _, w := range words {
@@ -798,7 +802,7 @@ func (s *state) tryReadSchemaAttr() (string, bool, error) {
 
 	upper := strings.ToUpper(word)
 	hasBlock := upper == "GRANTS" || upper == "GRANT" ||
-		upper == "REVOCATIONS" || upper == "REVOCATION"
+		upper == "REVOKES" || upper == "REVOKE"
 
 	var err error
 	if hasBlock {
@@ -1024,23 +1028,6 @@ func (s *state) readPart1(kind pipeline.ObjectKind, pos pipeline.SourcePos) (str
 	case pipeline.KindSchema:
 		// Handled by readSchemaDecl; should not reach here.
 		return "", pipeline.Errorf(pos, "internal: readPart1 called for SCHEMA")
-
-	case pipeline.KindEnum:
-		// The ENUM keyword is DPG-specific sugar for PostgreSQL's
-		// "CREATE TYPE name AS ENUM (...)" — real PG syntax requires the
-		// literal "AS ENUM" that DPG source never spells out (Section 5.1's
-		// whole point is the bare "ENUM name (values)" shorthand), so it
-		// must be synthesized here before Reconstruct hands this to pg_query.
-		text, err := s.readRawUntil("{;")
-		if err != nil {
-			return "", part1EOFErr(pos, err)
-		}
-		text = strings.TrimSpace(text)
-		idx := strings.IndexByte(text, '(')
-		if idx == -1 {
-			return "", pipeline.Errorf(pos, "expected '(' after ENUM name")
-		}
-		return strings.TrimSpace(text[:idx]) + " AS ENUM " + text[idx:], nil
 
 	default:
 		// For all other kinds, Part 1 is everything up to '{' or ';'.

@@ -7,7 +7,7 @@ SCHEMA public {
     OWNER "postgres";
 
     -- ENUM type: PostgreSQL-specific, no equivalent in standard SQL.
-    ENUM order_status ('pending', 'paid', 'shipped', 'cancelled') {
+    TYPE order_status AS ENUM ('pending', 'paid', 'shipped', 'cancelled') {
         COMMENT 'Lifecycle states for orders';
     }
 

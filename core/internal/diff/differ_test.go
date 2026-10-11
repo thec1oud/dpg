@@ -6907,7 +6907,7 @@ func findOpSQL(ops []pipeline.DiffOp, substr string) pipeline.DiffOp {
 
 // TestDiffTableGrantRemovedIsCaution guards RFC audit item #25: an implicit
 // revoke (a GRANT simply removed from source) can break another role's
-// dependent access exactly like an explicit REVOCATION does, so it must be
+// dependent access exactly like an explicit REVOKE does, so it must be
 // classified cautionOp — matching DEFAULT PRIVILEGES's already-correct
 // handling of the identical real-world event, not safeOp like it was before
 // this fix.
@@ -7193,14 +7193,14 @@ func TestDiffTableGrantUnchangedIsNoop(t *testing.T) {
 	}
 }
 
-// ── Explicit REVOCATIONS (RFC Section 11.3) ──────────────────────────────────────────
+// ── Explicit REVOKES (RFC Section 11.3) ──────────────────────────────────────────
 //
 // Regression guard for the discovery that ir.Table/Column/View.Revocations was
 // parsed into the IR but never read anywhere in diff/create/emit — an explicit
-// REVOCATION was a total silent no-op regardless of Mode A/B syntax. These
-// tests cover: emission on a brand-new object, emission when a REVOCATION is
+// REVOKE was a total silent no-op regardless of Mode A/B syntax. These
+// tests cover: emission on a brand-new object, emission when a REVOKE is
 // newly added to an already-applied object, restoration (re-GRANT) when a
-// REVOCATION is removed, and idempotency (unchanged REVOCATION => zero ops,
+// REVOKE is removed, and idempotency (unchanged REVOKE => zero ops,
 // so a stored revocation isn't re-issued — PG errors on REVOKE of an
 // already-absent privilege per the RFC).
 
@@ -7295,7 +7295,7 @@ func TestDiffTableRevocationRemoved(t *testing.T) {
 }
 
 // The idempotency guard: PG errors on REVOKE of an already-absent privilege
-// (RFC Section 11.3), so an unchanged REVOCATION must produce zero ops once it's
+// (RFC Section 11.3), so an unchanged REVOKE must produce zero ops once it's
 // been applied and recorded in the snapshot — not re-issued on every apply.
 func TestDiffTableRevocationUnchangedIsNoop(t *testing.T) {
 	d := New()
@@ -7798,7 +7798,7 @@ func TestDiffCollationRenamedFromAndPropertyChanged(t *testing.T) {
 }
 
 // TestDiffCreateMaterializedViewEmitsIndex guards RFC Section 8.2's matview-block
-// INDICES support: a new materialized view's indexes must be created
+// INDEXES support: a new materialized view's indexes must be created
 // alongside it, non-concurrently (it doesn't exist yet — same reasoning as
 // createTable's brand-new-table indexes).
 func TestDiffCreateMaterializedViewEmitsIndex(t *testing.T) {
@@ -7822,7 +7822,7 @@ func TestDiffCreateMaterializedViewEmitsIndex(t *testing.T) {
 }
 
 // TestDiffMaterializedViewIndexAddedToExisting guards diffView's index diff
-// path (not just create): adding an INDICES entry to an already-applied
+// path (not just create): adding an INDEXES entry to an already-applied
 // materialized view must emit a CREATE INDEX without disturbing the view
 // itself.
 func TestDiffMaterializedViewIndexAddedToExisting(t *testing.T) {
@@ -8163,7 +8163,7 @@ func TestDiffFunctionGrantGrantedBySymbolicRoleSpecNeverDrifts(t *testing.T) {
 }
 
 // TestDiffFunctionRevocationGrantedBy guards RFC audit item #90's
-// revoke-entry: GRANTED BY on an explicit REVOCATIONS declaration.
+// revoke-entry: GRANTED BY on an explicit REVOKES declaration.
 func TestDiffFunctionRevocationGrantedBy(t *testing.T) {
 	d := New()
 	grantedBy := "admin"
@@ -10259,7 +10259,7 @@ func TestDiffColumnRevocationUnchangedIsNoop(t *testing.T) {
 	}
 }
 
-// New column added via ALTER TABLE ADD COLUMN, carrying its own REVOCATION —
+// New column added via ALTER TABLE ADD COLUMN, carrying its own REVOKE —
 // exercises the other diffColumns call site (new-column path vs
 // existing-column path already covered above).
 func TestDiffAddColumnEmitsRevocation(t *testing.T) {
@@ -11253,7 +11253,7 @@ func TestDiffAggregateGrantAdded(t *testing.T) {
 // ── AGGREGATE Revocations ──────────────────────────────────────────────────
 // Regression guard mirroring TestDiffCreateProcedureEmitsRevocation and
 // friends: ir.Aggregate had no Revocations field at all, so a declared
-// REVOCATIONS block was parsed but silently dropped everywhere downstream
+// REVOKES block was parsed but silently dropped everywhere downstream
 // (build, snapshot, diff, dump) — only the GRANT half ever took effect.
 
 func TestDiffCreateAggregateEmitsRevocation(t *testing.T) {
@@ -13026,7 +13026,7 @@ func TestDiffParameterPrivilegesGrantedByAlreadySatisfiedIsNoop(t *testing.T) {
 // source (while the PARAMETER PRIVILEGES block itself remains) must not
 // emit any REVOKE — a deliberate departure from diffDefaultPrivileges'
 // current implicit-revoke behavior (see diffParameterPrivileges' doc
-// comment). Only an explicit REVOCATIONS entry actually revokes.
+// comment). Only an explicit REVOKES entry actually revokes.
 func TestDiffParameterPrivilegesGrantRemovedEmitsNothing(t *testing.T) {
 	d := New()
 	snap := &pipeline.Snapshot{}
@@ -15743,7 +15743,7 @@ func TestDiffTSDictTemplateChangedStillDropsAndRecreates(t *testing.T) {
 	desired := []pipeline.IRObject{
 		&ir.TSDict{
 			Schema: "public", Name: "my_dict", TemplateName: "snowball",
-			Body: `CREATE TEXT SEARCH DICTIONARY public.my_dict (TEMPLATE = snowball, LANGUAGE = 'english')`,
+			Body:    `CREATE TEXT SEARCH DICTIONARY public.my_dict (TEMPLATE = snowball, LANGUAGE = 'english')`,
 			Options: []pipeline.StorageParam{{Key: "language", Value: "english"}},
 		},
 	}
@@ -17373,9 +17373,9 @@ func TestDiffProcedureCommentAdded(t *testing.T) {
 }
 
 // ── FUNCTION/PROCEDURE Revocations (RFC Section 11.3) ────────────────────────────────
-// Regression guard for a real bug found live-testing REVOCATIONS against a
+// Regression guard for a real bug found live-testing REVOKES against a
 // demo project: ir.Function/ir.Procedure had no Revocations field at all, so
-// a declared REVOCATIONS block was parsed but silently dropped everywhere
+// a declared REVOKES block was parsed but silently dropped everywhere
 // downstream (build, snapshot, diff, dump) — only the GRANT half ever took
 // effect. Mirrors the Table/View Revocations test suite above.
 

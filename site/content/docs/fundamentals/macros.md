@@ -43,7 +43,7 @@ A brace-body macro spreads into a `{ }` block.
 
 ```sql
 MACRO audit_block {
-    OWNER "app_admin";
+    OWNER app_admin;
     ENABLE ROW LEVEL SECURITY;
 }
 
@@ -83,7 +83,7 @@ MACRO common_timestamps (
 )
 
 MACRO audit_block {
-    OWNER "app_admin";
+    OWNER app_admin;
     ENABLE ROW LEVEL SECURITY;
 }
 ```

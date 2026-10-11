@@ -107,7 +107,7 @@ $body$;
 Single-quoted string literal
 =====================================
 
-ENUM colors ('red', 'green', 'blue');
+TYPE colors AS ENUM ('red', 'green', 'blue');
 
 -------------------------------------
 

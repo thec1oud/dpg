@@ -7,13 +7,12 @@ import dev.thec1oud.plugins.ide.dpg.lang.DpgTokenTypes.DOT
 import dev.thec1oud.plugins.ide.dpg.lang.DpgTokenTypes.DOLLAR_QUOTE
 import dev.thec1oud.plugins.ide.dpg.lang.DpgTokenTypes.DOLLAR_QUOTE_CONTENT
 import dev.thec1oud.plugins.ide.dpg.lang.DpgTokenTypes.DROP_KW
-import dev.thec1oud.plugins.ide.dpg.lang.DpgTokenTypes.ENUM_KW
 import dev.thec1oud.plugins.ide.dpg.lang.DpgTokenTypes.FORBIDDEN_VERB
 import dev.thec1oud.plugins.ide.dpg.lang.DpgTokenTypes.FUNCTION_KW
 import dev.thec1oud.plugins.ide.dpg.lang.DpgTokenTypes.GRANTS_KW
 import dev.thec1oud.plugins.ide.dpg.lang.DpgTokenTypes.IDENTIFIER
 import dev.thec1oud.plugins.ide.dpg.lang.DpgTokenTypes.INDEX_KW
-import dev.thec1oud.plugins.ide.dpg.lang.DpgTokenTypes.INDICES_KW
+import dev.thec1oud.plugins.ide.dpg.lang.DpgTokenTypes.INDEXES_KW
 import dev.thec1oud.plugins.ide.dpg.lang.DpgTokenTypes.INTEGER
 import dev.thec1oud.plugins.ide.dpg.lang.DpgTokenTypes.LBRACE
 import dev.thec1oud.plugins.ide.dpg.lang.DpgTokenTypes.LINE_COMMENT
@@ -79,7 +78,7 @@ class DpgLexerTest : BasePlatformTestCase() {
     fun testObjectKeywords() {
         val cases = mapOf(
             "TABLE" to TABLE_KW, "VIEW" to VIEW_KW, "FUNCTION" to FUNCTION_KW,
-            "SCHEMA" to SCHEMA_KW, "ENUM" to ENUM_KW, "ROLE" to ROLE_KW,
+            "SCHEMA" to SCHEMA_KW, "ROLE" to ROLE_KW,
             "SEQUENCE" to SEQUENCE_KW, "MACRO" to MACRO_KW,
             "MATERIALIZED" to MATERIALIZED_KW, "UNLOGGED" to UNLOGGED_KW
         )
@@ -96,7 +95,7 @@ class DpgLexerTest : BasePlatformTestCase() {
     }
 
     fun testBlockDirectiveKeywords() {
-        assertEquals(INDICES_KW,    tokenTypes("INDICES").single())
+        assertEquals(INDEXES_KW,    tokenTypes("INDEXES").single())
         assertEquals(GRANTS_KW,     tokenTypes("GRANTS").single())
         assertEquals(COMMENT_KW,    tokenTypes("COMMENT").single())
         assertEquals(OWNER_KW,      tokenTypes("OWNER").single())

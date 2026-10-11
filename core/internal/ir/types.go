@@ -157,7 +157,7 @@ type Identity struct {
 	NoMinValue, NoMaxValue bool
 }
 
-// Index is a CREATE INDEX / INDICES entry.
+// Index is a CREATE INDEX / INDEXES entry.
 type Index struct {
 	Name             string
 	Unique           bool
@@ -964,7 +964,7 @@ type Sequence struct {
 	Owner    *string
 	Comment  *string
 	Grants   []Grant
-	// Revocations is RFC Section 11.3's explicit REVOCATION block support (RFC
+	// Revocations is RFC Section 11.3's explicit REVOKE block support (RFC
 	// audit item #24) — Grants was already populated by the builder, but
 	// neither createSequence/diffSequence ever referenced Grants (a total
 	// silent-discard) and there was no Revocations slot at all.
@@ -2032,7 +2032,7 @@ type ParameterGrant struct {
 	Pos       pipeline.SourcePos
 }
 
-// ParameterRevocation is a PARAMETER PRIVILEGES REVOCATIONS { } entry.
+// ParameterRevocation is a PARAMETER PRIVILEGES REVOKES { } entry.
 type ParameterRevocation struct {
 	Privileges []string
 	Parameters []string

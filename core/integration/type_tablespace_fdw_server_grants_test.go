@@ -47,13 +47,13 @@ func TestRoundtripTypeGrants(t *testing.T) {
 
 	v1 := `ROLE app_service NOLOGIN;
 
-ENUM mood ('sad', 'happy') {
-    REVOCATIONS { USAGE FROM PUBLIC; }
+TYPE mood AS ENUM ('sad', 'happy') {
+    REVOKES { USAGE FROM PUBLIC; }
     GRANTS { USAGE TO app_service; }
 }
 
 DOMAIN positive_integer AS integer {
-    REVOCATIONS { USAGE FROM PUBLIC; }
+    REVOKES { USAGE FROM PUBLIC; }
     GRANTS { USAGE TO app_service; }
 }`
 	if err := os.WriteFile(f, []byte(v1), 0o644); err != nil {
@@ -83,7 +83,7 @@ DOMAIN positive_integer AS integer {
 			t.Fatalf("%s: app_service should have USAGE after initial apply — bug #3 regressed (GRANT never applied)", tp)
 		}
 		if checkUsage(tp, "public") {
-			t.Fatalf("%s: PUBLIC should have had USAGE revoked — bug #3 regressed (REVOCATION never applied, or the default masked it)", tp)
+			t.Fatalf("%s: PUBLIC should have had USAGE revoked — bug #3 regressed (REVOKE never applied, or the default masked it)", tp)
 		}
 	}
 
@@ -91,12 +91,12 @@ DOMAIN positive_integer AS integer {
 	// actually lands live.
 	v2 := `ROLE app_service NOLOGIN;
 
-ENUM mood ('sad', 'happy') {
-    REVOCATIONS { USAGE FROM PUBLIC; }
+TYPE mood AS ENUM ('sad', 'happy') {
+    REVOKES { USAGE FROM PUBLIC; }
 }
 
 DOMAIN positive_integer AS integer {
-    REVOCATIONS { USAGE FROM PUBLIC; }
+    REVOKES { USAGE FROM PUBLIC; }
 }`
 	if err := os.WriteFile(f, []byte(v2), 0o644); err != nil {
 		t.Fatalf("write v2: %v", err)

@@ -2742,13 +2742,13 @@
               "value": 1,
               "content": {
                 "type": "PATTERN",
-                "value": "ENUM",
+                "value": "TYPE",
                 "flags": "i"
               }
             }
           },
           "named": false,
-          "value": "ENUM"
+          "value": "TYPE"
         },
         {
           "type": "FIELD",
@@ -2757,6 +2757,40 @@
             "type": "SYMBOL",
             "name": "_object_ref"
           }
+        },
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "TOKEN",
+            "content": {
+              "type": "PREC",
+              "value": 1,
+              "content": {
+                "type": "PATTERN",
+                "value": "AS",
+                "flags": "i"
+              }
+            }
+          },
+          "named": false,
+          "value": "AS"
+        },
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "TOKEN",
+            "content": {
+              "type": "PREC",
+              "value": 1,
+              "content": {
+                "type": "PATTERN",
+                "value": "ENUM",
+                "flags": "i"
+              }
+            }
+          },
+          "named": false,
+          "value": "ENUM"
         },
         {
           "type": "STRING",
@@ -7664,7 +7698,7 @@
         },
         {
           "type": "SYMBOL",
-          "name": "indices_block"
+          "name": "indexes_block"
         },
         {
           "type": "SYMBOL",
@@ -7688,7 +7722,7 @@
         },
         {
           "type": "SYMBOL",
-          "name": "revocations_block"
+          "name": "revokes_block"
         },
         {
           "type": "SYMBOL",
@@ -7697,6 +7731,18 @@
         {
           "type": "SYMBOL",
           "name": "migrate_remove_directive"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "enum_value_rename_directive"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "attributes_block"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "attribute_block"
         },
         {
           "type": "SYMBOL",
@@ -7851,6 +7897,82 @@
           "content": {
             "type": "SYMBOL",
             "name": "identifier"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": ";"
+        }
+      ]
+    },
+    "enum_value_rename_directive": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "TOKEN",
+            "content": {
+              "type": "PREC",
+              "value": 1,
+              "content": {
+                "type": "PATTERN",
+                "value": "VALUE",
+                "flags": "i"
+              }
+            }
+          },
+          "named": false,
+          "value": "VALUE"
+        },
+        {
+          "type": "FIELD",
+          "name": "name",
+          "content": {
+            "type": "SYMBOL",
+            "name": "string_literal"
+          }
+        },
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "TOKEN",
+            "content": {
+              "type": "PREC",
+              "value": 1,
+              "content": {
+                "type": "PATTERN",
+                "value": "RENAMED",
+                "flags": "i"
+              }
+            }
+          },
+          "named": false,
+          "value": "RENAMED"
+        },
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "TOKEN",
+            "content": {
+              "type": "PREC",
+              "value": 1,
+              "content": {
+                "type": "PATTERN",
+                "value": "FROM",
+                "flags": "i"
+              }
+            }
+          },
+          "named": false,
+          "value": "FROM"
+        },
+        {
+          "type": "FIELD",
+          "name": "old_name",
+          "content": {
+            "type": "SYMBOL",
+            "name": "string_literal"
           }
         },
         {
@@ -8563,7 +8685,7 @@
         }
       ]
     },
-    "indices_block": {
+    "indexes_block": {
       "type": "SEQ",
       "members": [
         {
@@ -8575,13 +8697,13 @@
               "value": 1,
               "content": {
                 "type": "PATTERN",
-                "value": "INDICES",
+                "value": "INDEXES",
                 "flags": "i"
               }
             }
           },
           "named": false,
-          "value": "INDICES"
+          "value": "INDEXES"
         },
         {
           "type": "STRING",
@@ -10055,6 +10177,129 @@
         }
       ]
     },
+    "attributes_block": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "TOKEN",
+            "content": {
+              "type": "PREC",
+              "value": 1,
+              "content": {
+                "type": "PATTERN",
+                "value": "ATTRIBUTES",
+                "flags": "i"
+              }
+            }
+          },
+          "named": false,
+          "value": "ATTRIBUTES"
+        },
+        {
+          "type": "STRING",
+          "value": "{"
+        },
+        {
+          "type": "REPEAT",
+          "content": {
+            "type": "SYMBOL",
+            "name": "attribute_entry"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": "}"
+        }
+      ]
+    },
+    "attribute_block": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "TOKEN",
+            "content": {
+              "type": "PREC",
+              "value": 1,
+              "content": {
+                "type": "PATTERN",
+                "value": "ATTRIBUTE",
+                "flags": "i"
+              }
+            }
+          },
+          "named": false,
+          "value": "ATTRIBUTE"
+        },
+        {
+          "type": "FIELD",
+          "name": "name",
+          "content": {
+            "type": "SYMBOL",
+            "name": "identifier"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": "{"
+        },
+        {
+          "type": "REPEAT",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_attribute_block_directive"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": "}"
+        }
+      ]
+    },
+    "attribute_entry": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "name",
+          "content": {
+            "type": "SYMBOL",
+            "name": "identifier"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": "{"
+        },
+        {
+          "type": "REPEAT",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_attribute_block_directive"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": "}"
+        }
+      ]
+    },
+    "_attribute_block_directive": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "comment_directive"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "renamed_from_directive"
+        }
+      ]
+    },
     "_column_block_directive": {
       "type": "CHOICE",
       "members": [
@@ -10488,7 +10733,7 @@
         }
       ]
     },
-    "revocations_block": {
+    "revokes_block": {
       "type": "SEQ",
       "members": [
         {
@@ -10500,13 +10745,13 @@
               "value": 1,
               "content": {
                 "type": "PATTERN",
-                "value": "REVOCATIONS",
+                "value": "REVOKES",
                 "flags": "i"
               }
             }
           },
           "named": false,
-          "value": "REVOCATIONS"
+          "value": "REVOKES"
         },
         {
           "type": "STRING",

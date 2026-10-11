@@ -128,7 +128,7 @@ TABLE products (
     id bigint,
     sku text
 ) {
-    INDICES {
+    INDEXES {
         idx_products_sku (sku);
     }
 }
@@ -148,7 +148,7 @@ TABLE products (
         type: (sql_type
           (identifier))))
     (dpg_block
-      (indices_block
+      (indexes_block
         (index_def
           name: (identifier)
           (index_column

@@ -267,7 +267,7 @@ SCHEMA public {
 }
 
 // TestCompile_DefaultPrivilegesRevocationAndFallbackChainRole guards
-// REVOCATIONS parsing (ON type FROM role [CASCADE]) and that a declaration
+// REVOKES parsing (ON type FROM role [CASCADE]) and that a declaration
 // with no FOR ROLE / IN SCHEMA compiles with both left nil (a database-wide
 // default for the current role).
 func TestCompile_DefaultPrivilegesRevocationAndFallbackChainRole(t *testing.T) {
@@ -275,7 +275,7 @@ func TestCompile_DefaultPrivilegesRevocationAndFallbackChainRole(t *testing.T) {
 	f := filepath.Join(dbDir, "objects.dpg")
 	writeDPG(t, f, `
 DEFAULT PRIVILEGES {
-    REVOCATIONS {
+    REVOKES {
         SELECT ON TABLES FROM app_readonly CASCADE;
     }
 }`)

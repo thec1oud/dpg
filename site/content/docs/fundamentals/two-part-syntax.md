@@ -36,8 +36,8 @@ TABLE users (
 )
 {
     COMMENT 'Primary identity store';
-    OWNER   "app_role";
-    INDICES { idx_email (email); }
+    OWNER   app_role;
+    INDEXES { idx_email (email); }
     GRANTS  { SELECT TO app_readonly; }
 }
 ```
@@ -81,7 +81,7 @@ Nested objects inherit context from their enclosing `{ }` block.
 
 ```sql
 SCHEMA analytics {
-    OWNER "analytics_role";
+    OWNER analytics_role;
 
     TABLE events (
         id         BIGINT GENERATED ALWAYS AS IDENTITY,
@@ -89,7 +89,7 @@ SCHEMA analytics {
         CONSTRAINT pk_events PRIMARY KEY (id)
     )
     {
-        INDICES { idx_ts (created_at); }
+        INDEXES { idx_ts (created_at); }
     }
 }
 ```
@@ -125,7 +125,7 @@ Every object kind follows the same rule, regardless of what Part 1 itself ends w
 ```sql
 -- table: no semicolon before {, { on the same line
 TABLE users ( id BIGINT ) WITH (fillfactor = 90) {
-    INDICES { idx_email (email); }
+    INDEXES { idx_email (email); }
 }
 
 -- function: no semicolon before {, { on the same line
@@ -150,7 +150,7 @@ Every plural keyword has a singular equivalent. Both are identical to the compil
 
 ```sql
 -- Mode A: plural block
-INDICES {
+INDEXES {
     idx_email (email);
     idx_name  (last_name, first_name);
 }
@@ -160,7 +160,7 @@ INDEX idx_email (email);
 INDEX idx_name  (last_name, first_name);
 ```
 
-Applies to: `INDICES`/`INDEX`, `POLICIES`/`POLICY`, `TRIGGERS`/`TRIGGER`, `GRANTS`/`GRANT`, `REVOCATIONS`/`REVOCATION`, `COLUMNS`/`COLUMN`, `CONSTRAINTS`/`CONSTRAINT`, `PARTITIONS`/`PARTITION`, `STATISTICS`.
+Applies to: `INDEXES`/`INDEX`, `POLICIES`/`POLICY`, `TRIGGERS`/`TRIGGER`, `GRANTS`/`GRANT`, `REVOKES`/`REVOKE`, `COLUMNS`/`COLUMN`, `CONSTRAINTS`/`CONSTRAINT`, `PARTITIONS`/`PARTITION`, `STATISTICS`.
 
 ## Block merging
 
@@ -172,7 +172,7 @@ The same object may be declared across multiple `.dpg` files. DPG merges all dec
 ```sql
 -- tables/users.dpg
 TABLE users ( id BIGINT GENERATED ALWAYS AS IDENTITY, ... )
-{ OWNER "app_role"; INDICES { idx_email (email); } }
+{ OWNER app_role; INDEXES { idx_email (email); } }
 
 -- grants.dpg
 TABLE users ( id BIGINT GENERATED ALWAYS AS IDENTITY, ... )

@@ -111,18 +111,18 @@ func TestHover_SchemaQualifiedName(t *testing.T) {
 }
 
 func TestHover_KeywordDoc(t *testing.T) {
-	src := "INDICES { idx_name (col); }"
+	src := "INDEXES { idx_name (col); }"
 	ws := workspace.New()
 	ws.OpenDocument("/test/block.dpg", src)
 
-	pos := protocol.Position{Line: 0, Character: 3} // inside "INDICES"
+	pos := protocol.Position{Line: 0, Character: 3} // inside "INDEXES"
 	got := Hover(ws, "/test/block.dpg", pos)
 
 	if got == nil {
-		t.Fatal("Hover returned nil for keyword INDICES")
+		t.Fatal("Hover returned nil for keyword INDEXES")
 	}
 	if hoverText(t, got) == "" {
-		t.Error("Hover for INDICES should return non-empty documentation")
+		t.Error("Hover for INDEXES should return non-empty documentation")
 	}
 }
 

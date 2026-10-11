@@ -112,7 +112,7 @@ private object TopLevelKeywordsProvider : CompletionProvider<CompletionParameter
         "SCHEMA", "TABLE", "UNLOGGED TABLE", "FOREIGN TABLE",
         "VIEW", "MATERIALIZED VIEW", "RECURSIVE VIEW",
         "FUNCTION", "PROCEDURE", "AGGREGATE",
-        "ENUM", "TYPE", "DOMAIN",
+        "TYPE", "DOMAIN",
         "SEQUENCE", "ROLE", "TABLESPACE", "EXTENSION",
         "PUBLICATION", "SUBSCRIPTION",
         "FOREIGN DATA WRAPPER", "SERVER", "USER MAPPING",
@@ -139,11 +139,11 @@ private object TopLevelKeywordsProvider : CompletionProvider<CompletionParameter
 private object BlockDirectiveProvider : CompletionProvider<CompletionParameters>() {
     private val DIRECTIVES = listOf(
         // Collection blocks
-        "INDICES", "POLICIES", "TRIGGERS", "GRANTS", "REVOCATIONS",
-        "PARTITIONS", "COLUMNS", "CONSTRAINTS",
+        "INDEXES", "POLICIES", "TRIGGERS", "GRANTS", "REVOKES",
+        "PARTITIONS", "COLUMNS", "ATTRIBUTES", "CONSTRAINTS",
         // Singular directives
-        "INDEX", "POLICY", "TRIGGER", "GRANT", "REVOCATION",
-        "PARTITION", "COLUMN", "CONSTRAINT",
+        "INDEX", "POLICY", "TRIGGER", "GRANT", "REVOKE",
+        "PARTITION", "COLUMN", "ATTRIBUTE", "CONSTRAINT", "VALUE",
         // Scalar directives
         "COMMENT", "OWNER", "PROTECTED", "DEPRECATED", "RENAMED FROM",
         "ENABLE ROW LEVEL SECURITY", "DISABLE ROW LEVEL SECURITY",
@@ -155,7 +155,7 @@ private object BlockDirectiveProvider : CompletionProvider<CompletionParameters>
         "INHERIT", "NOINHERIT", "REPLICATION", "NOREPLICATION",
         "BYPASSRLS", "NOBYPASSRLS",
         "PASSWORD", "CONNECTION LIMIT", "VALID UNTIL", "IN ROLE",
-        // Privilege keywords for GRANTS / REVOCATIONS
+        // Privilege keywords for GRANTS / REVOKES
         "SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE",
         "REFERENCES", "USAGE", "EXECUTE", "CONNECT", "TEMPORARY",
         "ALL PRIVILEGES",

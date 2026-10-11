@@ -23,7 +23,7 @@ CREATE SCHEMA IF NOT EXISTS "public";
 
 ```sql
 SCHEMA analytics {
-    OWNER   "analytics_role";
+    OWNER   analytics_role;
     COMMENT 'Derived tables and event aggregations';
 }
 ```
@@ -79,7 +79,7 @@ SCHEMA analytics {
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         CONSTRAINT pk_events PRIMARY KEY (id)
     )
-    { INDICES { idx_ts (created_at); } }
+    { INDEXES { idx_ts (created_at); } }
 }
 ```
 

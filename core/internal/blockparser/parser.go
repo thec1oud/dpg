@@ -231,7 +231,7 @@ func (b *blockParser) expectSemi() error {
 	return nil
 }
 
-// parseTrailingCommentBlock parses an INDICES/POLICIES/TRIGGERS/CONSTRAINTS
+// parseTrailingCommentBlock parses an INDEXES/POLICIES/TRIGGERS/CONSTRAINTS
 // entry's terminator: a bare ";" (no comment), or a "{ COMMENT '...'; }"
 // block — the same "bare ; vs { } block" convention every other
 // comment-bearing kind already uses (mirrors dump's writeViewBlock/
@@ -266,6 +266,51 @@ func (b *blockParser) parseTrailingCommentBlock() (*pipeline.StringLit, error) {
 }
 
 // readIdentifier reads a (possibly schema-qualified) identifier.
+// foldIdent applies PostgreSQL's unquoted-identifier case folding (RFC
+// Section 4.10): ASCII letters are lowercased, everything else is kept, the
+// same as PostgreSQL's own downcase_identifier for UTF-8 databases. Quoted
+// identifiers are read separately and never folded.
+// readRoleIdentifier reads a grantee in a role list. PUBLIC and the
+// CURRENT_USER/CURRENT_ROLE/SESSION_USER role specs are keywords, kept
+// uppercase so they compare equal to introspected grantees; every other
+// name follows readIdentifier's folding rules.
+func (b *blockParser) readRoleIdentifier() (pipeline.Identifier, error) {
+	b.skipWS()
+	if b.peek() != '"' {
+		switch w := strings.ToUpper(b.peekWord()); w {
+		case "PUBLIC", "CURRENT_USER", "CURRENT_ROLE", "SESSION_USER":
+			b.readWord()
+			return pipeline.Identifier{Name: w}, nil
+		}
+	}
+	return b.readIdentifier()
+}
+
+// identToken turns one raw identifier token into the name PostgreSQL would
+// resolve: a double-quoted token is unquoted (with "" unescaped), anything
+// else is case-folded by foldIdent.
+func identToken(tok string) string {
+	if len(tok) >= 2 && tok[0] == '"' && tok[len(tok)-1] == '"' {
+		return strings.ReplaceAll(tok[1:len(tok)-1], `""`, `"`)
+	}
+	return foldIdent(tok)
+}
+
+func foldIdent(word string) string {
+	for i := 0; i < len(word); i++ {
+		if c := word[i]; c >= 'A' && c <= 'Z' {
+			buf := []byte(word)
+			for j := i; j < len(buf); j++ {
+				if buf[j] >= 'A' && buf[j] <= 'Z' {
+					buf[j] += 'a' - 'A'
+				}
+			}
+			return string(buf)
+		}
+	}
+	return word
+}
+
 func (b *blockParser) readIdentifier() (pipeline.Identifier, error) {
 	b.skipWS()
 	var name string
@@ -276,7 +321,7 @@ func (b *blockParser) readIdentifier() (pipeline.Identifier, error) {
 		}
 		name = s
 	} else {
-		name = b.readWord()
+		name = foldIdent(b.readWord())
 		if name == "" {
 			return pipeline.Identifier{}, b.errorf("expected identifier, got %q", b.peek())
 		}
@@ -293,7 +338,7 @@ func (b *blockParser) readIdentifier() (pipeline.Identifier, error) {
 			}
 			n2 = s
 		} else {
-			n2 = b.readWord()
+			n2 = foldIdent(b.readWord())
 		}
 		return pipeline.Identifier{Schema: name, Name: n2}, nil
 	}
@@ -502,12 +547,14 @@ func (b *blockParser) parseBlock(pos pipeline.SourcePos) (pipeline.BlockAST, err
 			var m pipeline.RoleMembershipDir
 			m, err = b.parseMembershipEntry("ROLE", true, dirPos)
 			ast.Memberships = append(ast.Memberships, m)
-		case "RENAME":
+		case "VALUE":
 			var r pipeline.EnumValueRenameDir
 			r, err = b.parseEnumValueRename(dirPos)
 			if err == nil {
 				ast.EnumValueRenames = append(ast.EnumValueRenames, r)
 			}
+		case "RENAME":
+			return ast, fmt.Errorf("%s: DPG-E024: RENAME VALUE is not a DPG directive; an enum value rename is written VALUE 'new' RENAMED FROM 'old';", dirPos)
 		case "REFRESH":
 			// RFC audit item #84: Collation-only REFRESH VERSION, a bare
 			// presence keyword with no argument.
@@ -520,13 +567,13 @@ func (b *blockParser) parseBlock(pos pipeline.SourcePos) (pipeline.BlockAST, err
 			}
 			ast.RefreshVersion = true
 			err = b.expectSemi()
-		case "INDICES":
+		case "INDEXES":
 			var indices []pipeline.IndexDef
 			indices, err = b.parseIndices(dirPos)
 			ast.Indices = append(ast.Indices, indices...)
 		case "INDEX":
 			// Mode B (Section 4.8 Dual Definition Modes): the singular keyword precedes
-			// a single entry outside a plural block, so unlike INDICES this must
+			// a single entry outside a plural block, so unlike INDEXES this must
 			// not consume a wrapping '{ }'.
 			var idx pipeline.IndexDef
 			idx, err = b.parseOneIndex(false)
@@ -555,6 +602,14 @@ func (b *blockParser) parseBlock(pos pipeline.SourcePos) (pipeline.BlockAST, err
 			var cols []pipeline.ColumnBlock
 			cols, err = b.parseColumnsBlock(dirPos)
 			ast.Columns = append(ast.Columns, cols...)
+		case "ATTRIBUTE":
+			var attr pipeline.ColumnBlock
+			attr, err = b.parseAttributeBlock(dirPos)
+			ast.Attributes = append(ast.Attributes, attr)
+		case "ATTRIBUTES":
+			var attrs []pipeline.ColumnBlock
+			attrs, err = b.parseAttributesBlock(dirPos)
+			ast.Attributes = append(ast.Attributes, attrs...)
 		case "CONSTRAINT":
 			var cst pipeline.ConstraintDef
 			cst, err = b.parseConstraint(dirPos)
@@ -593,11 +648,11 @@ func (b *blockParser) parseBlock(pos pipeline.SourcePos) (pipeline.BlockAST, err
 			var g pipeline.GrantEntry
 			g, err = b.parseOneGrant(dirPos)
 			ast.Grants = append(ast.Grants, g)
-		case "REVOCATIONS":
+		case "REVOKES":
 			var revs []pipeline.RevocationEntry
 			revs, err = b.parseRevocationsBlock(dirPos)
 			ast.Revocations = append(ast.Revocations, revs...)
-		case "REVOCATION":
+		case "REVOKE":
 			// Mode B: singular entry, no wrapping '{ }'.
 			var r pipeline.RevocationEntry
 			r, err = b.parseOneRevocation(dirPos)
@@ -731,7 +786,7 @@ func (b *blockParser) parseBlock(pos pipeline.SourcePos) (pipeline.BlockAST, err
 				err = fmt.Errorf("%s: expected MAP or MAPS after NAME, got %q", dirPos, w2)
 			}
 		default:
-			return ast, fmt.Errorf("%s: DPG-E024: unknown block directive %q", dirPos, word)
+			return ast, fmt.Errorf("%s: DPG-E024: unknown block directive %q%s", dirPos, word, pipeline.RenamedKeywordHint(word))
 		}
 		if err != nil {
 			return ast, err
@@ -788,7 +843,7 @@ func (b *blockParser) parseIdentDirective(pos pipeline.SourcePos) (*pipeline.Ide
 			return nil, err
 		}
 	} else {
-		name = b.readWord()
+		name = foldIdent(b.readWord())
 		if name == "" {
 			return nil, b.errorf("expected identifier after directive")
 		}
@@ -1004,22 +1059,23 @@ func (b *blockParser) parseMembershipEntry(direction string, adminDefault bool, 
 	return m, nil
 }
 
-// parseEnumValueRename reads: VALUE 'old' TO 'new'; (the "RENAME" directive
-// keyword itself is consumed by the caller's dispatch — Section 5.1.1).
+// parseEnumValueRename reads: 'new' RENAMED FROM 'old'; (the leading VALUE
+// keyword is consumed by the caller's dispatch — Section 5.1.1). The current
+// name comes first, matching every other RENAMED FROM directive.
 func (b *blockParser) parseEnumValueRename(pos pipeline.SourcePos) (pipeline.EnumValueRenameDir, error) {
-	if err := b.expect("VALUE"); err != nil {
+	b.skipWS()
+	to, err := b.readSingleQuotedString()
+	if err != nil {
+		return pipeline.EnumValueRenameDir{}, err
+	}
+	if err := b.expect("RENAMED"); err != nil {
+		return pipeline.EnumValueRenameDir{}, err
+	}
+	if err := b.expect("FROM"); err != nil {
 		return pipeline.EnumValueRenameDir{}, err
 	}
 	b.skipWS()
 	from, err := b.readSingleQuotedString()
-	if err != nil {
-		return pipeline.EnumValueRenameDir{}, err
-	}
-	if err := b.expect("TO"); err != nil {
-		return pipeline.EnumValueRenameDir{}, err
-	}
-	b.skipWS()
-	to, err := b.readSingleQuotedString()
 	if err != nil {
 		return pipeline.EnumValueRenameDir{}, err
 	}
@@ -1165,7 +1221,7 @@ func (b *blockParser) parseReplicaIdentity(pos pipeline.SourcePos) (*pipeline.Re
 			return nil, err
 		}
 		b.skipWS()
-		name := b.readWord()
+		name := foldIdent(b.readWord())
 		if name == "" {
 			return nil, b.errorf("expected an index name after REPLICA IDENTITY USING INDEX")
 		}
@@ -1220,7 +1276,7 @@ func (b *blockParser) parseDetachedFrom(pos pipeline.SourcePos) (*pipeline.Detac
 	return d, nil
 }
 
-// ── INDICES ───────────────────────────────────────────────────────────────────
+// ── INDEXES ───────────────────────────────────────────────────────────────────
 
 // parseIndices reads: { idx1 [UNIQUE] (cols) [USING m] [WHERE pred] [INCLUDE (...)] [WITH (...)] [TABLESPACE t] [CONCURRENTLY bool]; ... }
 func (b *blockParser) parseIndices(pos pipeline.SourcePos) ([]pipeline.IndexDef, error) {
@@ -1241,7 +1297,7 @@ func (b *blockParser) parseIndices(pos pipeline.SourcePos) ([]pipeline.IndexDef,
 	}
 	b.skipWS()
 	if b.peek() != '}' {
-		return nil, b.errorf("expected '}' to close INDICES block")
+		return nil, b.errorf("expected '}' to close INDEXES block")
 	}
 	b.advance()
 	return indices, nil
@@ -1249,7 +1305,7 @@ func (b *blockParser) parseIndices(pos pipeline.SourcePos) ([]pipeline.IndexDef,
 
 // parseOneIndex parses one index declaration. presetUnique is true when the
 // caller (Mode B's top-level "UNIQUE INDEX ..." dispatch) already consumed a
-// leading UNIQUE keyword itself — Mode A (an entry inside INDICES { }, with
+// leading UNIQUE keyword itself — Mode A (an entry inside INDEXES { }, with
 // no INDEX keyword) has parseOneIndex consume its own leading UNIQUE.
 func (b *blockParser) parseOneIndex(presetUnique bool) (pipeline.IndexDef, error) {
 	pos := b.srcPos()
@@ -1288,7 +1344,7 @@ func (b *blockParser) parseOneIndex(presetUnique bool) (pipeline.IndexDef, error
 	// [ONLY] is a bare presence keyword too (RFC Section 7.7), positioned
 	// exactly where real PostgreSQL's own CREATE [UNIQUE] INDEX
 	// [CONCURRENTLY] [ONLY] table_name puts it — after CONCURRENTLY,
-	// before the index name (DPG's INDICES block omits the implicit
+	// before the index name (DPG's INDEXES block omits the implicit
 	// "ON table_name" itself, but keeps every prefix keyword's own order).
 	b.skipWS()
 	c = b.cur()
@@ -1391,10 +1447,10 @@ func (b *blockParser) parseOneIndex(presetUnique bool) (pipeline.IndexDef, error
 			}
 			b.advance()
 			for _, s := range strings.Split(raw, ",") {
-				// Strip quotes like parseIndexColumnEntry does for key columns, so
-				// the differ (which quotes on output) doesn't double-quote a
-				// hand-written INCLUDE ("col").
-				s = strings.Trim(strings.TrimSpace(s), `"`)
+				// Unquote or case-fold like parseIndexColumnEntry does for key
+				// columns, so the differ (which quotes on output) gets the
+				// identifier PostgreSQL would resolve.
+				s = identToken(strings.TrimSpace(s))
 				if s != "" {
 					idx.Include = append(idx.Include, pipeline.Identifier{Name: s})
 				}
@@ -1608,7 +1664,7 @@ func parseIndexColumnEntry(s string) pipeline.IndexColumn {
 		} else {
 			var name string
 			name, s = splitIndexIdentToken(s)
-			col.Name = strings.Trim(name, `"`)
+			col.Name = identToken(name)
 		}
 	}
 
@@ -1621,12 +1677,12 @@ func parseIndexColumnEntry(s string) pipeline.IndexColumn {
 		if word, rest := splitIndexIdentToken(s); strings.ToUpper(word) == "COLLATE" {
 			var collName string
 			collName, s = splitIndexIdentToken(rest)
-			col.Collation = &pipeline.Identifier{Name: strings.Trim(collName, `"`)}
+			col.Collation = &pipeline.Identifier{Name: identToken(collName)}
 		}
 
 		if s != "" {
 			if word, rest := splitIndexIdentToken(s); !isIndexColTrailingKeyword(word) {
-				col.OpClass = &pipeline.Identifier{Name: strings.Trim(word, `"`)}
+				col.OpClass = &pipeline.Identifier{Name: identToken(word)}
 				s = rest
 				if strings.HasPrefix(s, "(") {
 					if inner, rest2, ok := splitIndexParenGroup(s); ok {
@@ -1682,6 +1738,78 @@ func parseStorageParams(raw string) []pipeline.StorageParam {
 		}
 	}
 	return params
+}
+
+// ── ATTRIBUTE / ATTRIBUTES ───────────────────────────────────────────────────
+
+// parseAttributeBlock reads: name { COMMENT '...'; RENAMED FROM old; } — a
+// composite type attribute block (RFC Section 5.2). The leading ATTRIBUTE
+// keyword is consumed by the caller.
+func (b *blockParser) parseAttributeBlock(pos pipeline.SourcePos) (pipeline.ColumnBlock, error) {
+	b.skipWS()
+	name, err := b.readIdentifier()
+	if err != nil {
+		return pipeline.ColumnBlock{}, err
+	}
+	attr := pipeline.ColumnBlock{Name: name, Pos: pos}
+	if err := b.consumeBrace(); err != nil {
+		return attr, err
+	}
+	for {
+		b.skipWS()
+		if b.eof() || b.peek() == '}' {
+			break
+		}
+		dirPos := b.srcPos()
+		word := strings.ToUpper(b.readWord())
+		switch word {
+		case "COMMENT":
+			attr.Comment, err = b.parseStringDirective(dirPos)
+		case "RENAMED":
+			attr.RenamedFrom, err = b.parseRenamedFrom(dirPos)
+		default:
+			return attr, fmt.Errorf("%s: DPG-E024: unknown attribute directive %q; an ATTRIBUTE block accepts only COMMENT and RENAMED FROM", dirPos, word)
+		}
+		if err != nil {
+			return attr, err
+		}
+	}
+	b.skipWS()
+	if b.peek() != '}' {
+		return attr, b.errorf("expected '}' to close ATTRIBUTE %s block", name)
+	}
+	b.advance()
+	b.skipWS()
+	if b.peek() == ';' {
+		b.advance()
+	}
+	return attr, nil
+}
+
+// parseAttributesBlock reads: { name { ... } name { ... } } — the plural
+// Mode A form of parseAttributeBlock.
+func (b *blockParser) parseAttributesBlock(pos pipeline.SourcePos) ([]pipeline.ColumnBlock, error) {
+	if err := b.consumeBrace(); err != nil {
+		return nil, err
+	}
+	var attrs []pipeline.ColumnBlock
+	for {
+		b.skipWS()
+		if b.eof() || b.peek() == '}' {
+			break
+		}
+		attr, err := b.parseAttributeBlock(b.srcPos())
+		if err != nil {
+			return nil, err
+		}
+		attrs = append(attrs, attr)
+	}
+	b.skipWS()
+	if b.peek() != '}' {
+		return nil, b.errorf("expected '}' to close ATTRIBUTES block")
+	}
+	b.advance()
+	return attrs, nil
 }
 
 // ── COLUMN / COLUMNS ──────────────────────────────────────────────────────────
@@ -1790,14 +1918,14 @@ func (b *blockParser) fillColumnBlock(col *pipeline.ColumnBlock) error {
 			} else {
 				col.Grants = append(col.Grants, g)
 			}
-		case "REVOCATIONS":
+		case "REVOKES":
 			revs, e2 := b.parseRevocationsBlock(dirPos)
 			if e2 != nil {
 				err = e2
 			} else {
 				col.Revocations = append(col.Revocations, revs...)
 			}
-		case "REVOCATION":
+		case "REVOKE":
 			// Mode B: singular entry, no wrapping '{ }'.
 			r, e2 := b.parseOneRevocation(dirPos)
 			if e2 != nil {
@@ -1834,7 +1962,7 @@ func (b *blockParser) fillColumnBlock(col *pipeline.ColumnBlock) error {
 				err = fmt.Errorf("%s: expected MAP or MAPS after NAME, got %q", dirPos, w2)
 			}
 		default:
-			return fmt.Errorf("%s: DPG-E024: unknown column directive %q", dirPos, word)
+			return fmt.Errorf("%s: DPG-E024: unknown column directive %q%s", dirPos, word, pipeline.RenamedKeywordHint(word))
 		}
 		if err != nil {
 			return err
@@ -2074,7 +2202,7 @@ func (b *blockParser) parseOnePolicy() (pipeline.PolicyDef, error) {
 		case "TO":
 			for {
 				b.skipWS()
-				r, err2 := b.readIdentifier()
+				r, err2 := b.readRoleIdentifier()
 				if err2 != nil {
 					return pol, err2
 				}
@@ -2277,7 +2405,7 @@ func (b *blockParser) parseOneTrigger() (pipeline.TriggerDef, error) {
 					return trig, qerr
 				}
 			} else {
-				tname = b.readWord()
+				tname = foldIdent(b.readWord())
 				if tname == "" {
 					return trig, b.errorf("expected transition table name after %s TABLE", which)
 				}
@@ -2516,7 +2644,7 @@ func (b *blockParser) parseOneGrant(pos pipeline.SourcePos) (pipeline.GrantEntry
 	// Roles
 	for {
 		b.skipWS()
-		r, err := b.readIdentifier()
+		r, err := b.readRoleIdentifier()
 		if err != nil {
 			return g, err
 		}
@@ -2595,7 +2723,7 @@ func (b *blockParser) parseRoleSpec() (string, error) {
 	return id.String(), nil
 }
 
-// ── REVOCATIONS ───────────────────────────────────────────────────────────────
+// ── REVOKES ───────────────────────────────────────────────────────────────
 
 func (b *blockParser) parseRevocationsBlock(pos pipeline.SourcePos) ([]pipeline.RevocationEntry, error) {
 	if err := b.consumeBrace(); err != nil {
@@ -2615,7 +2743,7 @@ func (b *blockParser) parseRevocationsBlock(pos pipeline.SourcePos) ([]pipeline.
 	}
 	b.skipWS()
 	if b.peek() != '}' {
-		return nil, b.errorf("expected '}' to close REVOCATIONS block")
+		return nil, b.errorf("expected '}' to close REVOKES block")
 	}
 	b.advance()
 	return revs, nil
@@ -2664,7 +2792,7 @@ func (b *blockParser) parseOneRevocation(pos pipeline.SourcePos) (pipeline.Revoc
 
 	for {
 		b.skipWS()
-		role, err := b.readIdentifier()
+		role, err := b.readRoleIdentifier()
 		if err != nil {
 			return r, err
 		}
@@ -2838,7 +2966,7 @@ func unquoteRawIdent(s string) string {
 // convention ParseDefaultPrivileges already uses) rather than a regex: an
 // OPTIONS value is an arbitrary single-quoted string that may itself contain
 // commas, parens, or even the word SERVER, and only a real tokenizer (via
-// readSingleQuotedString's own '' escaping) can tell those apart from actual
+// readSingleQuotedString's own ” escaping) can tell those apart from actual
 // clause punctuation. SERVER is mandatory here — confirmed live that
 // PostgreSQL's own CREATE FOREIGN TABLE grammar rejects the statement
 // outright with no SERVER clause at all ("syntax error at end of input"),
@@ -3215,7 +3343,7 @@ func (b *blockParser) parseDefaultPrivilegesHeader(pos pipeline.SourcePos) (pipe
 }
 
 // parseDefaultPrivilegesEntries parses zero or more GRANTS/GRANT/
-// REVOCATIONS/REVOCATION directives (Mode A/B, same dual-definition
+// REVOKES/REVOKE directives (Mode A/B, same dual-definition
 // convention as every other block) until EOF or an unconsumed '}'.
 func (b *blockParser) parseDefaultPrivilegesEntries(dp *pipeline.DefaultPrivilegesBlock) error {
 	for {
@@ -3239,13 +3367,13 @@ func (b *blockParser) parseDefaultPrivilegesEntries(dp *pipeline.DefaultPrivileg
 				return err
 			}
 			dp.Grants = append(dp.Grants, g)
-		case "REVOCATIONS":
+		case "REVOKES":
 			revs, err := b.parseDefaultPrivilegeRevocationsBlock(dirPos)
 			if err != nil {
 				return err
 			}
 			dp.Revocations = append(dp.Revocations, revs...)
-		case "REVOCATION":
+		case "REVOKE":
 			// Mode B: singular entry, no wrapping '{ }'.
 			r, err := b.parseOneDefaultPrivilegeRevocation(dirPos)
 			if err != nil {
@@ -3253,7 +3381,7 @@ func (b *blockParser) parseDefaultPrivilegesEntries(dp *pipeline.DefaultPrivileg
 			}
 			dp.Revocations = append(dp.Revocations, r)
 		default:
-			return fmt.Errorf("%s: DPG-E024: unexpected directive %q in DEFAULT PRIVILEGES block", dirPos, word)
+			return fmt.Errorf("%s: DPG-E024: unexpected directive %q in DEFAULT PRIVILEGES block%s", dirPos, word, pipeline.RenamedKeywordHint(word))
 		}
 	}
 }
@@ -3335,7 +3463,7 @@ func (b *blockParser) parseOneDefaultPrivilegeGrant(pos pipeline.SourcePos) (pip
 	}
 	for {
 		b.skipWS()
-		r, err := b.readIdentifier()
+		r, err := b.readRoleIdentifier()
 		if err != nil {
 			return g, err
 		}
@@ -3390,7 +3518,7 @@ func (b *blockParser) parseDefaultPrivilegeRevocationsBlock(pos pipeline.SourceP
 	}
 	b.skipWS()
 	if b.peek() != '}' {
-		return nil, b.errorf("expected '}' to close REVOCATIONS block")
+		return nil, b.errorf("expected '}' to close REVOKES block")
 	}
 	b.advance()
 	return revs, nil
@@ -3446,7 +3574,7 @@ func (b *blockParser) parseOneDefaultPrivilegeRevocation(pos pipeline.SourcePos)
 	}
 	for {
 		b.skipWS()
-		role, err := b.readIdentifier()
+		role, err := b.readRoleIdentifier()
 		if err != nil {
 			return r, err
 		}
@@ -3497,10 +3625,10 @@ func ParseParameterPrivileges(header, body string, pos pipeline.SourcePos) (pipe
 	return pp, nil
 }
 
-// parseParameterPrivilegesEntries parses zero or more GRANTS/REVOCATIONS
+// parseParameterPrivilegesEntries parses zero or more GRANTS/REVOKES
 // blocks until EOF or an unconsumed '}'. Unlike DEFAULT PRIVILEGES' pp-block
 // grammar, RFC Section 11.6 defines only the block forms (pp-grants-block /
-// pp-revocations-block) — no singular Mode B "GRANT"/"REVOCATION" directive.
+// pp-revocations-block) — no singular Mode B "GRANT"/"REVOKE" directive.
 func (b *blockParser) parseParameterPrivilegesEntries(pp *pipeline.ParameterPrivilegesBlock) error {
 	for {
 		b.skipWS()
@@ -3516,14 +3644,14 @@ func (b *blockParser) parseParameterPrivilegesEntries(pp *pipeline.ParameterPriv
 				return err
 			}
 			pp.Grants = append(pp.Grants, grants...)
-		case "REVOCATIONS":
+		case "REVOKES":
 			revs, err := b.parseParameterRevocationsBlock(dirPos)
 			if err != nil {
 				return err
 			}
 			pp.Revocations = append(pp.Revocations, revs...)
 		default:
-			return fmt.Errorf("%s: DPG-E024: unexpected directive %q in PARAMETER PRIVILEGES block", dirPos, word)
+			return fmt.Errorf("%s: DPG-E024: unexpected directive %q in PARAMETER PRIVILEGES block%s", dirPos, word, pipeline.RenamedKeywordHint(word))
 		}
 	}
 }
@@ -3555,7 +3683,7 @@ func (b *blockParser) parseParameterGrantsBlock(pos pipeline.SourcePos) ([]pipel
 // parsePPPrivilegeList parses a comma-separated pp-privilege-list: "SET" /
 // "ALTER SYSTEM" / "ALL" / "ALL PRIVILEGES" (RFC Section 11.6's pp-privilege
 // production). "ALTER SYSTEM" is the one two-word privilege token in this
-// grammar — every other GRANTS/REVOCATIONS block in DPG has single-word
+// grammar — every other GRANTS/REVOKES block in DPG has single-word
 // privileges only. "ALL"/"ALL PRIVILEGES" is represented as nil, matching
 // every other privilege list's ALL convention (privStr renders nil back to
 // "ALL").
@@ -3635,7 +3763,7 @@ func (b *blockParser) parseOneParameterGrant(pos pipeline.SourcePos) (pipeline.P
 	}
 	for {
 		b.skipWS()
-		r, err := b.readIdentifier()
+		r, err := b.readRoleIdentifier()
 		if err != nil {
 			return g, err
 		}
@@ -3710,7 +3838,7 @@ func (b *blockParser) parseParameterRevocationsBlock(pos pipeline.SourcePos) ([]
 	}
 	b.skipWS()
 	if b.peek() != '}' {
-		return nil, b.errorf("expected '}' to close REVOCATIONS block")
+		return nil, b.errorf("expected '}' to close REVOKES block")
 	}
 	b.advance()
 	return revs, nil
@@ -3750,7 +3878,7 @@ func (b *blockParser) parseOneParameterRevocation(pos pipeline.SourcePos) (pipel
 	}
 	for {
 		b.skipWS()
-		role, err := b.readIdentifier()
+		role, err := b.readRoleIdentifier()
 		if err != nil {
 			return r, err
 		}

@@ -46,7 +46,6 @@ object DpgTokenTypes {
     @JvmField val FUNCTION_KW     = DpgTokenType("FUNCTION_KW")
     @JvmField val PROCEDURE_KW    = DpgTokenType("PROCEDURE_KW")
     @JvmField val AGGREGATE_KW    = DpgTokenType("AGGREGATE_KW")
-    @JvmField val ENUM_KW         = DpgTokenType("ENUM_KW")
     @JvmField val TYPE_KW         = DpgTokenType("TYPE_KW")
     @JvmField val DOMAIN_KW       = DpgTokenType("DOMAIN_KW")
     @JvmField val SEQUENCE_KW     = DpgTokenType("SEQUENCE_KW")
@@ -75,19 +74,21 @@ object DpgTokenTypes {
 
     // ── Block directive keywords (inside { } blocks) ──────────────────────────
     @JvmField val INDEX_KW        = DpgTokenType("INDEX_KW")
-    @JvmField val INDICES_KW      = DpgTokenType("INDICES_KW")
+    @JvmField val INDEXES_KW      = DpgTokenType("INDEXES_KW")
     @JvmField val POLICY_KW       = DpgTokenType("POLICY_KW")
     @JvmField val POLICIES_KW     = DpgTokenType("POLICIES_KW")
     @JvmField val TRIGGER_KW      = DpgTokenType("TRIGGER_KW")
     @JvmField val TRIGGERS_KW     = DpgTokenType("TRIGGERS_KW")
     @JvmField val GRANT_KW        = DpgTokenType("GRANT_KW")
     @JvmField val GRANTS_KW       = DpgTokenType("GRANTS_KW")
-    @JvmField val REVOCATION_KW   = DpgTokenType("REVOCATION_KW")
-    @JvmField val REVOCATIONS_KW  = DpgTokenType("REVOCATIONS_KW")
+    @JvmField val REVOKE_KW   = DpgTokenType("REVOKE_KW")
+    @JvmField val REVOKES_KW  = DpgTokenType("REVOKES_KW")
     @JvmField val PARTITION_KW    = DpgTokenType("PARTITION_KW")
     @JvmField val PARTITIONS_KW   = DpgTokenType("PARTITIONS_KW")
     @JvmField val COLUMN_KW       = DpgTokenType("COLUMN_KW")
     @JvmField val COLUMNS_KW      = DpgTokenType("COLUMNS_KW")
+    @JvmField val ATTRIBUTE_KW    = DpgTokenType("ATTRIBUTE_KW")
+    @JvmField val ATTRIBUTES_KW   = DpgTokenType("ATTRIBUTES_KW")
     @JvmField val CONSTRAINT_KW   = DpgTokenType("CONSTRAINT_KW")
     @JvmField val CONSTRAINTS_KW  = DpgTokenType("CONSTRAINTS_KW")
     @JvmField val COMMENT_KW      = DpgTokenType("COMMENT_KW")
@@ -141,7 +142,7 @@ object DpgTokenTypes {
     // (STATISTICS n target) so it lives only in BLOCK_DIRECTIVE_KEYWORDS.
     @JvmField val DPG_OBJECT_KEYWORDS: TokenSet = TokenSet.create(
         SCHEMA_KW, TABLE_KW, VIEW_KW, FUNCTION_KW, PROCEDURE_KW,
-        AGGREGATE_KW, ENUM_KW, TYPE_KW, DOMAIN_KW, SEQUENCE_KW,
+        AGGREGATE_KW, TYPE_KW, DOMAIN_KW, SEQUENCE_KW,
         ROLE_KW, TABLESPACE_KW, EXTENSION_KW,
         PUBLICATION_KW, SUBSCRIPTION_KW, COLLATION_KW, OPERATOR_KW,
         CAST_KW, SERVER_KW,
@@ -160,10 +161,10 @@ object DpgTokenTypes {
     // check run in disjoint parsing contexts (top-level source-file loop vs.
     // already-inside-a-{ }-block loop), so there is no dispatch ambiguity.
     @JvmField val BLOCK_DIRECTIVE_KEYWORDS: TokenSet = TokenSet.create(
-        INDEX_KW, INDICES_KW, POLICY_KW, POLICIES_KW,
+        INDEX_KW, INDEXES_KW, POLICY_KW, POLICIES_KW,
         TRIGGER_KW, TRIGGERS_KW, GRANT_KW, GRANTS_KW,
-        REVOCATION_KW, REVOCATIONS_KW, PARTITION_KW, PARTITIONS_KW,
-        COLUMN_KW, COLUMNS_KW, CONSTRAINT_KW, CONSTRAINTS_KW,
+        REVOKE_KW, REVOKES_KW, PARTITION_KW, PARTITIONS_KW,
+        COLUMN_KW, COLUMNS_KW, ATTRIBUTE_KW, ATTRIBUTES_KW, CONSTRAINT_KW, CONSTRAINTS_KW,
         COMMENT_KW, OWNER_KW, PROTECTED_KW, DEPRECATED_KW,
         RENAMED_KW, MIGRATE_KW, ENABLE_KW, DISABLE_KW, FORCE_KW,
         NOFORCE_KW, DROP_KW, STATISTICS_KW,

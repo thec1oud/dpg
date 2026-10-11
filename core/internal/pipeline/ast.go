@@ -51,7 +51,7 @@ type IndexColumn struct {
 	SortOrder     string // "ASC", "DESC", or ""
 }
 
-// IndexDef is a DPG INDICES { } entry.
+// IndexDef is a DPG INDEXES { } entry.
 type IndexDef struct {
 	Name             Identifier
 	Unique           bool
@@ -93,7 +93,7 @@ type GrantEntry struct {
 	Pos       SourcePos
 }
 
-// RevocationEntry is a single REVOCATIONS directive.
+// RevocationEntry is a single REVOKES directive.
 type RevocationEntry struct {
 	Privileges []string
 	Roles      []Identifier
@@ -272,15 +272,10 @@ type MigrateRemoveBlock struct {
 	Pos    SourcePos
 }
 
-// EnumValueRenameDir is Section 5.1.1's "RENAME VALUE 'old' TO 'new'" enum-
-// block directive (RFC audit item #19) — repeatable, since a single
-// migration may rename more than one enum value. Modeled as a block
-// directive rather than the RFC's own literal (but PG-invalid) inline
-// per-value "'new_value' RENAMED FROM 'old_value'" placement inside the
-// enum-values list: confirmed live that real CREATE TYPE ... AS ENUM (...)
-// rejects any such extra token inside the parenthesized value list outright
-// ("syntax error"), the same RFC-documents-unparseable-PG-syntax gap domain
-// NOT VALID/EVENT TRIGGER trigger-enable-state had.
+// EnumValueRenameDir is Section 5.1.1's "VALUE 'new' RENAMED FROM 'old'"
+// enum-block directive — repeatable, since a single migration may rename
+// more than one enum value. It is a block directive because PostgreSQL's
+// CREATE TYPE ... AS ENUM value list accepts only bare string literals.
 type EnumValueRenameDir struct {
 	From string
 	To   string
@@ -301,7 +296,7 @@ type DefaultPrivilegeGrant struct {
 	Pos        SourcePos
 }
 
-// DefaultPrivilegeRevocation is REVOCATIONS { } entry's DefaultPrivileges sibling.
+// DefaultPrivilegeRevocation is REVOKES { } entry's DefaultPrivileges sibling.
 type DefaultPrivilegeRevocation struct {
 	ObjectType string
 	Privileges []string
@@ -340,7 +335,7 @@ type ParameterGrant struct {
 	Pos        SourcePos
 }
 
-// ParameterRevocation is REVOCATIONS { } entry's ParameterPrivileges sibling.
+// ParameterRevocation is REVOKES { } entry's ParameterPrivileges sibling.
 type ParameterRevocation struct {
 	Privileges []string
 	Parameters []Identifier
@@ -468,20 +463,23 @@ var ValidNameMapRules = map[string]bool{
 // Populated by the BlockParser (Phase 4b). Fields absent from a given block
 // remain at their zero value.
 type BlockAST struct {
-	Pos                 SourcePos
-	Comment             *StringLit
-	Owner               *Identifier
-	RenamedFrom         *Identifier
-	Protected           bool
-	Deprecated          *StringLit
-	DropCascade         bool
-	Indices             []IndexDef
-	Policies            []PolicyDef
-	Triggers            []TriggerDef
-	Grants              []GrantEntry
-	Revocations         []RevocationEntry
-	SecurityLabels      []SecurityLabel
-	Columns             []ColumnBlock
+	Pos            SourcePos
+	Comment        *StringLit
+	Owner          *Identifier
+	RenamedFrom    *Identifier
+	Protected      bool
+	Deprecated     *StringLit
+	DropCascade    bool
+	Indices        []IndexDef
+	Policies       []PolicyDef
+	Triggers       []TriggerDef
+	Grants         []GrantEntry
+	Revocations    []RevocationEntry
+	SecurityLabels []SecurityLabel
+	Columns        []ColumnBlock
+	// Attributes holds composite-type ATTRIBUTE/ATTRIBUTES blocks (RFC
+	// Section 5.2). Only Name, Comment, RenamedFrom and Pos are populated.
+	Attributes          []ColumnBlock
 	Constraints         []ConstraintDef
 	EnableRLS           bool
 	ForceRLS            bool
@@ -542,7 +540,7 @@ type BlockAST struct {
 	// would otherwise prescribe for "declared table disappeared from its
 	// parent's PARTITIONS { } block."
 	DetachedFrom *DetachedFromDirective
-	// EnumValueRenames is Section 5.1.1's "RENAME VALUE 'old' TO 'new'"
+	// EnumValueRenames is Section 5.1.1's "VALUE 'new' RENAMED FROM 'old'"
 	// enum-block directive — see EnumValueRenameDir's doc comment for why
 	// it's block-level rather than the RFC's literal inline placement.
 	EnumValueRenames []EnumValueRenameDir
@@ -640,10 +638,8 @@ type ReplicaIdentityDir struct {
 // reference itself follows the same table-ref shape RENAMED FROM/LIKE use).
 // Concurrently mirrors real PostgreSQL's ALTER TABLE ... DETACH PARTITION
 // ... CONCURRENTLY: runs the detach in two non-blocking steps instead of
-// holding a brief ACCESS EXCLUSIVE lock on the parent — Safety Manual
-// rather than Caution when set, since it changes the operation's shape,
-// the same reasoning Sequence's RESTART/Collation's REFRESH VERSION use for
-// their own imperative, non-persisted directives.
+// holding a brief ACCESS EXCLUSIVE lock on the parent. It cannot run inside
+// a transaction block, so the op is non-transactional (Safety Caution).
 type DetachedFromDirective struct {
 	Table        Identifier
 	Concurrently bool

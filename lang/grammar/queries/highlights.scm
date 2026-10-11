@@ -10,7 +10,7 @@
 (function_declaration "FUNCTION" @keyword.type)
 (procedure_declaration "PROCEDURE" @keyword.type)
 (aggregate_declaration "AGGREGATE" @keyword.type)
-(enum_declaration "ENUM" @keyword.type)
+(enum_declaration ["TYPE" "ENUM"] @keyword.type)
 (composite_type_declaration "TYPE" @keyword.type)
 (range_type_declaration "TYPE" @keyword.type)
 (base_type_declaration "TYPE" @keyword.type)
@@ -93,13 +93,16 @@
 (name_map_entry value: (string_literal) @string)
 
 ; Nested block section keywords
-(indices_block "INDICES" @keyword.block)
+(indexes_block "INDEXES" @keyword.block)
 (policies_block "POLICIES" @keyword.block)
 (triggers_block "TRIGGERS" @keyword.block)
 (columns_block "COLUMNS" @keyword.block)
 (constraints_block "CONSTRAINTS" @keyword.block)
 (grants_block "GRANTS" @keyword.block)
-(revocations_block "REVOCATIONS" @keyword.block)
+(revokes_block "REVOKES" @keyword.block)
+(attributes_block "ATTRIBUTES" @keyword.block)
+(attribute_block "ATTRIBUTE" @keyword.block)
+(enum_value_rename_directive "VALUE" @keyword.block)
 (partitions_block "PARTITIONS" @keyword.block)
 
 ; DPG block braces

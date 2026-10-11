@@ -8,7 +8,7 @@ TABLE users (
     CONSTRAINT users_pkey PRIMARY KEY (id),
     CONSTRAINT users_email_key UNIQUE (email)
 ) {
-    INDICES { idx_users_status (status); }
+    INDEXES { idx_users_status (status); }
 }
 
 TABLE posts (

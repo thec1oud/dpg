@@ -106,7 +106,7 @@ func TestRoundtripIndexRenamedFrom(t *testing.T) {
 	f := filepath.Join(dir, "schema.dpg")
 
 	v1 := `TABLE users (email TEXT) {
-    INDICES {
+    INDEXES {
         users_email_idx_old (email);
     }
 }`
@@ -138,7 +138,7 @@ func TestRoundtripIndexRenamedFrom(t *testing.T) {
 	}
 
 	v2 := `TABLE users (email TEXT) {
-    INDICES {
+    INDEXES {
         users_email_idx (email) RENAMED FROM users_email_idx_old;
     }
 }`

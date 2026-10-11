@@ -47,7 +47,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "app_admin" IN SCHEMA "public"
 ```sql
 SCHEMA public {
     DEFAULT PRIVILEGES FOR ROLE app_admin {
-        REVOCATIONS {
+        REVOKES {
             EXECUTE ON FUNCTIONS FROM PUBLIC;
         }
     }

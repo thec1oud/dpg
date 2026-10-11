@@ -31,7 +31,7 @@ SCHEMA public {
     )
     {
         COMMENT 'Registered user accounts';
-        INDICES {
+        INDEXES {
             idx_users_email (email);
             idx_users_phone (phone) WHERE phone IS NOT NULL;
         }
@@ -57,7 +57,7 @@ SCHEMA public {
         CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users(id)
     )
     {
-        INDICES { idx_orders_user (user_id); idx_orders_placed (placed_at); }
+        INDEXES { idx_orders_user (user_id); idx_orders_placed (placed_at); }
         GRANTS  { SELECT TO app_readonly; SELECT, INSERT, UPDATE TO app_service; }
     }
 
@@ -87,7 +87,7 @@ SCHEMA public {
     )
     {
         COMMENT 'Promotional discount codes';
-        INDICES { idx_coupons_code (code); }
+        INDEXES { idx_coupons_code (code); }
         GRANTS  { SELECT TO app_readonly; SELECT, INSERT, UPDATE TO app_service; }
     }
 

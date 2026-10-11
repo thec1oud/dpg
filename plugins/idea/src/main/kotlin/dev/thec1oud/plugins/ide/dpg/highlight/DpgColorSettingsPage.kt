@@ -31,7 +31,7 @@ class DpgColorSettingsPage : ColorSettingsPage {
 
     private val ATTRIBUTES = arrayOf(
         AttributesDescriptor("Object type keyword//TABLE, VIEW, FUNCTION …", OBJECT_KEYWORD),
-        AttributesDescriptor("Block directive keyword//INDICES, GRANTS, OWNER …", BLOCK_KEYWORD),
+        AttributesDescriptor("Block directive keyword//INDEXES, GRANTS, OWNER …", BLOCK_KEYWORD),
         AttributesDescriptor("SQL keyword", SQL_KEYWORD),
         AttributesDescriptor("Macro keyword", MACRO_KEYWORD),
         AttributesDescriptor("Forbidden verb (error)//CREATE, ALTER", FORBIDDEN_VERB),
@@ -84,8 +84,7 @@ class DpgColorSettingsPage : ColorSettingsPage {
 
         <obj>SCHEMA</obj> public {
 
-            <obj>ENUM</obj> account_status ('trial', 'active', 'suspended', 'cancelled');
-            {
+            <obj>TYPE</obj> account_status AS ENUM ('trial', 'active', 'suspended', 'cancelled') {
                 <blk>COMMENT</blk> 'Top-level account lifecycle states';
             }
 
@@ -100,7 +99,7 @@ class DpgColorSettingsPage : ColorSettingsPage {
                 <blk>OWNER</blk> "app_admin";
                 <blk>ENABLE ROW LEVEL SECURITY</blk>;
 
-                <blk>INDICES</blk> {
+                <blk>INDEXES</blk> {
                     idx_accounts_status (status) <sql>WHERE</sql> (deleted_at <sql>IS NULL</sql>);
                 }
 
@@ -109,7 +108,7 @@ class DpgColorSettingsPage : ColorSettingsPage {
                     <sql>SELECT</sql> <sql>TO</sql> app_readonly;
                 }
 
-                <blk>REVOCATIONS</blk> {
+                <blk>REVOKES</blk> {
                     <sql>ALL PRIVILEGES FROM PUBLIC</sql>;
                 }
             }

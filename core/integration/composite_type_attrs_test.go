@@ -149,13 +149,10 @@ func TestRoundtripCompositeTypeAttrAddedIsGranular(t *testing.T) {
 	}
 }
 
-// TestRoundtripCompositeTypeAttrRenamed is the regression guard for RFC
-// audit item #12: buildCompositeType never read the DPG block's COLUMN
-// sub-blocks at all, so a declared RENAMED FROM on a composite attribute
-// was silently ignored — the differ then saw an unrelated drop+add of two
-// differently-named attributes instead of a rename. Proves the rename is
-// actually applied as ALTER TYPE ... RENAME ATTRIBUTE against a real
-// database (same OID, new attribute name).
+// TestRoundtripCompositeTypeAttrRenamed guards RFC Section 5.2's ATTRIBUTE
+// name { RENAMED FROM old; } directive: the rename must be applied as ALTER
+// TYPE ... RENAME ATTRIBUTE against a real database (same OID, new attribute
+// name), not as a drop and add.
 func TestRoundtripCompositeTypeAttrRenamed(t *testing.T) {
 	connStr := testpg.Start(t)
 	ctx := context.Background()
@@ -199,7 +196,7 @@ func TestRoundtripCompositeTypeAttrRenamed(t *testing.T) {
 	oidBefore := typeOID()
 
 	v2 := `TYPE addr AS (new_name text, city text) {
-    COLUMN new_name { RENAMED FROM old_name; }
+    ATTRIBUTE new_name { RENAMED FROM old_name; }
 }`
 	if err := os.WriteFile(f, []byte(v2), 0o644); err != nil {
 		t.Fatalf("write v2: %v", err)
@@ -249,3 +246,73 @@ func TestRoundtripCompositeTypeAttrRenamed(t *testing.T) {
 		t.Fatalf("live attributes = %v, want [new_name city]", attrs)
 	}
 }
+
+// TestRoundtripCompositeTypeAttrComment guards RFC Section 5.2's ATTRIBUTE
+// name { COMMENT '...'; } directive end to end: the comment is applied with
+// COMMENT ON COLUMN, introspects back with no drift, and a change or removal
+// is diffed as a comment-only op.
+func TestRoundtripCompositeTypeAttrComment(t *testing.T) {
+	connStr := testpg.Start(t)
+	ctx := context.Background()
+
+	differ := diff.New()
+	emitter := emit.New()
+	applyExec := executor.New()
+	store := newMemStore()
+
+	conn, err := executor.Connect(ctx, connStr)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer conn.Close(ctx)
+
+	dir := t.TempDir()
+	f := filepath.Join(dir, "schema.dpg")
+
+	attrComment := func() *string {
+		t.Helper()
+		rows, err := conn.QueryRows(ctx, `SELECT col_description(t.typrelid, a.attnum)
+FROM pg_type t JOIN pg_attribute a ON a.attrelid = t.typrelid
+WHERE t.typname = 'addr' AND a.attname = 'street'`)
+		if err != nil {
+			t.Fatalf("query comment: %v", err)
+		}
+		defer rows.Close()
+		if !rows.Next() {
+			t.Fatal("no street attribute on addr")
+		}
+		var c *string
+		if err := rows.Scan(&c); err != nil {
+			t.Fatalf("scan comment: %v", err)
+		}
+		return c
+	}
+
+	steps := []struct {
+		src  string
+		want *string
+	}{
+		{`TYPE addr AS (street text, city text) {
+    ATTRIBUTE street { COMMENT 'Street line'; }
+}`, strPtr("Street line")},
+		{`TYPE addr AS (street text, city text) {
+    ATTRIBUTES {
+        street { COMMENT 'Street and number'; }
+    }
+}`, strPtr("Street and number")},
+		{`TYPE addr AS (street text, city text);`, nil},
+	}
+	for i, step := range steps {
+		if err := os.WriteFile(f, []byte(step.src), 0o644); err != nil {
+			t.Fatalf("write step %d: %v", i, err)
+		}
+		applyFixture(t, ctx, conn, []string{f}, dir, differ, emitter, applyExec, store)
+		got := attrComment()
+		if (got == nil) != (step.want == nil) || (got != nil && *got != *step.want) {
+			t.Fatalf("step %d: street comment = %v, want %v", i, got, step.want)
+		}
+		assertNoLiveDrift(t, ctx, conn, []string{f}, dir, differ, store)
+	}
+}
+
+func strPtr(s string) *string { return &s }

@@ -73,7 +73,7 @@ func TestRoundtripIndexOpclassAndCollation(t *testing.T) {
 	}
 
 	write(`TABLE t (email TEXT) {
-    INDICES {
+    INDEXES {
         idx_email (email COLLATE "C" text_pattern_ops);
     }
 }`)
@@ -84,7 +84,7 @@ func TestRoundtripIndexOpclassAndCollation(t *testing.T) {
 	noDriftAgainstLive(t, ctx, conn, []string{f}, dir, differ, store)
 
 	write(`TABLE t (email TEXT) {
-    INDICES {
+    INDEXES {
         idx_email (email COLLATE "C" varchar_pattern_ops);
     }
 }`)
@@ -117,7 +117,7 @@ func TestRoundtripIndexOpclassWithParams(t *testing.T) {
 	dir := t.TempDir()
 	f := filepath.Join(dir, "schema.dpg")
 	src := `TABLE t (doc TSVECTOR) {
-    INDICES {
+    INDEXES {
         idx_doc USING gist (doc tsvector_ops(siglen = 32));
     }
 }`
@@ -175,7 +175,7 @@ func TestRoundtripIndexOnOnly(t *testing.T) {
     PARTITIONS {
         t_us FOR VALUES IN ('us');
     }
-    INDICES {
+    INDEXES {
         ONLY idx_only (id);
     }
 }`

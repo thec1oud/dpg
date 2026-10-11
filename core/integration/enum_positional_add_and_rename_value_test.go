@@ -104,7 +104,7 @@ TABLE orders (id INTEGER, s status NOT NULL DEFAULT 'active');`)
 	// Insert 'confirmed' in the middle (between active and shipped) and
 	// rename 'shipped' to 'delivered' in the same migration.
 	write(`TYPE status AS ENUM ('active', 'confirmed', 'delivered') {
-    RENAME VALUE 'shipped' TO 'delivered';
+    VALUE 'delivered' RENAMED FROM 'shipped';
 }
 
 TABLE orders (id INTEGER, s status NOT NULL DEFAULT 'active');`)

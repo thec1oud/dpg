@@ -2572,7 +2572,8 @@ SELECT n.nspname, t.typname,
        a.attname,
        pg_catalog.format_type(a.atttypid, a.atttypmod) AS attr_type,
        CASE WHEN a.attcollation <> 0 AND a.attcollation <> bt.typcollation
-            THEN co.collname END AS collation
+            THEN co.collname END AS collation,
+       pg_catalog.col_description(c.oid, a.attnum) AS comment
 FROM   pg_type t
 JOIN   pg_namespace n   ON n.oid = t.typnamespace
 JOIN   pg_class c       ON c.oid = t.typrelid
@@ -2600,8 +2601,8 @@ ORDER  BY n.nspname, t.typname, a.attnum`
 	}
 	for rs.Next() {
 		var schema, name, attrName, attrType string
-		var collation *string
-		if err := rs.Scan(&schema, &name, &attrName, &attrType, &collation); err != nil {
+		var collation, comment *string
+		if err := rs.Scan(&schema, &name, &attrName, &attrType, &collation, &comment); err != nil {
 			return err
 		}
 		if t, ok := typeIdx[schema+"."+name]; ok {
@@ -2612,6 +2613,7 @@ ORDER  BY n.nspname, t.typname, a.attnum`
 			if collation != nil {
 				col.Collation = *collation
 			}
+			col.Comment = comment
 			t.CompositeAttrs = append(t.CompositeAttrs, col)
 		}
 	}

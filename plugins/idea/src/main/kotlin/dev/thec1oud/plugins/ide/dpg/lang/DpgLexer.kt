@@ -59,7 +59,7 @@ class DpgLexer : LexerBase() {
             "INTERVAL", "UUID", "JSON", "JSONB", "XML", "OID", "INET", "CIDR",
             "MACADDR", "BIT", "VARBIT", "MONEY", "POINT", "LINE", "LSEG",
             "BOX", "PATH", "POLYGON", "CIRCLE", "TSQUERY", "TSVECTOR",
-            "RANGE", "MULTIRANGE", "HSTORE",
+            "RANGE", "MULTIRANGE", "HSTORE", "ENUM",
             "TRUE", "FALSE",
             "CURRENT_TIMESTAMP", "CURRENT_DATE", "CURRENT_TIME", "NOW",
             "ELSEIF", "ELSIF", "LOOP", "EXIT", "CONTINUE",
@@ -274,7 +274,6 @@ class DpgLexer : LexerBase() {
         "FUNCTION"       -> T.FUNCTION_KW
         "PROCEDURE"      -> T.PROCEDURE_KW
         "AGGREGATE"      -> T.AGGREGATE_KW
-        "ENUM"           -> T.ENUM_KW
         "TYPE"           -> T.TYPE_KW
         "DOMAIN"         -> T.DOMAIN_KW
         "SEQUENCE"       -> T.SEQUENCE_KW
@@ -301,19 +300,21 @@ class DpgLexer : LexerBase() {
         "DATA"           -> T.DATA_KW
         // Block directive keywords
         "INDEX"          -> T.INDEX_KW
-        "INDICES"        -> T.INDICES_KW
+        "INDEXES"        -> T.INDEXES_KW
         "POLICY"         -> T.POLICY_KW
         "POLICIES"       -> T.POLICIES_KW
         "TRIGGER"        -> T.TRIGGER_KW
         "TRIGGERS"       -> T.TRIGGERS_KW
         "GRANT"          -> T.GRANT_KW
         "GRANTS"         -> T.GRANTS_KW
-        "REVOCATION"     -> T.REVOCATION_KW
-        "REVOCATIONS"    -> T.REVOCATIONS_KW
+        "REVOKE"     -> T.REVOKE_KW
+        "REVOKES"    -> T.REVOKES_KW
         "PARTITION"      -> T.PARTITION_KW
         "PARTITIONS"     -> T.PARTITIONS_KW
         "COLUMN"         -> T.COLUMN_KW
         "COLUMNS"        -> T.COLUMNS_KW
+        "ATTRIBUTE"      -> T.ATTRIBUTE_KW
+        "ATTRIBUTES"     -> T.ATTRIBUTES_KW
         "CONSTRAINT"     -> T.CONSTRAINT_KW
         "CONSTRAINTS"    -> T.CONSTRAINTS_KW
         "COMMENT"        -> T.COMMENT_KW

@@ -261,8 +261,9 @@ module.exports = grammar({
     // ─── ENUM ─────────────────────────────────────────────────────────────────
 
     enum_declaration: $ => seq(
-      kw("ENUM"),
+      kw("TYPE"),
       field("name", $._object_ref),
+      kw("AS"), kw("ENUM"),
       "(",
       commaSep1($.string_literal),
       ")",
@@ -600,15 +601,18 @@ module.exports = grammar({
       $.protected_directive,
       $.deprecated_directive,
       $.drop_cascade_directive,
-      $.indices_block,
+      $.indexes_block,
       $.policies_block,
       $.triggers_block,
       $.columns_block,
       $.constraints_block,
       $.grants_block,
-      $.revocations_block,
+      $.revokes_block,
       $.partitions_block,
       $.migrate_remove_directive,
+      $.enum_value_rename_directive,
+      $.attributes_block,
+      $.attribute_block,
       $.grant_directive,
       $.revoke_directive,
       $.default_directive,
@@ -631,6 +635,12 @@ module.exports = grammar({
 
     renamed_from_directive: $ => seq(
       kw("RENAMED"), kw("FROM"), field("old_name", $.identifier), ";",
+    ),
+
+    // Enum value rename: VALUE 'new' RENAMED FROM 'old';
+    enum_value_rename_directive: $ => seq(
+      kw("VALUE"), field("name", $.string_literal),
+      kw("RENAMED"), kw("FROM"), field("old_name", $.string_literal), ";",
     ),
 
     protected_directive: $ => seq(kw("PROTECTED"), ";"),
@@ -689,8 +699,8 @@ module.exports = grammar({
       /[-+*\/<>=~!@#%^&|`?]+/,
     ),
 
-    indices_block: $ => seq(
-      kw("INDICES"), "{", repeat($.index_def), "}",
+    indexes_block: $ => seq(
+      kw("INDEXES"), "{", repeat($.index_def), "}",
     ),
 
     index_def: $ => seq(
@@ -754,6 +764,32 @@ module.exports = grammar({
       "}",
     ),
 
+    // Composite type attribute blocks: ATTRIBUTE name { ... } or
+    // ATTRIBUTES { name { ... } ... }.
+    attributes_block: $ => seq(
+      kw("ATTRIBUTES"), "{", repeat($.attribute_entry), "}",
+    ),
+
+    attribute_block: $ => seq(
+      kw("ATTRIBUTE"),
+      field("name", $.identifier),
+      "{",
+      repeat($._attribute_block_directive),
+      "}",
+    ),
+
+    attribute_entry: $ => seq(
+      field("name", $.identifier),
+      "{",
+      repeat($._attribute_block_directive),
+      "}",
+    ),
+
+    _attribute_block_directive: $ => choice(
+      $.comment_directive,
+      $.renamed_from_directive,
+    ),
+
     _column_block_directive: $ => choice(
       $.comment_directive,
       $.renamed_from_directive,
@@ -787,8 +823,8 @@ module.exports = grammar({
       ";",
     ),
 
-    revocations_block: $ => seq(
-      kw("REVOCATIONS"), "{", repeat($.revoke_directive), "}",
+    revokes_block: $ => seq(
+      kw("REVOKES"), "{", repeat($.revoke_directive), "}",
     ),
 
     revoke_directive: $ => seq(

@@ -116,7 +116,7 @@ func blockDirPriority(firstKw string) int {
 		return 6
 	case "FORCE":
 		return 7
-	case "INDICES", "INDEX":
+	case "INDEXES", "INDEX":
 		return 8
 	case "COLUMNS", "COLUMN":
 		return 9
@@ -126,7 +126,7 @@ func blockDirPriority(firstKw string) int {
 		return 11
 	case "GRANTS", "GRANT":
 		return 12
-	case "REVOCATIONS", "REVOKE":
+	case "REVOKES", "REVOKE":
 		return 13
 	case "PREFERRED":
 		return 14

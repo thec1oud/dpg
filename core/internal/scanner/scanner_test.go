@@ -91,7 +91,7 @@ func TestTableWithBlock(t *testing.T) {
     email TEXT   NOT NULL
 )
 {
-    INDICES { idx_email (email); }
+    INDEXES { idx_email (email); }
     GRANTS  { SELECT TO app_readonly; }
 }`
 	obj := assertOne(t, scan(t, src))
@@ -123,7 +123,7 @@ func TestTableWithStorageOptions(t *testing.T) {
     payload JSONB
 ) WITH (fillfactor = 70)
 {
-    INDICES { idx_large_events_ts (created_at); }
+    INDEXES { idx_large_events_ts (created_at); }
 }`
 	obj := assertOne(t, scan(t, src))
 	assertKind(t, obj, pipeline.KindTable)
@@ -335,14 +335,14 @@ $$;`))
 }
 
 func TestEnum(t *testing.T) {
-	obj := assertOne(t, scan(t, `ENUM user_status ('active', 'suspended', 'deleted');`))
+	obj := assertOne(t, scan(t, `TYPE user_status AS ENUM ('active', 'suspended', 'deleted');`))
 	assertKind(t, obj, pipeline.KindEnum)
 	assertPart1Contains(t, obj, "user_status")
 	assertPart1Contains(t, obj, "'active'")
 }
 
 func TestEnumWithBlock(t *testing.T) {
-	obj := assertOne(t, scan(t, `ENUM invoice_status ('draft', 'sent', 'paid', 'void') {
+	obj := assertOne(t, scan(t, `TYPE invoice_status AS ENUM ('draft', 'sent', 'paid', 'void') {
     COMMENT 'Billing lifecycle states';
 }`))
 	assertKind(t, obj, pipeline.KindEnum)
@@ -528,7 +528,7 @@ func TestSchemaWithNestedObjects(t *testing.T) {
         CONSTRAINT pk_users PRIMARY KEY (id)
     )
     {
-        INDICES { idx_email (email); }
+        INDEXES { idx_email (email); }
     }
 
     FUNCTION active_count() RETURNS BIGINT
@@ -800,7 +800,7 @@ EXTENSION pgcrypto;
 
 SCHEMA public {
     OWNER "postgres";
-    ENUM status ('a', 'b');
+    TYPE status AS ENUM ('a', 'b');
 }
 
 ROLE admin { LOGIN; }
@@ -1286,4 +1286,23 @@ func kindList(objs []pipeline.RawObject) []string {
 		out[i] = o.Kind.String()
 	}
 	return out
+}
+
+func TestEnumShorthandRejected(t *testing.T) {
+	err := scanErr(t, `ENUM mood ('sad', 'happy');`)
+	if err == nil || !strings.Contains(err.Error(), "TYPE name AS ENUM") {
+		t.Fatalf("expected error pointing at TYPE name AS ENUM, got %v", err)
+	}
+}
+
+func TestTypeAsEnumQualifiedName(t *testing.T) {
+	obj := assertOne(t, scan(t, `TYPE archive.mood AS ENUM ('sad', 'happy') {
+    COMMENT 'm';
+}`))
+	if obj.Kind != pipeline.KindEnum {
+		t.Fatalf("expected KindEnum, got %v", obj.Kind)
+	}
+	if !strings.HasPrefix(obj.Part1, "archive.mood AS ENUM (") {
+		t.Errorf("unexpected Part1 %q", obj.Part1)
+	}
 }

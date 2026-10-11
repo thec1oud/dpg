@@ -57,7 +57,7 @@ func TestCompletion_TopLevel_HasObjectKeywords(t *testing.T) {
 		labels[item.Label] = true
 	}
 
-	for _, want := range []string{"TABLE", "VIEW", "FUNCTION", "ENUM", "TYPE", "MACRO", "ROLE", "SCHEMA"} {
+	for _, want := range []string{"TABLE", "VIEW", "FUNCTION", "TYPE", "MACRO", "ROLE", "SCHEMA"} {
 		if !labels[want] {
 			t.Errorf("top-level completions missing %q", want)
 		}
@@ -77,7 +77,7 @@ func TestCompletion_BlockDirective_HasDirectiveKeywords(t *testing.T) {
 	for _, item := range items {
 		labels[item.Label] = true
 	}
-	for _, want := range []string{"COMMENT", "OWNER", "RENAMED FROM", "INDICES", "GRANTS", "DEPRECATED", "PROTECTED"} {
+	for _, want := range []string{"COMMENT", "OWNER", "RENAMED FROM", "INDEXES", "GRANTS", "DEPRECATED", "PROTECTED"} {
 		if !labels[want] {
 			t.Errorf("block completions missing %q", want)
 		}
@@ -104,7 +104,7 @@ func TestCompletion_Type_HasBuiltinTypes(t *testing.T) {
 }
 
 func TestCompletion_Type_IncludesCustomEnumsAndTypes(t *testing.T) {
-	src := "ENUM user_tier ('free', 'pro');\n\nTABLE memberships (\n    tier "
+	src := "TYPE user_tier AS ENUM ('free', 'pro');\n\nTABLE memberships (\n    tier "
 	ws := workspace.New()
 	ws.OpenDocument("/test/schema.dpg", src)
 	pos := protocol.Position{Line: 3, Character: 9}
@@ -150,7 +150,7 @@ func TestCompletion_TopLevel_DoesNotHaveBlockDirectives(t *testing.T) {
 	items := Completion(ws, "/test/schema.dpg", protocol.Position{})
 
 	for _, item := range items {
-		if item.Label == "COMMENT" || item.Label == "OWNER" || item.Label == "INDICES" {
+		if item.Label == "COMMENT" || item.Label == "OWNER" || item.Label == "INDEXES" {
 			t.Errorf("top-level completions should not contain block directive %q", item.Label)
 		}
 	}

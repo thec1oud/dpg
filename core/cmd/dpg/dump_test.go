@@ -1092,15 +1092,15 @@ func TestMergeExistingVirtualTypesBrokenSourceIsNotFatal(t *testing.T) {
 }
 
 // TestRenderTableGrantsAndRevocationsCompiles guards a real bug found live-
-// testing REVOCATIONS against a demo project: case *ir.Table in
+// testing REVOKES against a demo project: case *ir.Table in
 // renderObjectDPG had NO Grants/Revocations rendering at all — neither
 // table-level nor per-column — even though both are fully diffed and applied
-// correctly. A dumped table silently lost every GRANT/REVOCATION declaration,
+// correctly. A dumped table silently lost every GRANT/REVOKE declaration,
 // so a dumped project could never detect drift on them. Uses the flat Mode B
-// GRANT/REVOCATION style (matching writeViewBlock's existing convention),
+// GRANT/REVOKE style (matching writeViewBlock's existing convention),
 // both at the table level and nested inside a per-column COLUMNS entry —
 // mirroring the RFC Section 7.5 worked example's "COLUMN ssn { GRANTS {...}
-// REVOCATIONS {...} }" shape.
+// REVOKES {...} }" shape.
 func TestRenderTableGrantsAndRevocationsCompiles(t *testing.T) {
 	fmtOpts := format.Options{IndentSize: 4, KeywordCase: "upper"}
 	tbl := &ir.Table{
@@ -1124,14 +1124,14 @@ func TestRenderTableGrantsAndRevocationsCompiles(t *testing.T) {
 	if !strings.Contains(rendered, "GRANT SELECT TO app_service;") {
 		t.Errorf("expected table-level GRANT, got:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "REVOCATION ALL FROM PUBLIC;") {
-		t.Errorf("expected table-level REVOCATION, got:\n%s", rendered)
+	if !strings.Contains(rendered, "REVOKE ALL FROM PUBLIC;") {
+		t.Errorf("expected table-level REVOKE, got:\n%s", rendered)
 	}
 	if strings.Count(rendered, "GRANT SELECT TO app_service;") != 2 {
 		t.Errorf("expected both table-level and column-level GRANT, got:\n%s", rendered)
 	}
-	if strings.Count(rendered, "REVOCATION ALL FROM PUBLIC;") != 2 {
-		t.Errorf("expected both table-level and column-level REVOCATION, got:\n%s", rendered)
+	if strings.Count(rendered, "REVOKE ALL FROM PUBLIC;") != 2 {
+		t.Errorf("expected both table-level and column-level REVOKE, got:\n%s", rendered)
 	}
 
 	dir := t.TempDir()
@@ -1380,11 +1380,11 @@ func TestRenderMaterializedViewCompiles(t *testing.T) {
 	if !strings.Contains(rendered, "GRANT SELECT TO app_readonly") {
 		t.Errorf("rendered materialized view missing GRANT: %q", rendered)
 	}
-	if !strings.Contains(rendered, "REVOCATION SELECT FROM PUBLIC") {
-		t.Errorf("rendered materialized view missing REVOCATION (RFC Section 11.3 Mode B singular keyword — not REVOKE, which the block parser doesn't recognize): %q", rendered)
+	if !strings.Contains(rendered, "REVOKE SELECT FROM PUBLIC") {
+		t.Errorf("rendered materialized view missing REVOKE (RFC Section 11.3 Mode B singular keyword — not REVOKE, which the block parser doesn't recognize): %q", rendered)
 	}
-	if !strings.Contains(rendered, "INDICES") || !strings.Contains(rendered, "order_status_totals_status_uq") {
-		t.Errorf("rendered materialized view missing INDICES block: %q", rendered)
+	if !strings.Contains(rendered, "INDEXES") || !strings.Contains(rendered, "order_status_totals_status_uq") {
+		t.Errorf("rendered materialized view missing INDEXES block: %q", rendered)
 	}
 
 	dir := t.TempDir()
@@ -2439,10 +2439,10 @@ func TestRenderReservedWordAndStructuralCompile(t *testing.T) {
 		&ir.Schema{Name: "reporting", Comment: &comment},
 		&ir.Schema{Name: "select"},
 		&ir.Extension{Name: "hstore"},
-		// ENUM must render canonical "ENUM name (...)" form (RFC Section
-		// 5.1, no "AS ENUM") with single-quoted labels.
+		// ENUM must render as "TYPE name AS ENUM (...)" (RFC Section 5.1)
+		// with single-quoted labels.
 		&ir.Type{Schema: "public", Name: "mood", Variant: "ENUM", EnumValues: []string{"happy", "it's ok"}},
-		// Reserved-word names + a COMMENT + an INDEX (INDICES block) must all recompile.
+		// Reserved-word names + a COMMENT + an INDEX (INDEXES block) must all recompile.
 		&ir.Table{Schema: "public", Name: "user", Comment: &tblComment,
 			Columns: []*ir.Column{
 				{Name: "select", Type: ir.TypeRef{Name: "integer"}},
@@ -2506,12 +2506,11 @@ func TestRenderReservedWordAndStructuralCompile(t *testing.T) {
 		t.Errorf("recompile missing objects: schema=%v reservedSchema=%v ext=%v table=%v", sawSchema, sawReservedSchema, sawExt, sawTable)
 	}
 
-	// Index columns must render bare in source (the differ's createIndex quotes
-	// them when generating SQL). Emitting """select""" would create an index on a
-	// literal 8-char column name. The dumped INDICES entry must contain (select),
-	// not ("select").
-	if strings.Contains(rendered, `("select")`) {
-		t.Errorf("index column must be bare in dumped source, got quoted:\n%s", rendered)
+	// A reserved-word index column is quoted in dumped source, and the parser
+	// unquotes it again, so the column name round-trips as select (checked
+	// end to end by the CREATE INDEX assertion below).
+	if !strings.Contains(rendered, `("select")`) {
+		t.Errorf("reserved-word index column must be quoted in dumped source:\n%s", rendered)
 	}
 
 	// End-to-end: diffing the recompiled objects against an empty snapshot must
@@ -2691,8 +2690,8 @@ func TestRenderFunctionAndProcedureBody(t *testing.T) {
 	if !strings.Contains(rendered, "GRANT EXECUTE TO app_user;") {
 		t.Errorf("expected function GRANT, got:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "REVOCATION EXECUTE FROM PUBLIC;") {
-		t.Errorf("expected function REVOCATION (RFC Section 11.3 REVOCATIONS, Mode B singular keyword), got:\n%s", rendered)
+	if !strings.Contains(rendered, "REVOKE EXECUTE FROM PUBLIC;") {
+		t.Errorf("expected function REVOKE (RFC Section 11.3 REVOKES, Mode B singular keyword), got:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "PROCEDURE recalc(") {
 		t.Errorf("expected a PROCEDURE declaration (previously dropped entirely), got:\n%s", rendered)
@@ -2700,8 +2699,8 @@ func TestRenderFunctionAndProcedureBody(t *testing.T) {
 	if !strings.Contains(rendered, "NULL;") {
 		t.Errorf("expected the real procedure body rendered, got:\n%s", rendered)
 	}
-	if strings.Count(rendered, "REVOCATION EXECUTE FROM PUBLIC;") != 2 {
-		t.Errorf("expected both function and procedure REVOCATION, got:\n%s", rendered)
+	if strings.Count(rendered, "REVOKE EXECUTE FROM PUBLIC;") != 2 {
+		t.Errorf("expected both function and procedure REVOKE, got:\n%s", rendered)
 	}
 
 	dir := t.TempDir()
@@ -2785,7 +2784,7 @@ func TestRenderDefaultPrivilegesCompiles(t *testing.T) {
 		t.Errorf("expected GRANT entry with ON TABLES, got:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "INSERT ON TABLES FROM app_writer CASCADE;") {
-		t.Errorf("expected REVOCATION entry with ON TABLES and CASCADE, got:\n%s", rendered)
+		t.Errorf("expected REVOKE entry with ON TABLES and CASCADE, got:\n%s", rendered)
 	}
 
 	dir := t.TempDir()
@@ -3991,4 +3990,48 @@ func TestRenderSecurityLabelsRoundtrip(t *testing.T) {
 			t.Errorf("%s: object missing after recompile", kind)
 		}
 	}
+}
+
+// TestRenderCompositeAttributeCommentRoundtrips guards that a composite type
+// attribute comment is dumped as ATTRIBUTE name { COMMENT '...'; } (RFC
+// Section 5.2) and recompiles to the same comment.
+func TestRenderCompositeAttributeCommentRoundtrips(t *testing.T) {
+	fmtOpts := format.Options{IndentSize: 4, KeywordCase: "upper"}
+	comment := "Street and number"
+	typ := &ir.Type{
+		Schema: "public", Name: "address", Variant: "COMPOSITE",
+		CompositeAttrs: []*ir.Column{
+			{Name: "street", Type: ir.TypeRef{Name: "text"}, Comment: &comment},
+			{Name: "City", Type: ir.TypeRef{Name: "text"}},
+		},
+	}
+	var b strings.Builder
+	renderObjectDPG(&b, typ, fmtOpts)
+	rendered := b.String()
+	if !strings.Contains(rendered, "ATTRIBUTE street { COMMENT 'Street and number'; }") {
+		t.Fatalf("expected an ATTRIBUTE comment block, got:\n%s", rendered)
+	}
+
+	dir := t.TempDir()
+	f := filepath.Join(dir, "schema.dpg")
+	if err := os.WriteFile(f, []byte(rendered), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	compiled, _, err := compiler.Compile([]string{f}, dir, pipeline.Default)
+	if err != nil {
+		t.Fatalf("dumped composite type failed to recompile: %v\n---\n%s", err, rendered)
+	}
+	for _, o := range compiled {
+		if ty, ok := o.(*ir.Type); ok && ty.Name == "address" {
+			a := ty.CompositeAttrs[0]
+			if a.Comment == nil || *a.Comment != comment {
+				t.Errorf("attribute comment did not round-trip: %v", a.Comment)
+			}
+			if ty.CompositeAttrs[1].Name != "City" {
+				t.Errorf("mixed-case attribute name did not round-trip: %q", ty.CompositeAttrs[1].Name)
+			}
+			return
+		}
+	}
+	t.Fatalf("composite type missing after recompile\n---\n%s", rendered)
 }

@@ -2,7 +2,7 @@
 Simple enum
 =====================================
 
-ENUM order_status ('pending', 'confirmed', 'shipped', 'delivered', 'cancelled');
+TYPE order_status AS ENUM ('pending', 'confirmed', 'shipped', 'delivered', 'cancelled');
 
 -------------------------------------
 
@@ -19,7 +19,7 @@ ENUM order_status ('pending', 'confirmed', 'shipped', 'delivered', 'cancelled');
 Enum with migrate remove
 =====================================
 
-ENUM user_tier ('free', 'pro', 'enterprise')
+TYPE user_tier AS ENUM ('free', 'pro', 'enterprise')
 {
     MIGRATE REMOVE ('free') {
         UPDATE users SET tier = 'pro' WHERE tier = 'free';
@@ -115,3 +115,61 @@ SEQUENCE user_id_seq AS bigint INCREMENT BY 1 START WITH 1000 NO CYCLE;
       (identifier))
     (number_literal)
     (number_literal)))
+
+=====================================
+Enum with value rename
+=====================================
+
+TYPE order_status AS ENUM ('pending', 'delivered') {
+    VALUE 'delivered' RENAMED FROM 'fulfilled';
+}
+
+-------------------------------------
+
+(source_file
+  (enum_declaration
+    name: (identifier)
+    (string_literal)
+    (string_literal)
+    (dpg_block
+      (enum_value_rename_directive
+        name: (string_literal)
+        old_name: (string_literal)))))
+
+=====================================
+Composite type with attribute blocks
+=====================================
+
+TYPE address AS (
+    street text,
+    city text
+) {
+    ATTRIBUTE street { RENAMED FROM line1; COMMENT 'Street line'; }
+    ATTRIBUTES {
+        city { COMMENT 'City name'; }
+    }
+}
+
+-------------------------------------
+
+(source_file
+  (composite_type_declaration
+    name: (identifier)
+    (identifier)
+    (sql_type
+      (identifier))
+    (identifier)
+    (sql_type
+      (identifier))
+    (dpg_block
+      (attribute_block
+        name: (identifier)
+        (renamed_from_directive
+          old_name: (identifier))
+        (comment_directive
+          text: (string_literal)))
+      (attributes_block
+        (attribute_entry
+          name: (identifier)
+          (comment_directive
+            text: (string_literal)))))))

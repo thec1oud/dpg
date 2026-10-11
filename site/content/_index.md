@@ -13,7 +13,7 @@ TABLE users (
     name TEXT NOT NULL,
     email TEXT NOT NULL
 ) {
-    INDICES { UNIQUE users_email_idx (email); }
+    INDEXES { UNIQUE users_email_idx (email); }
     GRANTS { SELECT, INSERT TO app_role; }
 }
 ```

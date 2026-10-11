@@ -868,6 +868,7 @@ func diffCompositeAttrs(typeIdent string, attrs []*ir.Column, snap []snapshot.Sn
 				fmt.Sprintf("ALTER TYPE %s ADD ATTRIBUTE %s %s%s;", typeIdent, quoteIdent(a.Name), resolvedType, collateClause),
 				a.SrcPos,
 			))
+			ops = append(ops, compositeAttrCommentOps(typeIdent, a, nil)...)
 			continue
 		}
 		// RFC Section 5.2: a type or COLLATE change are both DESTRUCTIVE, via the
@@ -879,6 +880,7 @@ func diffCompositeAttrs(typeIdent string, attrs []*ir.Column, snap []snapshot.Sn
 				a.SrcPos,
 			))
 		}
+		ops = append(ops, compositeAttrCommentOps(typeIdent, a, sc.Comment)...)
 	}
 
 	return ops, nil
@@ -1036,7 +1038,7 @@ func diffGrantSet(
 		if _, ok := desiredByKey[k]; !ok {
 			// Implicit revoke (a GRANT simply removed from source) can break
 			// another role's dependent access exactly like an explicit
-			// REVOCATION does — classified cautionOp to match DEFAULT
+			// REVOKE does — classified cautionOp to match DEFAULT
 			// PRIVILEGES's already-correct handling of the identical
 			// real-world event (RFC audit item #25).
 			ops = append(ops, cautionOp(
@@ -1071,17 +1073,17 @@ func diffGrantSet(
 	return ops
 }
 
-// diffRevocationSet diffs an explicit REVOCATIONS list (RFC Section 11.3) against its
+// diffRevocationSet diffs an explicit REVOKES list (RFC Section 11.3) against its
 // snapshot. Unlike grants (the additive model in diffGrantSet — removing a
 // GRANT declaration emits nothing), a revocation is itself tracked as a
 // persistent declaration: once applied it's remembered in the snapshot so a
 // later unchanged run doesn't re-issue REVOKE — not because re-running it
 // would error (REVOKE on an already-absent privilege is a harmless no-op in
 // PG), but to keep migration output free of redundant statements, matching
-// the same idempotency style already used for grants. Removing a REVOCATION
+// the same idempotency style already used for grants. Removing a REVOKE
 // entry re-GRANTs the privilege to restore it. Mirrors diffDefaultPrivileges's
 // existing revocation-diffing logic, generalized so table/view/column
-// REVOCATION can share it.
+// REVOKE can share it.
 func diffRevocationSet(
 	snapRevs []snapshot.SnapGrant,
 	desiredRevs []ir.Revocation,
@@ -3234,7 +3236,7 @@ func paramRevokeOptSuffix(r ir.ParameterRevocation) string {
 // audit item #25, emit an implicit REVOKE — cautionOp — when a grant is
 // removed from desired), PARAMETER PRIVILEGES follows RFC Section 11.6's
 // literal text: "removing the declaration emits nothing (an explicit
-// REVOCATIONS { } entry is required to actually REVOKE)". This is a
+// REVOKES { } entry is required to actually REVOKE)". This is a
 // deliberate departure from the other grant kinds' current behavior, not an
 // oversight — Section 11.6 restates Section 11.2's original "emits nothing"
 // model verbatim for this brand-new kind, so it is implemented as written
@@ -4074,7 +4076,7 @@ func colGrantOp(g ir.Grant, tbl, col string, pos pipeline.SourcePos) pipeline.Di
 	return safeOp(sql+";", pos)
 }
 
-// explicitRevokeOp emits the REVOKE for an explicit REVOCATION directive
+// explicitRevokeOp emits the REVOKE for an explicit REVOKE directive
 // (RFC Section 11.3) — distinct from the additive-model's implicit revoke (see
 // colRevokeOp) that fires when a GRANT declaration is simply removed. Explicit
 // revocations are CAUTION (not SAFE): they can break access that something
@@ -4153,7 +4155,7 @@ func diffColGrantSet(tbl, col string, snapGrants []snapshot.SnapGrant, desiredGr
 }
 
 // diffColRevocationSet is diffRevocationSet's column-level counterpart,
-// mirroring diffColGrantSet's structure for explicit REVOCATIONS on a column.
+// mirroring diffColGrantSet's structure for explicit REVOKES on a column.
 func diffColRevocationSet(tbl, col string, snapRevs []snapshot.SnapGrant, desiredRevs []ir.Revocation, pos pipeline.SourcePos) []pipeline.DiffOp {
 	snapKeys := make(map[string]snapshot.SnapGrant, len(snapRevs))
 	for _, r := range snapRevs {
@@ -4333,6 +4335,12 @@ func createType(o *ir.Type, vtypes map[string]string) []pipeline.DiffOp {
 			o.SrcPos,
 		))
 	}
+	if o.Variant == "COMPOSITE" {
+		typeIdent := qualIdent(o.Schema, o.Name)
+		for _, attr := range o.CompositeAttrs {
+			ops = append(ops, compositeAttrCommentOps(typeIdent, attr, nil)...)
+		}
+	}
 	ops = append(ops, createTypeGrantOps(o)...)
 	ops = append(ops, createSecurityLabelOps(o.SecurityLabels, "TYPE "+qualIdent(o.Schema, o.Name), o.SrcPos)...)
 	return ops
@@ -4396,6 +4404,26 @@ func createSimpleGrantOps(grantKind, ident string, grants []ir.Grant, revocation
 		ops = append(ops, ro)
 	}
 	return ops
+}
+
+// compositeAttrCommentOps emits COMMENT ON COLUMN for a composite type
+// attribute (RFC Section 5.2's ATTRIBUTE { COMMENT '...'; }) when the
+// desired comment differs from snapComment. PostgreSQL comments on a
+// composite type attribute through COMMENT ON COLUMN type.attr.
+func compositeAttrCommentOps(typeIdent string, a *ir.Column, snapComment *string) []pipeline.DiffOp {
+	if ptrEq(a.Comment, snapComment) {
+		return nil
+	}
+	if a.Comment != nil {
+		return []pipeline.DiffOp{safeOp(
+			fmt.Sprintf("COMMENT ON COLUMN %s.%s IS %s;", typeIdent, quoteIdent(a.Name), quoteLit(*a.Comment)),
+			a.SrcPos,
+		)}
+	}
+	return []pipeline.DiffOp{safeOp(
+		fmt.Sprintf("COMMENT ON COLUMN %s.%s IS NULL;", typeIdent, quoteIdent(a.Name)),
+		a.SrcPos,
+	)}
 }
 
 func buildCompositeTypeSQL(o *ir.Type, vtypes map[string]string) string {
@@ -7077,8 +7105,8 @@ func diffType(o *ir.Type, snap *snapshot.SnapType, fullSnap *pipeline.Snapshot, 
 			}
 			if !snapVals[r.From] {
 				return nil, pipeline.ErrorfCode(r.Pos, "DPG-E021",
-					"RENAME VALUE %q on enum %s does not match the snapshot — neither the old nor the new value exists there. Remove RENAME VALUE if this is a genuinely new value.",
-					r.From, typeIdent)
+					"VALUE %s RENAMED FROM %s on enum %s does not match the snapshot — neither the old nor the new value exists there. Remove the directive if this is a genuinely new value.",
+					quoteLit(r.To), quoteLit(r.From), typeIdent)
 			}
 			renamedFrom[r.From] = true
 			renamedTo[r.To] = true
@@ -9409,7 +9437,7 @@ func schemaRelationNames(fullSnap *pipeline.Snapshot, schema, excludeTable strin
 	return names
 }
 
-// diffViewIndexes is diffIndexes' sibling for a materialized view's INDICES
+// diffViewIndexes is diffIndexes' sibling for a materialized view's INDEXES
 // (RFC Section 8.2). Simpler than the table version: a view has no COLUMN block, so
 // there's no RENAMED FROM / DROP COLUMN cascade to translate index
 // definitions through — indexes are matched by name and compared as-is.

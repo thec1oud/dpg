@@ -113,7 +113,7 @@ func TestDefinition_AllObjectKinds(t *testing.T) {
 	src := `TABLE t1 (id bigint);
 VIEW v1 AS SELECT 1;
 FUNCTION f1() RETURNS void LANGUAGE sql AS $$ SELECT 1 $$;
-ENUM e1 ('a', 'b');
+TYPE e1 AS ENUM ('a', 'b');
 MACRO m1 (x bigint)
 `
 	ws := workspace.New()

@@ -223,7 +223,7 @@ func ParseObjects(text, filePath string) []ObjectInfo {
 		kwEntries = append(kwEntries, kwEntry{compound + " ", compound, len(compound) + 1})
 	}
 	for _, simple := range []string{"TABLE", "VIEW", "FUNCTION", "PROCEDURE", "AGGREGATE",
-		"ENUM", "TYPE", "DOMAIN", "SCHEMA", "SEQUENCE", "ROLE",
+		"TYPE", "DOMAIN", "SCHEMA", "SEQUENCE", "ROLE",
 		"EXTENSION", "PUBLICATION", "SUBSCRIPTION", "MACRO"} {
 		kwEntries = append(kwEntries, kwEntry{simple + " ", simple, len(simple) + 1})
 	}
@@ -240,8 +240,15 @@ func ParseObjects(text, filePath string) []ObjectInfo {
 					if idx := strings.Index(name, "("); idx >= 0 {
 						name = name[:idx]
 					}
+					kind := e.kind
+					// TYPE name AS ENUM (...) is reported as an ENUM so
+					// outlines and completions can tell it apart.
+					if kind == "TYPE" && len(fields) > 2 &&
+						strings.EqualFold(fields[1], "AS") && strings.HasPrefix(strings.ToUpper(fields[2]), "ENUM") {
+						kind = "ENUM"
+					}
 					objs = append(objs, ObjectInfo{
-						Kind: e.kind,
+						Kind: kind,
 						Name: name,
 						File: filePath,
 						Line: i + 1,

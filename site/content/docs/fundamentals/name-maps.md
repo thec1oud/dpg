@@ -113,7 +113,7 @@ TABLE users (
 ```
 
 ```sql
-ENUM user_status ('active', 'inactive', 'banned') {
+TYPE user_status AS ENUM ('active', 'inactive', 'banned') {
   NAME MAP TO LOWER_SNAKE_CASE;
   NAME MAP prisma TO UPPER_CAMEL_CASE;
 }

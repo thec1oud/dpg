@@ -23,7 +23,7 @@ import (
 // actually lands live at CREATE time, (b) removing the GRANTS declaration
 // alone is a no-op — the additive model (RFC Section 11.6/11.2): the grant
 // must still be present live, not revoked, and (c) an explicit
-// REVOCATIONS entry actually revokes it live.
+// REVOKES entry actually revokes it live.
 func TestRoundtripParameterPrivileges(t *testing.T) {
 	connStr := testpg.Start(t)
 	ctx := context.Background()
@@ -95,11 +95,11 @@ PARAMETER PRIVILEGES {
 		t.Fatal("app_admin lost SET on statement_timeout after the declaration was merely removed from source — additive model violated (a spurious REVOKE was emitted)")
 	}
 
-	// v3: an explicit REVOCATIONS entry must actually revoke it live.
+	// v3: an explicit REVOKES entry must actually revoke it live.
 	v3 := `ROLE app_admin NOLOGIN;
 
 PARAMETER PRIVILEGES {
-    REVOCATIONS {
+    REVOKES {
         SET ON PARAMETER work_mem FROM app_admin;
     }
 }`
@@ -109,13 +109,13 @@ PARAMETER PRIVILEGES {
 	applyFixture(t, ctx, conn, []string{f}, dir, differ, emitter, applyExec, store)
 
 	if checkPriv("app_admin", "work_mem", "SET") {
-		t.Fatal("app_admin still has SET on work_mem after an explicit REVOCATIONS entry — REVOKE never applied")
+		t.Fatal("app_admin still has SET on work_mem after an explicit REVOKES entry — REVOKE never applied")
 	}
-	// statement_timeout was never targeted by the REVOCATIONS entry and was
+	// statement_timeout was never targeted by the REVOKES entry and was
 	// dropped from GRANTS in v2 — it was already proven still-live above;
-	// the REVOCATIONS-driven apply must not touch it either.
+	// the REVOKES-driven apply must not touch it either.
 	if !checkPriv("app_admin", "statement_timeout", "SET") {
-		t.Fatal("app_admin lost SET on statement_timeout as a side effect of an unrelated REVOCATIONS entry")
+		t.Fatal("app_admin lost SET on statement_timeout as a side effect of an unrelated REVOKES entry")
 	}
 }
 
@@ -134,7 +134,7 @@ PARAMETER PRIVILEGES {
 // introspectParameterPrivileges now populating ParameterGrant.GrantedBy
 // from the real resolved grantor, which grantedByMatches must not treat as
 // drift against the declared CURRENT_USER), and (c) an explicit
-// REVOCATIONS entry with GRANTED BY CURRENT_USER actually revokes it live.
+// REVOKES entry with GRANTED BY CURRENT_USER actually revokes it live.
 func TestRoundtripParameterPrivilegesGrantedBy(t *testing.T) {
 	connStr := testpg.Start(t)
 	ctx := context.Background()
@@ -209,12 +209,12 @@ PARAMETER PRIVILEGES {
 	// specifically exercises grantedByMatches for Parameter Privileges.
 	assertNoLiveDrift(t, ctx, conn, []string{f}, dir, differ, store)
 
-	// v2: an explicit REVOCATIONS entry with GRANTED BY CURRENT_USER must
+	// v2: an explicit REVOKES entry with GRANTED BY CURRENT_USER must
 	// actually revoke it live.
 	v2 := `ROLE app_admin NOLOGIN;
 
 PARAMETER PRIVILEGES {
-    REVOCATIONS {
+    REVOKES {
         SET ON PARAMETER work_mem FROM app_admin GRANTED BY CURRENT_USER;
     }
 }`
@@ -224,6 +224,6 @@ PARAMETER PRIVILEGES {
 	applyFixture(t, ctx, conn, []string{f}, dir, differ, emitter, applyExec, store)
 
 	if _, ok := grantorOf(); ok {
-		t.Fatal("app_admin still has a live SET grant on work_mem after an explicit REVOCATIONS entry with GRANTED BY — REVOKE never applied")
+		t.Fatal("app_admin still has a live SET grant on work_mem after an explicit REVOKES entry with GRANTED BY — REVOKE never applied")
 	}
 }
