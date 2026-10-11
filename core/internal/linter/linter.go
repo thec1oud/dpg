@@ -32,30 +32,10 @@ func (l *BuiltinLinter) Lint(objects []pipeline.IRObject, cfg pipeline.LinterCon
 	return ApplyRuleSeverityOverrides(diags, cfg.Rules), nil
 }
 
-// FilterMergeDiagnostics applies scalar-merge-conflict's own gating to the
-// diagnostics returned by pipeline.Merger.Merge (via compiler.Compile's
-// second return value): scalar-merge-conflict entries are dropped when
-// cfg.WarnOnScalarMergeConflict is false; every other entry in this slice
-// (e.g. compiler.Compile's own DPG-E031 "duplicate-namemap-tool" findings,
-// merged into the same slice since both are populated ahead of/independent
-// from linting) is unaffected by that flag — it only ever governed the
-// scalar-merge-conflict rule specifically. Everything that survives is
-// passed through ApplyRuleSeverityOverrides so [linter.rules] can still
-// independently promote/demote/silence any rule by ID, same as every other
-// rule. The merger itself is deliberately config-unaware (no algorithmic
-// reason to couple it to LinterConfig) — this is the one place that gating
-// logic lives, mirroring how ApplyRuleSeverityOverrides is itself the one
-// place [linter.rules] gating lives for Lint's own diagnostics.
+// FilterMergeDiagnostics applies [linter.rules] severity overrides to the
+// warning diagnostics returned by compiler.Compile (DPG-E031 duplicate Name
+// Map tool keys), the same way Lint's own diagnostics are overridden.
 func FilterMergeDiagnostics(mergeDiags []pipeline.LintDiagnostic, cfg pipeline.LinterConfig) []pipeline.LintDiagnostic {
-	if !cfg.WarnOnScalarMergeConflict {
-		filtered := mergeDiags[:0]
-		for _, d := range mergeDiags {
-			if d.Rule != "scalar-merge-conflict" {
-				filtered = append(filtered, d)
-			}
-		}
-		mergeDiags = filtered
-	}
 	return ApplyRuleSeverityOverrides(mergeDiags, cfg.Rules)
 }
 
@@ -67,7 +47,7 @@ func FilterMergeDiagnostics(mergeDiags []pipeline.LintDiagnostic, cfg pipeline.L
 // at each call site — the same reasoning --strict's existing per-command
 // IsError-promotion loops don't apply to, since those only run at 2 of the
 // 5 call sites today. Exported so callers combining Lint's diagnostics with
-// Merger.Merge's (via FilterMergeDiagnostics above) can apply the identical
+// compiler.Compile's (via FilterMergeDiagnostics above) can apply the identical
 // override logic to both without duplicating it — also re-exported from
 // pkg/dpg for external Go-API consumers, who can't import this internal
 // package directly.

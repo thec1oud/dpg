@@ -42,12 +42,11 @@ type opJSON struct {
 // pipeline.LinterConfig used by Linter.Lint.
 func linterConfigFrom(c config.LinterConfig) pipeline.LinterConfig {
 	return pipeline.LinterConfig{
-		WarnOnDeprecated:          c.WarnOnDeprecated,
-		RequireColumnComments:     c.RequireColumnComments,
-		ForbidHardcodedPasswords:  c.ForbidHardcodedPasswords,
-		MaxColumnsPerTable:        c.MaxColumnsPerTable,
-		WarnOnScalarMergeConflict: c.WarnOnScalarMergeConflict,
-		Rules:                     normalizeLinterRuleKeys(c.Rules),
+		WarnOnDeprecated:         c.WarnOnDeprecated,
+		RequireColumnComments:    c.RequireColumnComments,
+		ForbidHardcodedPasswords: c.ForbidHardcodedPasswords,
+		MaxColumnsPerTable:       c.MaxColumnsPerTable,
+		Rules:                    normalizeLinterRuleKeys(c.Rules),
 	}
 }
 

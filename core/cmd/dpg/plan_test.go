@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/thec1oud/dpg/internal/config"
@@ -10,7 +11,6 @@ import (
 	"github.com/thec1oud/dpg/internal/linter"
 	"github.com/thec1oud/dpg/internal/pipeline"
 	"github.com/thec1oud/dpg/internal/project"
-	"github.com/thec1oud/dpg/internal/ui"
 )
 
 // TestNormalizeLinterRuleKeysSnakeToKebab guards RFC audit item #17: the
@@ -154,14 +154,9 @@ func TestLinterConfigFromRFCWorkedExampleFromRealTOMLFile(t *testing.T) {
 	}
 }
 
-// TestPlanPrintsScalarMergeConflict proves a scalar-merge-conflict
-// diagnostic (RFC Section 19.1, surfaced via compiler.Compile's second return
-// value) reaches buildPlan's print logic and can block planning on its own,
-// same as TestApplyPrintsScalarMergeConflict in apply_test.go — [linter.rules]
-// promotes it to an error here (plan has no --strict flag of its own) to
-// prove the diagnostic is visible without depending on any Linter-registered
-// rule ever firing.
-func TestPlanPrintsScalarMergeConflict(t *testing.T) {
+// TestPlanRejectsScalarConflict proves a scalar property declared with two
+// different values in two files (RFC Section 3.7, DPG-E039) stops planning.
+func TestPlanRejectsScalarConflict(t *testing.T) {
 	dir := t.TempDir()
 	f1 := filepath.Join(dir, "a.dpg")
 	f2 := filepath.Join(dir, "b.dpg")
@@ -184,15 +179,12 @@ func TestPlanPrintsScalarMergeConflict(t *testing.T) {
 	}
 
 	_, err := buildPlan(cl, db, &pipeline.Snapshot{}, &mockDiffer{}, &mockEmitter{},
-		pipeline.LinterConfig{
-			WarnOnScalarMergeConflict: true,
-			Rules:                     map[string]string{"scalar-merge-conflict": "error"},
-		},
+		pipeline.LinterConfig{},
 		"text",
 	)
 
-	if err != ui.ErrSilent {
-		t.Fatalf("expected ui.ErrSilent (blocked on a [linter.rules]-promoted scalar-merge-conflict), got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "may only be declared with one value") {
+		t.Fatalf("expected a DPG-E039 compile error, got: %v", err)
 	}
 }
 

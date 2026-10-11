@@ -90,14 +90,10 @@ func TestRunValidateStrictNoErrorsOrWarnings(t *testing.T) {
 	}
 }
 
-// TestRunValidatePrintsScalarMergeConflict proves the scalar-merge-conflict
-// diagnostic (RFC Section 19.1) surfaced by compiler.Compile's merge stage is
-// actually visible in real `dpg validate` output — not just detected
-// internally by internal/merger's own unit tests — using real multi-file
-// .dpg source (two files declaring the same table with a conflicting
-// OWNER), no stub linter, and linter left nil to prove the diagnostic
-// doesn't depend on a Linter being registered at all.
-func TestRunValidatePrintsScalarMergeConflict(t *testing.T) {
+// TestRunValidateReportsScalarConflict proves a scalar property declared
+// with two different values in two files (RFC Section 3.7) is a DPG-E039
+// error in real `dpg validate` JSON output.
+func TestRunValidateReportsScalarConflict(t *testing.T) {
 	dir := t.TempDir()
 	f1 := filepath.Join(dir, "a.dpg")
 	f2 := filepath.Join(dir, "b.dpg")
@@ -112,14 +108,17 @@ func TestRunValidatePrintsScalarMergeConflict(t *testing.T) {
 	orig := os.Stdout
 	os.Stdout = w
 
-	_, err := runValidate("cl", "db", []string{f1, f2}, dir, nil,
-		pipeline.LinterConfig{WarnOnScalarMergeConflict: true}, "json", false)
+	hasErr, err := runValidate("cl", "db", []string{f1, f2}, dir, nil,
+		pipeline.LinterConfig{}, "json", false)
 
 	w.Close()
 	os.Stdout = orig
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hasErr {
+		t.Error("expected validate to report an error")
 	}
 
 	var out strings.Builder
@@ -137,13 +136,13 @@ func TestRunValidatePrintsScalarMergeConflict(t *testing.T) {
 		t.Fatalf("output is not valid JSON: %v\noutput: %s", jsonErr, out.String())
 	}
 	var found bool
-	for _, w := range parsed.Warnings {
-		if w.Rule == "scalar-merge-conflict" {
+	for _, e := range parsed.Errors {
+		if e.Rule == "DPG-E039" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("expected a scalar-merge-conflict warning in output, got: %+v", parsed.Warnings)
+		t.Errorf("expected a DPG-E039 error in output, got: %+v", parsed.Errors)
 	}
 }
 

@@ -56,7 +56,6 @@ warn_on_deprecated            = true
 require_column_comments       = false
 forbid_hardcoded_passwords    = true
 max_columns_per_table         = 50   # 0 = disabled
-warn_on_scalar_merge_conflict = true
 
 [snapshots]
 directory = ".dpg/snapshots"

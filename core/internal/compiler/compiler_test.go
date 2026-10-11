@@ -351,49 +351,37 @@ func TestCompile_MultiFileTableMerge(t *testing.T) {
 	}
 }
 
-// TestCompile_MultiFileScalarMergeConflict proves Compile's second return
-// value surfaces a real scalar-merge-conflict diagnostic (RFC Section 19.1) when
-// two files declare the same table with a conflicting OWNER — the same
-// last-file-wins-plus-diagnostic behavior internal/merger's own unit tests
-// exercise directly, verified here end-to-end through the real compiler
-// pipeline (scan/parse/build), not a hand-built IR fixture.
-func TestCompile_MultiFileScalarMergeConflict(t *testing.T) {
+// TestCompile_MultiFileScalarConflict proves, end to end through the real
+// compiler pipeline, that two files declaring the same table with different
+// OWNERs fail with DPG-E039 (RFC Section 3.7), while the same OWNER in both
+// files merges cleanly.
+func TestCompile_MultiFileScalarConflict(t *testing.T) {
 	dbDir := t.TempDir()
 	f1 := filepath.Join(dbDir, "schemas", "app", "a_tables.dpg")
 	f2 := filepath.Join(dbDir, "schemas", "app", "b_tables.dpg")
-	writeDPG(t, f1, `TABLE users (id BIGINT NOT NULL) { OWNER "alice"; }`)
-	writeDPG(t, f2, `TABLE users (email TEXT NOT NULL) { OWNER "bob"; }`)
+	writeDPG(t, f1, `TABLE users (id BIGINT NOT NULL) { OWNER alice; }`)
+	writeDPG(t, f2, `TABLE users (email TEXT NOT NULL) { OWNER bob; }`)
 
-	objects, mergeDiags, err := compiler.Compile([]string{f1, f2}, dbDir, pipeline.Default)
+	_, _, err := compiler.Compile([]string{f1, f2}, dbDir, pipeline.Default)
+	diags, ok := err.(pipeline.Diagnostics)
+	if !ok || len(diags) != 1 || diags[0].Code != "DPG-E039" {
+		t.Fatalf("expected one DPG-E039 diagnostic, got: %v", err)
+	}
+
+	writeDPG(t, f2, `TABLE users (email TEXT NOT NULL) { OWNER alice; }`)
+	objects, _, err := compiler.Compile([]string{f1, f2}, dbDir, pipeline.Default)
 	if err != nil {
-		t.Fatalf("Compile: %v", err)
+		t.Fatalf("Compile with agreeing owners: %v", err)
 	}
-
-	var conflicts []pipeline.LintDiagnostic
-	for _, d := range mergeDiags {
-		if d.Rule == "scalar-merge-conflict" {
-			conflicts = append(conflicts, d)
-		}
-	}
-	if len(conflicts) != 1 {
-		t.Fatalf("expected 1 scalar-merge-conflict diagnostic, got %d: %v", len(conflicts), mergeDiags)
-	}
-
-	var tbl *ir.Table
 	for _, o := range objects {
-		if t2, ok := o.(*ir.Table); ok && t2.Name == "users" {
-			tbl = t2
-			break
+		if tbl, ok := o.(*ir.Table); ok && tbl.Name == "users" {
+			if len(tbl.Columns) != 2 || tbl.Owner == nil || *tbl.Owner != "alice" {
+				t.Errorf("merged table: columns %d, owner %v", len(tbl.Columns), tbl.Owner)
+			}
+			return
 		}
 	}
-	if tbl == nil {
-		t.Fatal("merged 'users' table not found")
-	}
-	// Last-file-wins is unaffected by the diagnostic (RFC Section 3.7: "the winning
-	// value is used regardless").
-	if tbl.Owner == nil || *tbl.Owner != "bob" {
-		t.Errorf("Owner (last-wins, regardless of conflict): got %v", tbl.Owner)
-	}
+	t.Fatal("merged 'users' table not found")
 }
 
 func TestCompile_DuplicateNameMapToolWarns(t *testing.T) {

@@ -167,7 +167,7 @@ Applies to: `INDEXES`/`INDEX`, `POLICIES`/`POLICY`, `TRIGGERS`/`TRIGGER`, `GRANT
 The same object may be declared across multiple `.dpg` files. DPG merges all declarations before compiling.
 
 - **Set-valued properties** (columns, indexes, policies, triggers, grants): union of all declarations. Identical duplicates are silently dropped. Conflicting entries with the same name are a compiler error.
-- **Scalar properties** (owner, comment, tablespace, protected, deprecated): last-declaration-wins, ordered alphabetically by full file path.
+- **Scalar properties** (owner, comment, tablespace, a column's type, ...): may be declared in any number of files, but every declaration must agree. Two different values for the same property are a compiler error (DPG-E039), so the result never depends on file names or layout.
 
 ```sql
 -- tables/users.dpg

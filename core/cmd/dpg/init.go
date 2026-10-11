@@ -122,7 +122,6 @@ concurrent_indexes    = true
 [linter]
 warn_on_deprecated          = true
 forbid_hardcoded_passwords  = true
-warn_on_scalar_merge_conflict = true
 
 [fmt]
 indent       = 4

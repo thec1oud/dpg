@@ -314,11 +314,10 @@ type PortabilityIssue struct {
 // LinterConfig holds the resolved linter settings passed to Linter.Lint.
 // Populated from config.LinterConfig by the CLI layer.
 type LinterConfig struct {
-	WarnOnDeprecated          bool
-	RequireColumnComments     bool
-	ForbidHardcodedPasswords  bool
-	MaxColumnsPerTable        int
-	WarnOnScalarMergeConflict bool
+	WarnOnDeprecated         bool
+	RequireColumnComments    bool
+	ForbidHardcodedPasswords bool
+	MaxColumnsPerTable       int
 	// Rules holds per-rule-ID severity overrides from [linter.rules]:
 	// "error", "warning", or "off". A rule ID absent from this map keeps
 	// its own default severity. Nil/empty is equivalent to no overrides.

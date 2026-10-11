@@ -533,11 +533,9 @@ func (c *chainLinter) Lint(objects []IRObject, cfg LinterConfig) ([]LintDiagnost
 // through the full compilation pipeline (scan → parse → IR → merge →
 // topological sort), and returns a sorted slice of fully-resolved IRObjects.
 //
-// The second return value holds "scalar-merge-conflict" LintDiagnostics
-// (RFC Section 19.1) surfaced by the merge stage — always populated regardless of
-// LinterConfig; pass it through FilterMergeDiagnostics (with the same
-// LinterConfig later given to Lint) before combining it with Lint's own
-// diagnostics, the same gating the built-in CLI applies.
+// The second return value holds compile-time warning diagnostics (DPG-E031
+// duplicate Name Map tool keys); pass it through FilterMergeDiagnostics (with
+// the same LinterConfig later given to Lint) before reporting it.
 //
 // The Default registry is used. All built-in pipeline stages are registered
 // automatically via init() when this package is imported.
@@ -555,12 +553,10 @@ func Lint(objects []IRObject, cfg LinterConfig) ([]LintDiagnostic, error) {
 	return l.Lint(objects, cfg)
 }
 
-// FilterMergeDiagnostics applies scalar-merge-conflict's gating
-// (LinterConfig.WarnOnScalarMergeConflict and any [linter.rules] override)
-// to the diagnostics Compile's second return value carries. Thin wrapper
-// around internal/linter.FilterMergeDiagnostics, re-exported here because
-// external consumers of this package cannot import internal/linter
-// directly — see that function's doc comment for the full gating rationale.
+// FilterMergeDiagnostics applies [linter.rules] overrides to the warning
+// diagnostics Compile's second return value carries. Thin wrapper around
+// internal/linter.FilterMergeDiagnostics, re-exported here because external
+// consumers of this package cannot import internal/linter directly.
 func FilterMergeDiagnostics(mergeDiags []LintDiagnostic, cfg LinterConfig) []LintDiagnostic {
 	return linter.FilterMergeDiagnostics(mergeDiags, cfg)
 }

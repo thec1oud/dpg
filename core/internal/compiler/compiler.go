@@ -20,12 +20,9 @@ import (
 // name when no explicit SCHEMA block is present. A SCHEMA block inside the
 // schemas/ hierarchy is a compile error.
 //
-// The second return value holds "scalar-merge-conflict" LintDiagnostics
-// (RFC Section 19.1) surfaced by the merge stage — always populated regardless of
-// config, same as pipeline.Merger.Merge itself; see that interface's doc
-// comment for why gating (WarnOnScalarMergeConflict, [linter.rules]) is the
-// caller's job via internal/linter.FilterMergeDiagnostics, not this
-// function's.
+// The second return value holds compile-time warning diagnostics (DPG-E031
+// duplicate Name Map tool keys); callers apply [linter.rules] overrides to
+// it before reporting.
 func Compile(files []string, dbDir string, reg *pipeline.Registry) ([]pipeline.IRObject, []pipeline.LintDiagnostic, error) {
 	tokenizer, err := pipeline.MustResolve[pipeline.Tokenizer](reg, pipeline.KeyTokenizer)
 	if err != nil {
@@ -55,8 +52,7 @@ func Compile(files []string, dbDir string, reg *pipeline.Registry) ([]pipeline.I
 	var rawObjects []pipeline.RawObject
 	var diags pipeline.Diagnostics
 	// nameMapWarnings collects DPG-E031 findings (blockAST.NameMapWarnings)
-	// from every parsed block, merged into the returned LintDiagnostic slice
-	// alongside the merger's scalar-merge-conflict warnings below.
+	// from every parsed block, returned as Compile's warning diagnostics.
 	var nameMapWarnings []pipeline.LintDiagnostic
 	// Track unique directory-inferred schemas so we can inject synthetic declarations.
 	dirSchemas := map[string]pipeline.SourcePos{}
@@ -249,10 +245,9 @@ func Compile(files []string, dbDir string, reg *pipeline.Registry) ([]pipeline.I
 	}
 
 	// Stage 4: Merge same-name declarations across files.
-	merged, mergeDiags, mergeErr := merger.Merge(irObjects)
-	mergeDiags = append(mergeDiags, nameMapWarnings...)
+	merged, mergeErr := merger.Merge(irObjects)
 	if mergeErr != nil {
-		return nil, mergeDiags, mergeErr
+		return nil, nameMapWarnings, mergeErr
 	}
 
 	// Stage 4.5: Resolve LIKE source_table column-list entries (Section
@@ -260,16 +255,16 @@ func Compile(files []string, dbDir string, reg *pipeline.Registry) ([]pipeline.I
 	// compile unit is known — must run before Sort, so the sorter's
 	// dependency edges see the table's actual (resolved) column types.
 	if err := irBuilder.ResolveLikeClauses(merged); err != nil {
-		return nil, mergeDiags, err
+		return nil, nameMapWarnings, err
 	}
 
 	// Stage 5: Topological sort with FK / type dependency resolution.
 	sorted, sortErr := resolver.Sort(merged)
 	if sortErr != nil {
-		return nil, mergeDiags, sortErr
+		return nil, nameMapWarnings, sortErr
 	}
 
-	return sorted, mergeDiags, nil
+	return sorted, nameMapWarnings, nil
 }
 
 // inferSchemaFromPath returns the schema name inferred from the file's position

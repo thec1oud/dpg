@@ -105,11 +105,10 @@ type CompilerConfig struct {
 
 // LinterConfig holds the linter rule settings.
 type LinterConfig struct {
-	WarnOnDeprecated          bool `toml:"warn_on_deprecated"`
-	RequireColumnComments     bool `toml:"require_column_comments"`
-	ForbidHardcodedPasswords  bool `toml:"forbid_hardcoded_passwords"`
-	MaxColumnsPerTable        int  `toml:"max_columns_per_table"`
-	WarnOnScalarMergeConflict bool `toml:"warn_on_scalar_merge_conflict"`
+	WarnOnDeprecated         bool `toml:"warn_on_deprecated"`
+	RequireColumnComments    bool `toml:"require_column_comments"`
+	ForbidHardcodedPasswords bool `toml:"forbid_hardcoded_passwords"`
+	MaxColumnsPerTable       int  `toml:"max_columns_per_table"`
 	// Rules holds per-rule-ID severity overrides from a [linter.rules]
 	// subtable (RFC Section 19.2), e.g. `security-definer-search-path = "error"`.
 	// Values are "error", "warning", or "off"; validated in cmd/dpg at the
@@ -140,11 +139,10 @@ func DefaultRootConfig() RootConfig {
 			DefaultDropBehavior: "restrict",
 		},
 		Linter: LinterConfig{
-			WarnOnDeprecated:          true,
-			RequireColumnComments:     false,
-			ForbidHardcodedPasswords:  true,
-			MaxColumnsPerTable:        50,
-			WarnOnScalarMergeConflict: true,
+			WarnOnDeprecated:         true,
+			RequireColumnComments:    false,
+			ForbidHardcodedPasswords: true,
+			MaxColumnsPerTable:       50,
 		},
 		Fmt: FmtConfig{
 			IndentSize:  4,

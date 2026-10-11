@@ -601,62 +601,20 @@ func TestLintRuleSeverityOverrideUnrelatedRuleUnaffected(t *testing.T) {
 	}
 }
 
-// ── FilterMergeDiagnostics (scalar-merge-conflict gating) ──────────────────────
+// ── FilterMergeDiagnostics ([linter.rules] on compile warnings) ─────────────
 
-func TestFilterMergeDiagnosticsGatingDisabled(t *testing.T) {
+func TestFilterMergeDiagnosticsRuleSeverityOverride(t *testing.T) {
 	mergeDiags := []pipeline.LintDiagnostic{
-		{Rule: "scalar-merge-conflict", Message: "table public.t: owner conflicts"},
-	}
-	got := FilterMergeDiagnostics(mergeDiags, pipeline.LinterConfig{WarnOnScalarMergeConflict: false})
-	if len(got) != 0 {
-		t.Errorf("WarnOnScalarMergeConflict=false should drop all merge diagnostics, got %v", got)
-	}
-}
-
-func TestFilterMergeDiagnosticsGatingEnabled(t *testing.T) {
-	mergeDiags := []pipeline.LintDiagnostic{
-		{Rule: "scalar-merge-conflict", Message: "table public.t: owner conflicts"},
-	}
-	got := FilterMergeDiagnostics(mergeDiags, pipeline.LinterConfig{WarnOnScalarMergeConflict: true})
-	if len(got) != 1 {
-		t.Errorf("WarnOnScalarMergeConflict=true should pass merge diagnostics through, got %v", got)
-	}
-}
-
-func TestFilterMergeDiagnosticsRuleSeverityOverrideOff(t *testing.T) {
-	mergeDiags := []pipeline.LintDiagnostic{
-		{Rule: "scalar-merge-conflict", Message: "table public.t: owner conflicts"},
-	}
-	got := FilterMergeDiagnostics(mergeDiags, pipeline.LinterConfig{
-		WarnOnScalarMergeConflict: true,
-		Rules:                     map[string]string{"scalar-merge-conflict": "off"},
-	})
-	if len(got) != 0 {
-		t.Errorf("[linter.rules] \"off\" should independently suppress scalar-merge-conflict, got %v", got)
-	}
-}
-
-func TestFilterMergeDiagnosticsRuleSeverityOverrideError(t *testing.T) {
-	mergeDiags := []pipeline.LintDiagnostic{
-		{Rule: "scalar-merge-conflict", Message: "table public.t: owner conflicts"},
-	}
-	got := FilterMergeDiagnostics(mergeDiags, pipeline.LinterConfig{
-		WarnOnScalarMergeConflict: true,
-		Rules:                     map[string]string{"scalar-merge-conflict": "error"},
-	})
-	if len(got) != 1 || !got[0].IsError {
-		t.Errorf("[linter.rules] \"error\" should promote scalar-merge-conflict, got %v", got)
-	}
-}
-
-func TestFilterMergeDiagnosticsGatingDisabledDoesNotDropOtherRules(t *testing.T) {
-	mergeDiags := []pipeline.LintDiagnostic{
-		{Rule: "scalar-merge-conflict", Message: "table public.t: owner conflicts"},
 		{Rule: "duplicate-namemap-tool", Message: "DPG-E031: tool key \"prisma\" specified more than once"},
 	}
-	got := FilterMergeDiagnostics(mergeDiags, pipeline.LinterConfig{WarnOnScalarMergeConflict: false})
-	if len(got) != 1 || got[0].Rule != "duplicate-namemap-tool" {
-		t.Errorf("WarnOnScalarMergeConflict=false should only drop scalar-merge-conflict, got %v", got)
+	if got := FilterMergeDiagnostics(mergeDiags, pipeline.LinterConfig{}); len(got) != 1 || got[0].IsError {
+		t.Errorf("with no override the warning should pass through unchanged, got %v", got)
+	}
+	got := FilterMergeDiagnostics(mergeDiags, pipeline.LinterConfig{
+		Rules: map[string]string{"duplicate-namemap-tool": "error"},
+	})
+	if len(got) != 1 || !got[0].IsError {
+		t.Errorf("[linter.rules] \"error\" should promote duplicate-namemap-tool, got %v", got)
 	}
 }
 

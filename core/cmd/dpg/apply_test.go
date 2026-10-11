@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/thec1oud/dpg/internal/config"
@@ -201,16 +202,10 @@ TABLE legacy_data (
 	}
 }
 
-// TestApplyPrintsScalarMergeConflict proves a scalar-merge-conflict
-// diagnostic (RFC Section 19.1, surfaced via compiler.Compile's second return
-// value) reaches runApply's print/--strict logic and can block apply on its
-// own — no Linter-registered rule involved at all (no DEPRECATED, no
-// hardcoded password, nothing checkTable/checkCrossObjectRules would ever
-// fire on) — proving the combined-diagnostics wiring plan.go/apply.go/
-// validate.go all share doesn't depend on a Linter being present, matching
-// the "unconditional, not nested inside 'if a Linter happens to be
-// registered'" requirement.
-func TestApplyPrintsScalarMergeConflict(t *testing.T) {
+// TestApplyRejectsScalarConflict proves a scalar property declared with two
+// different values in two files (RFC Section 3.7, DPG-E039) stops apply
+// before anything is executed, without --strict.
+func TestApplyRejectsScalarConflict(t *testing.T) {
 	dir := t.TempDir()
 	f1 := filepath.Join(dir, "a.dpg")
 	f2 := filepath.Join(dir, "b.dpg")
@@ -242,14 +237,12 @@ func TestApplyPrintsScalarMergeConflict(t *testing.T) {
 		&mockSecretResolver{},
 		applyOptions{
 			yes:           true,
-			strict:        true,
 			migrationsDir: t.TempDir(),
-			lintCfg:       pipeline.LinterConfig{WarnOnScalarMergeConflict: true},
 		},
 	)
 
-	if err != ui.ErrSilent {
-		t.Fatalf("expected ui.ErrSilent (blocked by --strict on a scalar-merge-conflict warning), got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "may only be declared with one value") {
+		t.Fatalf("expected a DPG-E039 compile error, got: %v", err)
 	}
 	if exec.applyCount != 0 {
 		t.Errorf("executor called %d time(s); want 0 when blocked by --strict", exec.applyCount)
