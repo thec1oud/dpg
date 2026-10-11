@@ -139,6 +139,17 @@ func sourceBodyHash(body string, reconstructed bool) string {
 // CREATE TYPE options text — see BaseBodyHashInput.
 var baseAlterablePropRe = regexp.MustCompile(`(?i)\b(RECEIVE|SEND|TYPMOD_IN|TYPMOD_OUT|ANALYZE|SUBSCRIPT|STORAGE)\s*=\s*[^,()]+`)
 
+// multirangeParamRe matches one MULTIRANGE_TYPE_NAME = name option in a
+// range type's option list, with its separating comma.
+var multirangeParamRe = regexp.MustCompile(`(?i)\s*,?\s*\bmultirange_type_name\s*=\s*[^,)]+`)
+
+// RangeBodyHashInput returns a RANGE type's body with its
+// MULTIRANGE_TYPE_NAME option removed: that name is diffed on its own
+// (SnapType.MultirangeName) because changing it is a rename, not a rebuild.
+func RangeBodyHashInput(body string) string {
+	return multirangeParamRe.ReplaceAllString(body, "")
+}
+
 // BaseBodyHashInput strips the 7 in-place-alterable properties' "KEY =
 // value" text out of a BASE type's raw Body before hashing it, so a change
 // to only one of them (handled instead by a targeted ALTER TYPE ... SET
@@ -938,7 +949,11 @@ func toSnapType(o *ir.Type) *SnapType {
 		Comment: o.Comment,
 		Owner:   o.Owner,
 	}
-	if o.Variant == "RANGE" || o.Variant == "BASE" {
+	if o.Variant == "RANGE" {
+		st.BodyHash = sourceBodyHash(RangeBodyHashInput(o.Body), o.Reconstructed)
+		st.MultirangeName = o.MultirangeName
+	}
+	if o.Variant == "BASE" {
 		st.BodyHash = sourceBodyHash(o.Body, o.Reconstructed)
 	}
 	if o.Variant == "BASE" {

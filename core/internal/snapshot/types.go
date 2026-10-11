@@ -676,6 +676,10 @@ type SnapType struct {
 	BaseAnalyze       *string `json:"base_analyze,omitempty"`
 	BaseSubscript     *string `json:"base_subscript,omitempty"`
 	BaseStorage       *string `json:"base_storage,omitempty"`
+	// MultirangeName is RANGE only (RFC Section 5.3): the range's multirange
+	// companion type name, diffed separately from BodyHash so a change to it
+	// alone is a rename rather than a rebuild.
+	MultirangeName string `json:"multirange_name,omitempty"`
 	// DomainBaseType/DomainDefault/DomainNotNull/DomainConstraints are
 	// DOMAIN-only (RFC Section 5.4): structured diffing inputs, not just an opaque
 	// body hash, so property-level changes get their own targeted ALTER

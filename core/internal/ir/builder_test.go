@@ -4953,3 +4953,19 @@ func TestBuildParameterPrivilegesRevocation(t *testing.T) {
 		t.Error("Cascade did not propagate")
 	}
 }
+
+// TestBuildRangeTypeMultirangeName guards RFC Section 5.3: the multirange
+// companion name is PostgreSQL's default unless MULTIRANGE_TYPE_NAME sets it.
+func TestBuildRangeTypeMultirangeName(t *testing.T) {
+	cases := []struct{ part1, want string }{
+		{`floatrange AS RANGE (SUBTYPE = float8)`, "floatmultirange"},
+		{`price_span AS RANGE (SUBTYPE = numeric)`, "price_span_multirange"},
+		{`floatrange AS RANGE (SUBTYPE = float8, MULTIRANGE_TYPE_NAME = float_ranges)`, "float_ranges"},
+	}
+	for _, c := range cases {
+		obj := buildObject(t, pipeline.KindRangeType, c.part1, ``)
+		if got := obj.(*ir.Type).MultirangeName; got != c.want {
+			t.Errorf("%s: MultirangeName = %q, want %q", c.part1, got, c.want)
+		}
+	}
+}

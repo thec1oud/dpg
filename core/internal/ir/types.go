@@ -871,6 +871,11 @@ type Type struct {
 	CompositeAttrs []*Column // COMPOSITE only: ordered list of attributes
 	Body           string    // raw Part1 for range/base (opaque); DOMAIN's full CREATE DOMAIN text, used only for a base-type change (DROP+CREATE)
 	Reconstructed  bool      // Body rebuilt from the catalog; see Tablespace.Reconstructed. RANGE/BASE only.
+	// MultirangeName is RANGE only: the name of the range's multirange
+	// companion type (RFC Section 5.3), either declared with
+	// MULTIRANGE_TYPE_NAME or derived by PostgreSQL's default rule
+	// (DefaultMultirangeName). It lives in the range's own schema.
+	MultirangeName string
 	// BaseReceive/BaseSend/BaseTypmodIn/BaseTypmodOut/BaseAnalyze/
 	// BaseSubscript/BaseStorage are RFC Section 5.5's 7 in-place-alterable
 	// BASE type properties — real PostgreSQL's `ALTER TYPE ... SET (...)`
@@ -2151,3 +2156,14 @@ var (
 	_ pipeline.IRObject = (*DefaultPrivileges)(nil)
 	_ pipeline.IRObject = (*VirtualType)(nil)
 )
+
+// DefaultMultirangeName returns the multirange type name PostgreSQL derives
+// for a range type with no MULTIRANGE_TYPE_NAME: the first "range" in the
+// range's name becomes "multirange", or "_multirange" is appended when the
+// name has no "range".
+func DefaultMultirangeName(rangeName string) string {
+	if i := strings.Index(rangeName, "range"); i >= 0 {
+		return rangeName[:i] + "multirange" + rangeName[i+len("range"):]
+	}
+	return rangeName + "_multirange"
+}

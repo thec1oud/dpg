@@ -2697,11 +2697,23 @@ func (b *Builder) buildDomain(cs *pg_query.CreateDomainStmt, block pipeline.Bloc
 func (b *Builder) buildRangeType(cs *pg_query.CreateRangeStmt, block pipeline.BlockAST, pos pipeline.SourcePos, body string) (pipeline.IRObject, error) {
 	schema, name := extractTypeName(cs.TypeName)
 	t := &Type{
-		Schema:  schema,
-		Name:    name,
-		Variant: "RANGE",
-		Body:    body,
-		SrcPos:  pos,
+		Schema:         schema,
+		Name:           name,
+		Variant:        "RANGE",
+		Body:           body,
+		SrcPos:         pos,
+		MultirangeName: DefaultMultirangeName(name),
+	}
+	for _, p := range cs.Params {
+		de := p.GetDefElem()
+		if de == nil || de.Defname != "multirange_type_name" || de.Arg == nil {
+			continue
+		}
+		if tn := de.Arg.GetTypeName(); tn != nil && len(tn.Names) > 0 {
+			if sv := tn.Names[len(tn.Names)-1].GetString_(); sv != nil {
+				t.MultirangeName = sv.Sval
+			}
+		}
 	}
 	if block.Comment != nil {
 		t.Comment = &block.Comment.Value

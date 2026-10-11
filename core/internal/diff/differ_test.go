@@ -22660,3 +22660,27 @@ func TestDiffEventTriggerSecurityLabel(t *testing.T) {
 		t.Errorf("expected ON EVENT TRIGGER, got: %v", sqlList(ops))
 	}
 }
+
+// TestDiffRangeMultirangeNameChangeIsRename guards RFC Section 5.3: changing
+// only MULTIRANGE_TYPE_NAME renames the multirange type in place instead of
+// rebuilding the range type.
+func TestDiffRangeMultirangeNameChangeIsRename(t *testing.T) {
+	old := &ir.Type{Schema: "public", Name: "floatrange", Variant: "RANGE",
+		Body: "floatrange AS RANGE (SUBTYPE = float8)", MultirangeName: "floatmultirange"}
+	snap := &pipeline.Snapshot{}
+	if err := snapshot.Populate(snap, []pipeline.IRObject{old}); err != nil {
+		t.Fatal(err)
+	}
+	desired := &ir.Type{Schema: "public", Name: "floatrange", Variant: "RANGE",
+		Body: "floatrange AS RANGE (SUBTYPE = float8, MULTIRANGE_TYPE_NAME = float_ranges)", MultirangeName: "float_ranges"}
+	ops, err := New().Diff([]pipeline.IRObject{desired}, snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsSQL(ops, "DROP TYPE") {
+		t.Fatalf("a multirange name change must not rebuild the range type: %v", sqlList(ops))
+	}
+	if !containsSQL(ops, `ALTER TYPE "public"."floatmultirange" RENAME TO "float_ranges";`) {
+		t.Fatalf("expected a multirange rename, got: %v", sqlList(ops))
+	}
+}

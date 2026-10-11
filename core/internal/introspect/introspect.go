@@ -2753,8 +2753,10 @@ SELECT n.nspname, t.typname,
             THEN quote_ident(opc.opcname) END AS subtype_opclass,
        CASE WHEN r.rngcollation <> 0 THEN quote_ident(coll.collname) END AS collation,
        CASE WHEN r.rngcanonical <> 0 THEN quote_ident(canfn.proname) END AS canonical,
-       CASE WHEN r.rngsubdiff <> 0 THEN quote_ident(difffn.proname) END AS subtype_diff
+       CASE WHEN r.rngsubdiff <> 0 THEN quote_ident(difffn.proname) END AS subtype_diff,
+       mr.typname AS multirange_name
 FROM   pg_range r
+JOIN   pg_type mr         ON mr.oid = r.rngmultitypid
 JOIN   pg_type t          ON t.oid = r.rngtypid
 JOIN   pg_namespace n     ON n.oid = t.typnamespace
 LEFT JOIN pg_opclass opc  ON opc.oid = r.rngsubopc
@@ -2783,7 +2785,8 @@ ORDER  BY n.nspname, t.typname`
 	for rs.Next() {
 		var schema, name, subtype string
 		var opclass, collation, canonical, subtypeDiff *string
-		if err := rs.Scan(&schema, &name, &subtype, &opclass, &collation, &canonical, &subtypeDiff); err != nil {
+		var multirangeName string
+		if err := rs.Scan(&schema, &name, &subtype, &opclass, &collation, &canonical, &subtypeDiff, &multirangeName); err != nil {
 			return err
 		}
 		t, ok := rangeIdx[schema+"."+name]
@@ -2802,6 +2805,12 @@ ORDER  BY n.nspname, t.typname`
 		}
 		if subtypeDiff != nil {
 			parts = append(parts, "SUBTYPE_DIFF = "+*subtypeDiff)
+		}
+		// MULTIRANGE_TYPE_NAME only when it isn't PostgreSQL's default,
+		// same suppress-the-default discipline as SUBTYPE_OPCLASS above.
+		t.MultirangeName = multirangeName
+		if multirangeName != ir.DefaultMultirangeName(name) {
+			parts = append(parts, "MULTIRANGE_TYPE_NAME = "+quoteIdent(multirangeName))
 		}
 		t.Body = strings.Join(parts, ", ")
 		t.Reconstructed = true

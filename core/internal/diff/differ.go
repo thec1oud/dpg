@@ -7053,7 +7053,11 @@ func diffType(o *ir.Type, snap *snapshot.SnapType, fullSnap *pipeline.Snapshot, 
 		// both treated as "no comparison possible yet."
 		desiredHash := ""
 		if o.Body != "" && !o.Reconstructed {
-			sum := sha256.Sum256([]byte(strings.TrimSpace(o.Body)))
+			hashInput := o.Body
+			if o.Variant == "RANGE" {
+				hashInput = snapshot.RangeBodyHashInput(o.Body)
+			}
+			sum := sha256.Sum256([]byte(strings.TrimSpace(hashInput)))
 			desiredHash = fmt.Sprintf("%x", sum)
 		}
 		if desiredHash != "" && snap.BodyHash != "" && desiredHash != snap.BodyHash {
@@ -7064,6 +7068,12 @@ func diffType(o *ir.Type, snap *snapshot.SnapType, fullSnap *pipeline.Snapshot, 
 			ops = append(ops, destructiveOp(fmt.Sprintf("DROP TYPE IF EXISTS %s%s;", typeIdent, cascade), pos))
 			ops = append(ops, createType(o, vtypes)...)
 			return ops, nil
+		}
+		// RFC Section 5.3: a change to MULTIRANGE_TYPE_NAME alone renames the
+		// multirange companion type in place.
+		if o.Variant == "RANGE" && o.MultirangeName != "" && snap.MultirangeName != "" && o.MultirangeName != snap.MultirangeName {
+			ops = append(ops, cautionOp(fmt.Sprintf("ALTER TYPE %s RENAME TO %s;",
+				qualIdent(o.Schema, snap.MultirangeName), quoteIdent(o.MultirangeName)), pos))
 		}
 		if !ptrEq(o.Comment, snap.Comment) {
 			if o.Comment != nil {
