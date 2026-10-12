@@ -171,7 +171,8 @@ func allowedDirectives(obj pipeline.IRObject) (allowed map[string]bool, kind str
 	case *ForeignServer:
 		return directiveSet(dirComment, dirOwner, dirRenamedFrom, dirGrants, dirRevokes), "SERVER", true
 	case *UserMapping:
-		return directiveSet(dirComment), "USER MAPPING", true
+		// PostgreSQL has no COMMENT ON USER MAPPING: the block takes nothing.
+		return directiveSet(), "USER MAPPING", true
 	case *StatisticsObject:
 		return directiveSet(dirComment, dirRenamedFrom, dirStatistics), "STATISTICS", true
 	case *Operator:
