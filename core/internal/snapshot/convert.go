@@ -819,6 +819,10 @@ func toSnapTrigger(trg *ir.Trigger) SnapTrigger {
 		Function:            trg.Function,
 		EnableState:         trg.EnableState,
 		DependsOnExtensions: append([]string(nil), trg.DependsOnExtensions...),
+		Constraint:          trg.Constraint,
+		ConstraintFrom:      trg.ConstraintFrom,
+		Deferrable:          trg.Deferrable,
+		InitiallyDeferred:   trg.InitiallyDeferred,
 	}
 	if trg.OldTransitionName != nil {
 		st.OldTransitionName = *trg.OldTransitionName

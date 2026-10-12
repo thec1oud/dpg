@@ -373,6 +373,13 @@ type Trigger struct {
 	Condition         *string
 	Function          string // qualified function name
 	Args              []string
+	// Constraint marks a constraint trigger (RFC Section 7.9).
+	// ConstraintFrom is its FROM table ("" for none), written as in the
+	// source or, when introspected, schema-qualified.
+	Constraint        bool
+	ConstraintFrom    string
+	Deferrable        bool
+	InitiallyDeferred bool
 	// EnableState — see pipeline.TriggerDef.EnableState's identical doc
 	// comment.
 	EnableState string

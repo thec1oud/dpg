@@ -534,6 +534,12 @@ type SnapTrigger struct {
 	// diffing input reused for triggers (Section 7.9, audit item #75) —
 	// see ir.Trigger.DependsOnExtensions' identical doc comment.
 	DependsOnExtensions []string `json:"depends_on_extensions,omitempty"`
+	// Constraint trigger (RFC Section 7.9): ir.Trigger's fields of the
+	// same names.
+	Constraint        bool   `json:"constraint,omitempty"`
+	ConstraintFrom    string `json:"constraint_from,omitempty"`
+	Deferrable        bool   `json:"deferrable,omitempty"`
+	InitiallyDeferred bool   `json:"initially_deferred,omitempty"`
 }
 
 type SnapGrant struct {

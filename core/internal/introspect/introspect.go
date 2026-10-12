@@ -1177,6 +1177,7 @@ WHERE  c.relkind IN ('r', 'p', 'f')
 -- filters CHECK rows) — mirrors introspectColumns' attislocal filter above,
 -- same reasoning.
 AND    con.conislocal
+AND    con.contype <> 't'  -- a constraint trigger's row; it is a trigger (Section 7.9)
 AND    n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
 ORDER  BY n.nspname, c.relname, con.conname`, enforcedCol)
 
@@ -1822,7 +1823,15 @@ SELECT n.nspname, c.relname,
        -- trigger-enable-state (Section 7.9, audit item #56): tgenabled
        -- 'O' (origin, the default) means ENABLED; 'D' DISABLED; 'R'
        -- ENABLE REPLICA; 'A' ENABLE ALWAYS.
-       t.tgenabled::text
+       t.tgenabled::text,
+       -- Constraint trigger (Section 7.9): CREATE CONSTRAINT TRIGGER sets
+       -- tgconstraint; tgconstrrelid is its FROM table.
+       t.tgconstraint <> 0 AS is_constraint,
+       (SELECT fn.nspname || '.' || fc.relname
+          FROM pg_class fc JOIN pg_namespace fn ON fn.oid = fc.relnamespace
+          WHERE fc.oid = t.tgconstrrelid) AS constraint_from,
+       t.tgdeferrable,
+       t.tginitdeferred
 FROM   pg_trigger t
 JOIN   pg_class c     ON c.oid = t.tgrelid
 JOIN   pg_namespace n ON n.oid = c.relnamespace
@@ -1842,8 +1851,9 @@ ORDER  BY n.nspname, c.relname, t.tgname`
 		var schema, table, name, when, forEach, events, funcName, funcSchema, triggerDef, tgenabled string
 		var comment *string
 		var updateOfColumns, dependsOnExtensions []string
-		var oldTransitionName, newTransitionName *string
-		if err := rs.Scan(&schema, &table, &name, &when, &forEach, &events, &funcName, &funcSchema, &triggerDef, &comment, &oldTransitionName, &newTransitionName, &updateOfColumns, &dependsOnExtensions, &tgenabled); err != nil {
+		var oldTransitionName, newTransitionName, constraintFrom *string
+		var isConstraint, deferrable, initDeferred bool
+		if err := rs.Scan(&schema, &table, &name, &when, &forEach, &events, &funcName, &funcSchema, &triggerDef, &comment, &oldTransitionName, &newTransitionName, &updateOfColumns, &dependsOnExtensions, &tgenabled, &isConstraint, &constraintFrom, &deferrable, &initDeferred); err != nil {
 			return err
 		}
 		var enableState string
@@ -1883,9 +1893,21 @@ ORDER  BY n.nspname, c.relname, t.tgname`
 			Comment:             comment,
 			EnableState:         enableState,
 			DependsOnExtensions: dependsOnExtensions,
+			Constraint:          isConstraint,
+			ConstraintFrom:      constraintFromName(constraintFrom),
+			Deferrable:          deferrable,
+			InitiallyDeferred:   initDeferred,
 		})
 	}
 	return rs.Err()
+}
+
+// constraintFromName returns a constraint trigger's FROM table, or "".
+func constraintFromName(name *string) string {
+	if name == nil {
+		return ""
+	}
+	return *name
 }
 
 // extractTriggerWhenCondition pulls a trigger's WHEN (...) condition out of

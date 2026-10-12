@@ -2746,6 +2746,9 @@ func renderTrigger(b *strings.Builder, trg *ir.Trigger, fmtOpts format.Options) 
 	kw := fmtOpts.Keyword
 	b.WriteString(ind + ind)
 	b.WriteString(quoteIdentIfNeeded(trg.Name))
+	if trg.Constraint {
+		fmt.Fprintf(b, " %s", kw("CONSTRAINT"))
+	}
 	fmt.Fprintf(b, " %s", kw(trg.When))
 	events := make([]string, len(trg.Events))
 	for i, e := range trg.Events {
@@ -2763,6 +2766,15 @@ func renderTrigger(b *strings.Builder, trg *ir.Trigger, fmtOpts format.Options) 
 		}
 	}
 	fmt.Fprintf(b, " %s", strings.Join(events, " "+kw("OR")+" "))
+	if trg.ConstraintFrom != "" {
+		fmt.Fprintf(b, " %s %s", kw("FROM"), trg.ConstraintFrom)
+	}
+	if trg.Deferrable {
+		fmt.Fprintf(b, " %s", kw("DEFERRABLE"))
+		if trg.InitiallyDeferred {
+			fmt.Fprintf(b, " %s %s", kw("INITIALLY"), kw("DEFERRED"))
+		}
+	}
 	if trg.OldTransitionName != nil || trg.NewTransitionName != nil {
 		fmt.Fprintf(b, " %s", kw("REFERENCING"))
 		if trg.OldTransitionName != nil {

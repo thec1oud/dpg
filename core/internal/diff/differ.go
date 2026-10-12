@@ -4005,7 +4005,11 @@ func createPolicy(schema, table string, pol *ir.Policy) []pipeline.DiffOp {
 
 func createTrigger(schema, table string, trg *ir.Trigger) []pipeline.DiffOp {
 	var b strings.Builder
-	b.WriteString("CREATE TRIGGER ")
+	b.WriteString("CREATE ")
+	if trg.Constraint {
+		b.WriteString("CONSTRAINT ")
+	}
+	b.WriteString("TRIGGER ")
 	b.WriteString(quoteIdent(trg.Name))
 	b.WriteString(" ")
 	b.WriteString(trg.When)
@@ -4013,6 +4017,16 @@ func createTrigger(schema, table string, trg *ir.Trigger) []pipeline.DiffOp {
 	b.WriteString(strings.Join(triggerEventClauses(trg), " OR "))
 	b.WriteString(" ON ")
 	b.WriteString(qualIdent(schema, table))
+	if trg.ConstraintFrom != "" {
+		b.WriteString(" FROM ")
+		b.WriteString(quoteQualifiedIdent(trg.ConstraintFrom))
+	}
+	if trg.Deferrable {
+		b.WriteString(" DEFERRABLE")
+		if trg.InitiallyDeferred {
+			b.WriteString(" INITIALLY DEFERRED")
+		}
+	}
 	if trg.OldTransitionName != nil || trg.NewTransitionName != nil {
 		b.WriteString(" REFERENCING")
 		if trg.OldTransitionName != nil {
@@ -4062,6 +4076,16 @@ func createTrigger(schema, table string, trg *ir.Trigger) []pipeline.DiffOp {
 		))
 	}
 	return ops
+}
+
+// qualifyRelForCompare qualifies an unqualified relation name with schema,
+// so a name written unqualified in source compares equal to the
+// schema-qualified name read from the catalog.
+func qualifyRelForCompare(name, schema string) string {
+	if name == "" || strings.Contains(name, ".") {
+		return name
+	}
+	return schema + "." + name
 }
 
 // triggerEventClauses renders each of a trigger's events, attaching
@@ -10601,6 +10625,10 @@ func diffTriggers(schema, table string, o *ir.Table, snap *snapshot.SnapTable) (
 			ptrStr(trg.OldTransitionName) != existing.OldTransitionName ||
 			ptrStr(trg.NewTransitionName) != existing.NewTransitionName ||
 			qualifyFuncForCompare(trg.Function) != qualifyFuncForCompare(existing.Function) ||
+			trg.Constraint != existing.Constraint ||
+			qualifyRelForCompare(trg.ConstraintFrom, schema) != qualifyRelForCompare(existing.ConstraintFrom, schema) ||
+			trg.Deferrable != existing.Deferrable ||
+			trg.InitiallyDeferred != existing.InitiallyDeferred ||
 			foldTriggerPseudoRelNames(normalizeExprForCompare(ptrStr(trg.Condition))) != foldTriggerPseudoRelNames(normalizeExprForCompare(existing.Condition)) {
 			// RENAMED FROM (Section 7.9): when another property change
 			// already forces a drop+recreate, the recreated trigger is

@@ -141,6 +141,13 @@ type TriggerDef struct {
 	Condition         *RawExpr
 	Function          Identifier
 	Args              []string
+	// Constraint marks a constraint trigger (CREATE CONSTRAINT TRIGGER,
+	// RFC Section 7.9). ConstraintFrom is its FROM table, if any;
+	// Deferrable/InitiallyDeferred are its deferral clause.
+	Constraint        bool
+	ConstraintFrom    *Identifier
+	Deferrable        bool
+	InitiallyDeferred bool
 	// EnableState is Section 7.9's trigger-enable-state — "DISABLED",
 	// "ENABLE REPLICA", "ENABLE ALWAYS", or "" (omitted, meaning ENABLED —
 	// PostgreSQL's own default for a newly-created trigger). Real

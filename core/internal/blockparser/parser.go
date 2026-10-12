@@ -2308,6 +2308,13 @@ func (b *blockParser) parseOneTrigger() (pipeline.TriggerDef, error) {
 	}
 	trig := pipeline.TriggerDef{Name: name, Pos: pos}
 
+	// Optional CONSTRAINT: a constraint trigger (CREATE CONSTRAINT TRIGGER).
+	b.skipWS()
+	if strings.EqualFold(b.peekWord(), "CONSTRAINT") {
+		b.readWord()
+		trig.Constraint = true
+	}
+
 	// Timing: BEFORE | AFTER | INSTEAD OF
 	b.skipWS()
 	timing := strings.ToUpper(b.readWord())
@@ -2373,6 +2380,48 @@ func (b *blockParser) parseOneTrigger() (pipeline.TriggerDef, error) {
 		} else {
 			break
 		}
+	}
+
+	// Constraint trigger clauses, after the event list as in PostgreSQL:
+	// [FROM table] [NOT DEFERRABLE | DEFERRABLE] [INITIALLY DEFERRED |
+	// INITIALLY IMMEDIATE].
+	b.skipWS()
+	if strings.EqualFold(b.peekWord(), "FROM") {
+		b.readWord()
+		from, ferr := b.readIdentifier()
+		if ferr != nil {
+			return trig, ferr
+		}
+		trig.ConstraintFrom = &from
+	}
+	for {
+		b.skipWS()
+		switch strings.ToUpper(b.peekWord()) {
+		case "NOT":
+			b.readWord()
+			if err := b.expect("DEFERRABLE"); err != nil {
+				return trig, err
+			}
+			trig.Deferrable = false
+			continue
+		case "DEFERRABLE":
+			b.readWord()
+			trig.Deferrable = true
+			continue
+		case "INITIALLY":
+			b.readWord()
+			b.skipWS()
+			switch w := strings.ToUpper(b.readWord()); w {
+			case "DEFERRED":
+				trig.Deferrable, trig.InitiallyDeferred = true, true
+			case "IMMEDIATE":
+				trig.InitiallyDeferred = false
+			default:
+				return trig, b.errorf("expected DEFERRED or IMMEDIATE after INITIALLY, got %q", w)
+			}
+			continue
+		}
+		break
 	}
 
 	// Optional REFERENCING { OLD | NEW } TABLE [AS] name [...] — real

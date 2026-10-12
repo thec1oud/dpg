@@ -4013,7 +4013,13 @@ func blockTriggerToIR(tr pipeline.TriggerDef) *Trigger {
 		Args:                tr.Args,
 		EnableState:         tr.EnableState,
 		DependsOnExtensions: tr.DependsOnExtensions,
+		Constraint:          tr.Constraint,
+		Deferrable:          tr.Deferrable,
+		InitiallyDeferred:   tr.InitiallyDeferred,
 		Pos:                 tr.Pos,
+	}
+	if tr.ConstraintFrom != nil {
+		t.ConstraintFrom = tr.ConstraintFrom.String()
 	}
 	t.Function = tr.Function.String()
 	if tr.Condition != nil {
