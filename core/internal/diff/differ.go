@@ -3749,7 +3749,7 @@ func finishCreateTable(b *strings.Builder, o *ir.Table) []pipeline.DiffOp {
 		// comment; diffIndexes is the path where the default/explicit
 		// CONCURRENTLY actually applies (adding an index to a table that
 		// already exists).
-		ops = append(ops, createIndex(o.Schema, o.Name, idx, false)...)
+		ops = append(ops, createIndex(o.Schema, o.Name, idx, indexWithNewRelation)...)
 	}
 	// REPLICA IDENTITY/CLUSTER ON (Section 7.11): real PostgreSQL has no
 	// CREATE TABLE-native clause for either, only ALTER TABLE — even at
@@ -3806,23 +3806,41 @@ func finishCreateTable(b *strings.Builder, o *ir.Table) []pipeline.DiffOp {
 	return ops
 }
 
-// createIndex builds the CREATE INDEX statement for idx. concurrent is the
-// caller-resolved effective value — NOT idx.Concurrently directly — since an
-// index created alongside its own brand-new table is always forced to false
-// regardless of idx.Concurrently: PostgreSQL rejects CREATE INDEX
-// CONCURRENTLY inside a transaction block, and a new table's indexes are
-// always emitted transactionally with it (see createTable). An index added
-// to an already-existing table (see diffIndexes) passes idx.Concurrently
-// straight through — CONCURRENTLY only ever fires when the source wrote it
-// explicitly; there is no project-wide default.
-func createIndex(schema, table string, idx *ir.Index, concurrent bool) []pipeline.DiffOp {
+// indexCreate is how createIndex runs a CREATE INDEX (RFC Section 17.2).
+type indexCreate int
+
+const (
+	// indexWithNewRelation: in the same transaction as the table's or
+	// materialized view's own CREATE, so never concurrent, and SAFE since
+	// the relation is empty. PostgreSQL rejects CREATE INDEX CONCURRENTLY
+	// inside a transaction block.
+	indexWithNewRelation indexCreate = iota
+	// indexOnExisting: plain CREATE INDEX on an existing relation, CAUTION
+	// (blocks writes while it builds).
+	indexOnExisting
+	// indexConcurrent: CREATE INDEX CONCURRENTLY on an existing relation,
+	// CAUTION and non-transactional.
+	indexConcurrent
+)
+
+// existingIndexCreate is the indexCreate for an index added to an existing
+// relation: concurrent only when the source wrote CONCURRENTLY.
+func existingIndexCreate(concurrent bool) indexCreate {
+	if concurrent {
+		return indexConcurrent
+	}
+	return indexOnExisting
+}
+
+// createIndex builds the CREATE INDEX statement for idx.
+func createIndex(schema, table string, idx *ir.Index, how indexCreate) []pipeline.DiffOp {
 	var b strings.Builder
 	b.WriteString("CREATE ")
 	if idx.Unique {
 		b.WriteString("UNIQUE ")
 	}
 	b.WriteString("INDEX ")
-	if concurrent {
+	if how == indexConcurrent {
 		b.WriteString("CONCURRENTLY ")
 	}
 	b.WriteString(quoteIdent(idx.Name))
@@ -3919,10 +3937,13 @@ func createIndex(schema, table string, idx *ir.Index, concurrent bool) []pipelin
 	b.WriteString(";")
 
 	var ops []pipeline.DiffOp
-	if concurrent {
+	switch how {
+	case indexConcurrent:
 		ops = append(ops, nonTxnOp(pipeline.Caution, b.String(), idx.Pos))
-	} else {
+	case indexOnExisting:
 		ops = append(ops, cautionOp(b.String(), idx.Pos))
+	default:
+		ops = append(ops, safeOp(b.String(), idx.Pos))
 	}
 	if idx.Comment != nil {
 		ops = append(ops, safeOp(
@@ -4273,7 +4294,7 @@ func createView(o *ir.View) []pipeline.DiffOp {
 		// indexes are created in the same transactional migration as the
 		// CREATE MATERIALIZED VIEW itself, matching createTable's identical
 		// reasoning for a brand-new table's indexes.
-		ops = append(ops, createIndex(o.Schema, o.Name, idx, false)...)
+		ops = append(ops, createIndex(o.Schema, o.Name, idx, indexWithNewRelation)...)
 	}
 	return ops
 }
@@ -9528,7 +9549,7 @@ func diffViewIndexes(schema, view string, desired []*ir.Index, snapIdx []snapsho
 			}
 		}
 		if !exists {
-			ops = append(ops, createIndex(schema, view, idx, idx.Concurrently)...)
+			ops = append(ops, createIndex(schema, view, idx, existingIndexCreate(idx.Concurrently))...)
 			continue
 		}
 		// Comment is excluded from the recreate-triggering comparison, same
@@ -9550,7 +9571,7 @@ func diffViewIndexes(schema, view string, desired []*ir.Index, snapIdx []snapsho
 				fmt.Sprintf("DROP INDEX IF EXISTS %s;", quoteIdent(si.Name)),
 				idx.Pos,
 			))
-			ops = append(ops, createIndex(schema, view, idx, idx.Concurrently)...)
+			ops = append(ops, createIndex(schema, view, idx, existingIndexCreate(idx.Concurrently))...)
 			continue
 		}
 		if si.Name != idx.Name {
@@ -9670,7 +9691,7 @@ func diffIndexes(schema, table string, o *ir.Table, snap *snapshot.SnapTable, re
 			}
 		}
 		if !exists {
-			ops = append(ops, createIndex(schema, table, idx, concurrent)...)
+			ops = append(ops, createIndex(schema, table, idx, existingIndexCreate(concurrent))...)
 			continue
 		}
 		// A same-named index must still be compared: PG has no generic ALTER
@@ -9716,7 +9737,7 @@ func diffIndexes(schema, table string, o *ir.Table, snap *snapshot.SnapTable, re
 				fmt.Sprintf("DROP INDEX IF EXISTS %s;", quoteIdent(si.Name)),
 				idx.Pos,
 			))
-			ops = append(ops, createIndex(schema, table, idx, concurrent)...)
+			ops = append(ops, createIndex(schema, table, idx, existingIndexCreate(concurrent))...)
 			continue
 		}
 		if si.Name != idx.Name {

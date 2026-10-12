@@ -1685,8 +1685,24 @@ func TestDiffCreateIndex(t *testing.T) {
 	if idxOp == nil {
 		t.Fatalf("expected CREATE INDEX op, got: %v", sqlList(ops))
 	}
-	if idxOp.Safety() != pipeline.Caution {
-		t.Errorf("expected Caution safety for index")
+	// RFC Section 17.2: an index created with its own new table is SAFE.
+	if idxOp.Safety() != pipeline.Safe {
+		t.Errorf("expected Safe for a new table's index, got %v", idxOp.Safety())
+	}
+
+	// Added to an existing table it blocks writes while it builds: CAUTION.
+	snap := &pipeline.Snapshot{}
+	_ = snap.SetObject("public.users", &snapshot.SnapObject{Kind: "table", Table: &snapshot.SnapTable{
+		Schema: "public", Name: "users", Columns: []snapshot.SnapColumn{{Name: "email", Type: "text"}},
+	}})
+	ops, err = d.Diff(desired, snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range ops {
+		if strings.Contains(o.SQL(), "CREATE INDEX") && o.Safety() != pipeline.Caution {
+			t.Errorf("expected Caution for an index on an existing table, got %v: %s", o.Safety(), o.SQL())
+		}
 	}
 }
 
