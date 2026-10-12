@@ -292,6 +292,46 @@ type DiffOp interface {
 	Mode() ExecMode
 }
 
+// Effect is what an op does to the object it belongs to.
+type Effect int
+
+const (
+	EffectAlter    Effect = iota // changed in place
+	EffectCreate                 // created
+	EffectDrop                   // dropped
+	EffectRecreate               // dropped and created again: its grants and dependents go
+	EffectRename                 // renamed (and possibly changed); Target.From is the old key
+)
+
+func (e Effect) String() string {
+	switch e {
+	case EffectCreate:
+		return "create"
+	case EffectDrop:
+		return "drop"
+	case EffectRecreate:
+		return "recreate"
+	case EffectRename:
+		return "rename"
+	}
+	return "alter"
+}
+
+// Target names the object an op belongs to, by snapshot kind and key, and
+// what the op's object as a whole undergoes.
+type Target struct {
+	Kind, Key string
+	Effect    Effect
+	From      string // the old key, for EffectRename
+}
+
+// TargetedOp is a DiffOp that knows its object. Every op the built-in
+// differ emits is one.
+type TargetedOp interface {
+	DiffOp
+	Target() Target
+}
+
 // PGParseResult wraps the output of the PGSQLParser.
 // Raw holds the pg_query parse result (type *pg_query.ParseResult from
 // github.com/pganalyze/pg_query_go/v5, added in Phase 4a). In Phase 1 it is nil.

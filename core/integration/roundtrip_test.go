@@ -735,6 +735,13 @@ func applyFixture(
 	if err != nil {
 		t.Fatalf("diff: %v", err)
 	}
+	// Every op knows the object it belongs to (the apply preflight and the
+	// migration guard rely on it).
+	for _, op := range ops {
+		if to, ok := op.(pipeline.TargetedOp); !ok || to.Target().Key == "" || to.Target().Kind == "" {
+			t.Errorf("op without a target: %s", op.SQL())
+		}
+	}
 
 	migration, err := emitter.Emit(ops, pipeline.MigrationMeta{Cluster: "test", Database: "dpgtest"})
 	if err != nil {

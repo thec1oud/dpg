@@ -51,11 +51,13 @@ dpg apply --dry-run --allow-destructive   # preview even destructive ops
 
 `.dpg/snapshots/<cluster>/<database>.json` — commit this file.
 
+`dpg_version` is the version of the snapshot format, not of the `dpg` binary; it changes only when the format does. DPG warns when it reads a snapshot whose major format version differs from its own.
+
 The `objects` field is a flat map keyed by each object's qualified name (e.g. `"public.users"`, `"public.get_user(text)"`). Every value is a discriminated union: a `kind` string selects which sibling field holds the object's data.
 
 ```json
 {
-  "dpg_version": "0.5.2",
+  "dpg_version": "0.1.0",
   "cluster": "production",
   "database": "myapp",
   "applied_at": "2025-09-15T14:32:00Z",

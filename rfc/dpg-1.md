@@ -4409,7 +4409,7 @@ Phase 10: Emission
 
 ```json
 {
-  "dpg_version":     "0.8.1",
+  "dpg_version":     "0.1.0",
   "cluster":         "production",
   "database":        "myapp",
   "applied_at":      "2025-09-15T14:32:00Z",
@@ -4420,7 +4420,7 @@ Phase 10: Emission
 
    | Field | Type | Description |
    |-------|------|-------------|
-   | `dpg_version` | string | The DPG version that wrote this snapshot. |
+   | `dpg_version` | string | The snapshot format version (Section 16.4). |
    | `cluster` | string | The cluster name from the cluster `dpg.toml`. |
    | `database` | string | The database name from the database `dpg.toml`. Absent for cluster-level snapshots. |
    | `applied_at` | RFC 3339 string | UTC timestamp of the last successful `dpg apply`. |
@@ -4690,14 +4690,15 @@ Phase 10: Emission
 
 ### 16.4. Versioning
 
-   The `dpg_version` field in the snapshot records the compiler version
-   that wrote it.  Future major versions of DPG that change the snapshot
-   schema MUST provide a migration path.  Minor-version changes MUST be
-   backward compatible: a newer compiler MUST be able to read a snapshot
-   written by an older minor version without data loss.
+   The `dpg_version` field records the version of the snapshot format,
+   not of the compiler.  It changes only when the format does: the
+   minor component for a backward-compatible change, the major
+   component for an incompatible one.  A compiler MUST read every
+   snapshot of its own major format version without data loss, and a
+   major format change MUST come with a migration path.
 
    The compiler MUST emit a warning when reading a snapshot whose
-   `dpg_version` major component differs from the running compiler.
+   `dpg_version` major component differs from the format it writes.
 
 ### 16.5. Further Object Records
 

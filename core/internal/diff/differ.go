@@ -27,18 +27,88 @@ func init() {
 	pipeline.Default.Register(pipeline.KeyDiffer, New())
 }
 
-// op implements pipeline.DiffOp.
+// op implements pipeline.DiffOp and pipeline.TargetedOp.
 type op struct {
-	sql    string
-	safety pipeline.Safety
-	pos    pipeline.SourcePos
-	mode   pipeline.ExecMode
+	sql       string
+	safety    pipeline.Safety
+	pos       pipeline.SourcePos
+	mode      pipeline.ExecMode
+	target    pipeline.Target
+	hasTarget bool
 }
 
 func (o *op) SQL() string             { return o.sql }
 func (o *op) Safety() pipeline.Safety { return o.safety }
 func (o *op) Pos() pipeline.SourcePos { return o.pos }
 func (o *op) Mode() pipeline.ExecMode { return o.mode }
+func (o *op) Target() pipeline.Target { return o.target }
+func (o *op) setTarget(t pipeline.Target) {
+	if !o.hasTarget {
+		o.target, o.hasTarget = t, true
+	}
+}
+
+// tag gives each op of one object that has no target yet the object's
+// target (an op a nested diff already tagged keeps its own).
+func tag(ops []pipeline.DiffOp, t pipeline.Target) []pipeline.DiffOp {
+	for _, o := range ops {
+		if s, ok := o.(interface{ setTarget(pipeline.Target) }); ok {
+			s.setTarget(t)
+		}
+	}
+	return ops
+}
+
+// targetOf is the target of a desired object's ops.
+func targetOf(obj pipeline.IRObject, effect pipeline.Effect) pipeline.Target {
+	kind, _, _, _ := snapshot.IdentOf(obj)
+	if kind == "" {
+		// Kinds without a schema/name identity (default and parameter
+		// privileges) still have a snapshot kind.
+		if so := snapshot.ToSnapObject(obj); so != nil {
+			kind = so.Kind
+		}
+	}
+	return pipeline.Target{Kind: kind, Key: obj.QualifiedName(), Effect: effect}
+}
+
+// recreateKeywords are the object-type keywords of DROP statements that
+// drop an object of the snapshot kind itself.
+var recreateKeywords = map[string][]string{
+	"table": {"TABLE", "FOREIGN TABLE"}, "view": {"VIEW", "MATERIALIZED VIEW"},
+	"function": {"FUNCTION"}, "procedure": {"PROCEDURE"}, "aggregate": {"AGGREGATE"},
+	"type": {"TYPE", "DOMAIN"}, "sequence": {"SEQUENCE"}, "collation": {"COLLATION"},
+	"operator_class": {"OPERATOR CLASS"}, "operator_family": {"OPERATOR FAMILY"},
+	"statistics": {"STATISTICS"}, "ts_config": {"TEXT SEARCH CONFIGURATION"},
+	"ts_dict": {"TEXT SEARCH DICTIONARY"}, "ts_parser": {"TEXT SEARCH PARSER"},
+	"ts_template": {"TEXT SEARCH TEMPLATE"}, "server": {"SERVER"}, "fdw": {"FOREIGN DATA WRAPPER"},
+	"publication": {"PUBLICATION"}, "subscription": {"SUBSCRIPTION"}, "event_trigger": {"EVENT TRIGGER"},
+	"extension": {"EXTENSION"}, "schema": {"SCHEMA"}, "role": {"ROLE"}, "tablespace": {"TABLESPACE"},
+}
+
+// alterEffect classifies an existing object's ops: a recreate when one of
+// them drops the object itself, else an alter.
+func alterEffect(obj pipeline.IRObject, ops []pipeline.DiffOp) pipeline.Effect {
+	kind, schema, name, ok := snapshot.IdentOf(obj)
+	if !ok {
+		return pipeline.EffectAlter
+	}
+	ident := qualIdent(schema, name)
+	for _, o := range ops {
+		s := o.SQL()
+		for _, kw := range recreateKeywords[kind] {
+			rest, isDrop := strings.CutPrefix(s, "DROP "+kw+" ")
+			if !isDrop {
+				continue
+			}
+			rest = strings.TrimPrefix(rest, "IF EXISTS ")
+			if after, ok := strings.CutPrefix(rest, ident); ok && (after == "" || strings.ContainsAny(after[:1], " (;")) {
+				return pipeline.EffectRecreate
+			}
+		}
+	}
+	return pipeline.EffectAlter
+}
 
 func safeOp(sql string, pos pipeline.SourcePos) *op {
 	return &op{sql: sql, safety: pipeline.Safe, pos: pos, mode: pipeline.ModeTransactional}
@@ -157,7 +227,7 @@ func (d *Differ) Diff(desired []pipeline.IRObject, snap *pipeline.Snapshot) ([]p
 		if err != nil {
 			return nil, err
 		}
-		ops = append(ops, createOps...)
+		ops = append(ops, tag(createOps, targetOf(obj, pipeline.EffectCreate))...)
 		schemasCreatedEarly[s.QualifiedName()] = true
 	}
 
@@ -215,7 +285,9 @@ func (d *Differ) Diff(desired []pipeline.IRObject, snap *pipeline.Snapshot) ([]p
 		if err != nil {
 			return nil, err
 		}
-		ops = append(ops, alterOps...)
+		t := targetOf(obj, pipeline.EffectRename)
+		t.From = oldKey
+		ops = append(ops, tag(alterOps, t)...)
 	}
 
 	// Pass 2: drop objects in snapshot that are absent from desired and not consumed.
@@ -260,7 +332,7 @@ func (d *Differ) Diff(desired []pipeline.IRObject, snap *pipeline.Snapshot) ([]p
 		if snap.Live {
 			continue
 		}
-		ops = append(ops, dropObject(&so)...)
+		ops = append(ops, tag(dropObject(&so), pipeline.Target{Kind: so.Kind, Key: key, Effect: pipeline.EffectDrop})...)
 	}
 
 	// Pass 2.5: DETACHED FROM (RFC Section 7.13) — a standalone Table
@@ -329,11 +401,13 @@ func (d *Differ) Diff(desired []pipeline.IRObject, snap *pipeline.Snapshot) ([]p
 		}
 		matched := parentSnap.Table.Partitions[matchedIdx]
 		stmt := fmt.Sprintf("ALTER TABLE %s DETACH PARTITION %s", quoteQualIdent(parentKey), qualIdent(matched.Schema, matched.Name))
+		// The statement alters the parent; the child is tagged by its own
+		// Pass 3 ops, if any.
+		detach := cautionOp(stmt+";", tbl.SrcPos)
 		if tbl.DetachedFrom.Concurrently {
-			ops = append(ops, nonTxnOp(pipeline.Caution, stmt+" CONCURRENTLY;", tbl.SrcPos))
-		} else {
-			ops = append(ops, cautionOp(stmt+";", tbl.SrcPos))
+			detach = nonTxnOp(pipeline.Caution, stmt+" CONCURRENTLY;", tbl.SrcPos)
 		}
+		ops = append(ops, tag([]pipeline.DiffOp{detach}, pipeline.Target{Kind: "table", Key: parentKey, Effect: pipeline.EffectAlter})...)
 		detachedChildren[tbl.QualifiedName()] = true
 		if skipDetachedByParent[parentKey] == nil {
 			skipDetachedByParent[parentKey] = make(map[string]bool)
@@ -368,13 +442,13 @@ func (d *Differ) Diff(desired []pipeline.IRObject, snap *pipeline.Snapshot) ([]p
 			if err != nil {
 				return nil, err
 			}
-			ops = append(ops, createOps...)
+			ops = append(ops, tag(createOps, targetOf(obj, pipeline.EffectCreate))...)
 		} else {
 			alterOps, err := diffObject(obj, &so, snap, env, skipDetachedByParent[key])
 			if err != nil {
 				return nil, err
 			}
-			ops = append(ops, alterOps...)
+			ops = append(ops, tag(alterOps, targetOf(obj, alterEffect(obj, alterOps)))...)
 		}
 	}
 

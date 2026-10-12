@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/thec1oud/dpg/internal/pipeline"
@@ -18,7 +20,28 @@ func init() {
 	pipeline.Default.Register(pipeline.KeySnapshotStore, &FileStore{Dir: ".dpg/snapshots"})
 }
 
+// Version is the snapshot format version written to dpg_version (RFC
+// Section 16.4). Its major component changes when the format changes
+// incompatibly.
 const Version = "0.1.0"
+
+// Warn reports a problem that doesn't stop the command. Tests replace it.
+var Warn = func(msg string) { fmt.Fprintln(os.Stderr, "warning: "+msg) }
+
+var warned sync.Map // path → true: each snapshot's version is reported once
+
+// versionMismatch describes a snapshot written in another major format
+// version, or "".
+func versionMismatch(v string) string {
+	if v == "" {
+		return ""
+	}
+	major := func(s string) string { m, _, _ := strings.Cut(s, "."); return m }
+	if major(v) == major(Version) {
+		return ""
+	}
+	return fmt.Sprintf("it has snapshot format %s; this dpg reads and writes format %s", v, Version)
+}
 
 // FileStore implements pipeline.SnapshotStore using JSON files on disk.
 // Each snapshot is stored at Dir/<cluster>/<database>.json, mirroring the
@@ -43,6 +66,11 @@ func (s *FileStore) Load(cluster, database string) (*pipeline.Snapshot, error) {
 	var snap pipeline.Snapshot
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return nil, fmt.Errorf("snapshot: parsing %s: %w", path, err)
+	}
+	if msg := versionMismatch(snap.DPGVersion); msg != "" {
+		if _, done := warned.LoadOrStore(path, true); !done {
+			Warn(path + ": " + msg)
+		}
 	}
 	return &snap, nil
 }
