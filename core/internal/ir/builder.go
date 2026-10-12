@@ -612,6 +612,7 @@ func (b *Builder) buildColumn(cd *pg_query.ColumnDef, pos pipeline.SourcePos) (*
 			nd := ""
 			if cst.NullsNotDistinct {
 				nd = "NULLS NOT DISTINCT "
+				tc.NullsNotDistinct = true
 			}
 			tc.Expr = "UNIQUE " + nd + "(" + quoteIdent(cd.Colname) + ")"
 			promoted = append(promoted, tc)
@@ -790,6 +791,7 @@ func buildConstraint(c *pg_query.Constraint, pos pipeline.SourcePos) *Constraint
 			nd := ""
 			if c.NullsNotDistinct {
 				nd = "NULLS NOT DISTINCT "
+				cst.NullsNotDistinct = true
 			}
 			cst.Expr = "UNIQUE " + nd + "(" + colListWithTrailingSuffix(cols, c.WithoutOverlaps, "WITHOUT OVERLAPS") + ")"
 		}

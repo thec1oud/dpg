@@ -213,6 +213,25 @@ Scoped to `FOREIGN KEY` and `TYPE` references only — a `VIEW` query, a functio
 
 ---
 
+## `min-pg-version`
+
+**Severity:** Warning — **Config:** `min_pg_version` in `[compiler]` (root, cluster or database `dpg.toml`) — **Default:** off
+
+Warns when the source declares something the configured oldest PostgreSQL version doesn't support, such as a `VIRTUAL` generated column (18), `UNIQUE NULLS NOT DISTINCT` (15), a `MAINTAIN` grant (17), an unlogged sequence (15), or a subscription's `failover` option (17). Appendix F of the DPG specification lists every construct and its version.
+
+```toml
+[compiler]
+min_pg_version = 15
+```
+
+```
+warn  [min-pg-version] VIRTUAL generated column requires PostgreSQL 18+ (RFC Section 7.2), but this project's min_pg_version is 15
+```
+
+Statements DPG emits only for a change to something that already exists (such as `ALTER COLUMN ... SET EXPRESSION`, PostgreSQL 17) don't appear in the source, so the rule can't check them. SQL inside view queries, function bodies and `DEFAULT`/`CHECK` expressions isn't checked either.
+
+---
+
 ## `concurrently-new-table`
 
 **Severity:** Warning — **Config:** always enabled

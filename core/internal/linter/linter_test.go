@@ -846,3 +846,38 @@ func TestConcurrentlyNewTable(t *testing.T) {
 		}
 	}
 }
+
+// TestLintMinPGVersionMembershipAndDefaultPrivileges guards RFC Section
+// 3.8's coverage of role membership WITH INHERIT/WITH SET (PostgreSQL 16)
+// and MAINTAIN in default privileges (PostgreSQL 17).
+func TestLintMinPGVersionMembershipAndDefaultPrivileges(t *testing.T) {
+	yes := true
+	objects := []pipeline.IRObject{
+		&ir.Role{Name: "r", Memberships: []ir.RoleMembership{
+			{Role: "plain", Direction: "IN_ROLE"},
+			{Role: "inh", Direction: "IN_ROLE", Inherit: &yes},
+		}},
+		&ir.DefaultPrivileges{ObjectType: "TABLES", Grants: []ir.Grant{{Privileges: []string{"MAINTAIN"}, Roles: []string{"ops"}}}},
+	}
+	count := func(floor int) (n int) {
+		diags, err := New().Lint(objects, pipeline.LinterConfig{MinPGVersion: floor})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range diags {
+			if d.Rule == "min-pg-version" {
+				n++
+			}
+		}
+		return n
+	}
+	if got := count(15); got != 2 {
+		t.Errorf("floor 15: got %d min-pg-version diags, want 2", got)
+	}
+	if got := count(16); got != 1 {
+		t.Errorf("floor 16: got %d, want 1 (MAINTAIN only)", got)
+	}
+	if got := count(17); got != 0 {
+		t.Errorf("floor 17: got %d, want 0", got)
+	}
+}

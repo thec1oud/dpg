@@ -270,7 +270,10 @@ type Constraint struct {
 	// DeleteSetColumns is ON DELETE SET NULL/SET DEFAULT's column list
 	// (PostgreSQL 15+, RFC Section 7.2): only these referencing columns
 	// are set. Empty means all of them. Also rendered into Expr.
-	DeleteSetColumns  []string
+	DeleteSetColumns []string
+	// NullsNotDistinct is UNIQUE ... NULLS NOT DISTINCT (PostgreSQL 15+).
+	// Also rendered into Expr.
+	NullsNotDistinct  bool
 	NotValid          bool
 	Deferrable        bool
 	InitiallyDeferred bool

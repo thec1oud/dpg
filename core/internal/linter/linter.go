@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 
+	pg_query "github.com/pganalyze/pg_query_go/v6"
+
 	"github.com/thec1oud/dpg/internal/ir"
 	"github.com/thec1oud/dpg/internal/pipeline"
 )
@@ -99,40 +101,13 @@ func checkObject(obj pipeline.IRObject, cfg pipeline.LinterConfig) []pipeline.Li
 
 // ── min_pg_version gating ────────────────────────────────────────────────────
 
-// checkMinPGVersion implements the min-pg-version rule (the min_pg_version
-// project-gating feature): warns — or errors under --strict, per the
-// existing IsError convention every other rule here uses — when a declared
-// construct requires a PostgreSQL major version newer than
-// cfg.MinPGVersion, the effective floor cmd/dpg already resolved per
-// cluster/database before building this LinterConfig (database override,
-// else cluster, else project root; see project.Database.
-// EffectiveMinPGVersion/project.Cluster.EffectiveMinPGVersion).
-// cfg.MinPGVersion == 0 means no floor is configured anywhere — a no-op,
-// matching every optional rule's own "cfg flag off" early-return shape.
-//
-// DPG always parses against its newest supported grammar (PostgreSQL's SQL
-// grammar is overwhelmingly additive across versions) — this rule is a
-// purely semantic check, not a parser gate: it only fires for constructs
-// DPG can already build into IR.
-//
-// v1 catalog only (.dpg-notes/min-pg-version-gating-scope-2026-08-23.md):
-// constructs whose IR already has a concrete field to check, unblocked by
-// core-fix-order-2026-08-23.md's own unfinished work. Deliberately NOT
-// gated yet, and why:
-//   - FK column-scoped ON DELETE/UPDATE SET NULL/SET DEFAULT (col-list),
-//     PG15 — no structured IR field exists for the column list yet.
-//   - Role membership WITH INHERIT/WITH SET, PG16 — ir.Role has no
-//     membership-modifier field yet (that fix-order backlog item is
-//     unstarted).
-//   - SET STATISTICS DEFAULT vs. -1, PG17 — ir.Column.Statistics is *int
-//     with nil meaning BOTH "explicitly reset to DEFAULT" and "never
-//     declared" (parseStatisticsValue parses the DEFAULT keyword to nil,
-//     the same value an untouched column already has) — genuinely
-//     indistinguishable in the current IR, not just unwired.
-//   - Every PG18 construct (VIRTUAL, ENFORCED, WITHOUT OVERLAPS/PERIOD,
-//     table-level named NOT NULL, ALTER COLUMN SET EXPRESSION) — moot: the
-//     vendored parser can't parse PG18 grammar at all yet, so there is
-//     nothing for this rule to see in the IR regardless of version floor.
+// checkMinPGVersion implements the min-pg-version rule (RFC Section 3.8):
+// warns when a declared construct needs a PostgreSQL major version newer
+// than cfg.MinPGVersion, the floor already resolved for this cluster or
+// database. 0 means no floor is configured, and the rule does nothing.
+// It covers every declared construct with a Min PG Version in RFC
+// Appendix F; statements DPG emits only for a change to an existing
+// object are not visible in the source and are not checked.
 func checkMinPGVersion(obj pipeline.IRObject, cfg pipeline.LinterConfig) []pipeline.LintDiagnostic {
 	if cfg.MinPGVersion == 0 {
 		return nil
@@ -150,27 +125,217 @@ func checkMinPGVersion(obj pipeline.IRObject, cfg pipeline.LinterConfig) []pipel
 				construct, minVersion, section, cfg.MinPGVersion),
 		})
 	}
+	maintain := func(pos pipeline.SourcePos, grants []ir.Grant, revocations []ir.Revocation) {
+		if hasPrivilege(grants, revocations, "MAINTAIN") {
+			need(pos, "MAINTAIN privilege", 17, "7.10")
+		}
+	}
+	constraints := func(partitioned bool, csts []*ir.Constraint) {
+		for _, c := range csts {
+			if c.Type == "NOT NULL" {
+				// A bare inline NOT NULL is a column flag; a NOT NULL
+				// constraint is named, NO INHERIT, or NOT VALID.
+				need(c.Pos, "NOT NULL constraint (named, NO INHERIT or NOT VALID)", 18, "7.3")
+			}
+			if c.NotEnforced {
+				need(c.Pos, "NOT ENFORCED", 18, "7.2")
+			}
+			if c.WithoutOverlaps || c.FkWithPeriod || c.PkWithPeriod {
+				need(c.Pos, "temporal key (WITHOUT OVERLAPS/PERIOD)", 18, "7.3")
+			}
+			if len(c.DeleteSetColumns) > 0 {
+				need(c.Pos, "ON DELETE SET NULL/SET DEFAULT column list", 15, "7.2")
+			}
+			if c.NullsNotDistinct {
+				need(c.Pos, "UNIQUE NULLS NOT DISTINCT", 15, "7.3")
+			}
+			if partitioned && c.Type == "EXCLUDE" {
+				need(c.Pos, "EXCLUDE constraint on a partitioned table", 17, "7.3")
+			}
+		}
+	}
+	indexes := func(idxs []*ir.Index) {
+		for _, idx := range idxs {
+			if idx.NullsNotDistinct {
+				need(idx.Pos, "UNIQUE index NULLS NOT DISTINCT", 15, "7.7")
+			}
+		}
+	}
+	var partitions func([]*ir.Partition)
+	partitions = func(ps []*ir.Partition) {
+		for _, p := range ps {
+			constraints(p.PartitionBy != nil, p.Constraints)
+			partitions(p.Partitions)
+		}
+	}
 
 	switch o := obj.(type) {
+	case *ir.Table:
+		partitioned := o.PartitionBy != nil
+		for _, col := range o.Columns {
+			if col.Generated != nil && !col.Generated.Stored {
+				need(col.SrcPos, "VIRTUAL generated column", 18, "7.2")
+			}
+			maintain(col.SrcPos, col.Grants, col.Revocations)
+		}
+		constraints(partitioned, o.Constraints)
+		indexes(o.Indexes)
+		partitions(o.Partitions)
+		if partitioned && o.AccessMethod != "" {
+			need(o.SrcPos, "USING access method on a partitioned table", 17, "7.1")
+		}
+		maintain(o.SrcPos, o.Grants, o.Revocations)
+	case *ir.View:
+		indexes(o.Indexes)
+		maintain(o.SrcPos, o.Grants, o.Revocations)
+	case *ir.DefaultPrivileges:
+		maintain(o.SrcPos, o.Grants, o.Revocations)
+	case *ir.Sequence:
+		if o.Unlogged {
+			need(o.SrcPos, "UNLOGGED SEQUENCE", 15, "10")
+		}
+	case *ir.Role:
+		for _, m := range o.Memberships {
+			if m.Inherit != nil || m.Set != nil {
+				need(m.Pos, "role membership WITH INHERIT/WITH SET", 16, "11.1")
+			}
+		}
+	case *ir.ParameterPrivileges:
+		need(o.SrcPos, "PARAMETER PRIVILEGES", 15, "11.6")
+	case *ir.Publication:
+		for _, f := range publicationFeatures(o.Body) {
+			need(o.SrcPos, f.construct, f.version, "13.1")
+		}
+	case *ir.Subscription:
+		for _, f := range subscriptionFeatures(o.Body) {
+			need(o.SrcPos, f.construct, f.version, "13.2")
+		}
+	case *ir.EventTrigger:
+		if strings.EqualFold(o.Event, "login") {
+			need(o.SrcPos, "EVENT TRIGGER ON login", 17, "14.1")
+		}
 	case *ir.Collation:
+		if o.Provider == "b" {
+			need(o.SrcPos, "COLLATION PROVIDER builtin", 17, "14.2")
+		}
 		if o.RefreshVersion {
 			need(o.SrcPos, "COLLATION REFRESH VERSION", 15, "14.2")
 		}
 		if o.Rules != nil {
 			need(o.SrcPos, "COLLATION RULES (ICU tailoring)", 16, "14.2")
 		}
-	case *ir.ParameterPrivileges:
-		need(o.SrcPos, "PARAMETER PRIVILEGES", 15, "11.6")
-	case *ir.EventTrigger:
-		if strings.EqualFold(o.Event, "login") {
-			need(o.SrcPos, "EVENT TRIGGER ON login", 17, "14.1")
-		}
-	case *ir.Table:
-		if hasPrivilege(o.Grants, o.Revocations, "MAINTAIN") {
-			need(o.SrcPos, "MAINTAIN privilege", 17, "7.10")
-		}
 	}
 	return diags
+}
+
+// versionedFeature is a clause inside an opaque statement body and the
+// PostgreSQL major version that introduced it.
+type versionedFeature struct {
+	construct string
+	version   int
+}
+
+// publicationFeatures lists the version-gated clauses in a CREATE
+// PUBLICATION statement (RFC Section 13.1). A body that doesn't parse has
+// none; the compiler has already rejected it.
+func publicationFeatures(body string) []versionedFeature {
+	res, err := pg_query.Parse(body)
+	if err != nil || len(res.Stmts) != 1 {
+		return nil
+	}
+	stmt := res.Stmts[0].Stmt.GetCreatePublicationStmt()
+	if stmt == nil {
+		return nil
+	}
+	var out []versionedFeature
+	seen := map[string]bool{}
+	add := func(construct string, version int) {
+		if !seen[construct] {
+			seen[construct] = true
+			out = append(out, versionedFeature{construct, version})
+		}
+	}
+	for _, obj := range stmt.Pubobjects {
+		spec := obj.GetPublicationObjSpec()
+		if spec == nil {
+			continue
+		}
+		switch spec.Pubobjtype {
+		case pg_query.PublicationObjSpecType_PUBLICATIONOBJ_TABLES_IN_SCHEMA,
+			pg_query.PublicationObjSpecType_PUBLICATIONOBJ_TABLES_IN_CUR_SCHEMA:
+			add("publication FOR TABLES IN SCHEMA", 15)
+		}
+		if t := spec.GetPubtable(); t != nil {
+			if len(t.Columns) > 0 {
+				add("publication column list", 15)
+			}
+			if t.WhereClause != nil {
+				add("publication row filter (WHERE)", 15)
+			}
+		}
+	}
+	for _, opt := range stmt.Options {
+		if d := opt.GetDefElem(); d != nil && strings.EqualFold(d.Defname, "publish_generated_columns") {
+			add("publication option publish_generated_columns", 18)
+		}
+	}
+	return out
+}
+
+// subscriptionOptionVersions maps CREATE SUBSCRIPTION options newer than
+// PostgreSQL 14 to the version that introduced them.
+var subscriptionOptionVersions = map[string]int{
+	"two_phase":         15,
+	"disable_on_error":  15,
+	"origin":            16,
+	"run_as_owner":      16,
+	"password_required": 16,
+	"failover":          17,
+}
+
+// defElemWord returns an option value written as a quoted string or a bare
+// word (which PostgreSQL parses as a type name), or "".
+func defElemWord(arg *pg_query.Node) string {
+	if arg == nil {
+		return ""
+	}
+	if sv := arg.GetString_(); sv != nil {
+		return sv.Sval
+	}
+	if tn := arg.GetTypeName(); tn != nil && len(tn.Names) == 1 {
+		if sv := tn.Names[0].GetString_(); sv != nil {
+			return sv.Sval
+		}
+	}
+	return ""
+}
+
+// subscriptionFeatures lists the version-gated options in a CREATE
+// SUBSCRIPTION statement (RFC Section 13.2).
+func subscriptionFeatures(body string) []versionedFeature {
+	res, err := pg_query.Parse(body)
+	if err != nil || len(res.Stmts) != 1 {
+		return nil
+	}
+	stmt := res.Stmts[0].Stmt.GetCreateSubscriptionStmt()
+	if stmt == nil {
+		return nil
+	}
+	var out []versionedFeature
+	for _, opt := range stmt.Options {
+		d := opt.GetDefElem()
+		if d == nil {
+			continue
+		}
+		name := strings.ToLower(d.Defname)
+		if v, ok := subscriptionOptionVersions[name]; ok {
+			out = append(out, versionedFeature{"subscription option " + name, v})
+		}
+		if name == "streaming" && strings.EqualFold(defElemWord(d.Arg), "parallel") {
+			out = append(out, versionedFeature{"subscription option streaming = parallel", 16})
+		}
+	}
+	return out
 }
 
 // checkConcurrentlyOnNewRelation implements the concurrently-new-table
