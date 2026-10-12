@@ -834,13 +834,14 @@ default_schema = "public"
    specification's own floor (PostgreSQL 14) and is never gated,
    regardless of `min_pg_version`.
 
-   **Coverage:** the rule MUST check at least collation `REFRESH
-   VERSION` and `RULES`, `PARAMETER PRIVILEGES`, the event trigger
-   `login` event, and the `MAINTAIN` privilege.  The other minimum
-   versions in Appendix F are informative: PostgreSQL itself rejects
-   those constructs when the migration runs against an older server.
-
----
+   **Coverage:** the rule MUST check every declared construct that has
+   a value in Appendix F's `Min PG Version` column, except rows marked
+   *(on change)*.  Those are statements DPG emits only to apply a
+   particular change to an object that already exists (for example
+   `ALTER COLUMN ... SET EXPRESSION`); nothing in the source shows them,
+   so PostgreSQL itself rejects them when the migration runs against an
+   older server.  SQL inside expressions and bodies (view queries,
+   function bodies, `DEFAULT` and `CHECK` expressions) is not checked.
 
 ---
 
@@ -1745,20 +1746,21 @@ preferred-json-format-dir = "PREFERRED" WSP "JSON" WSP "FORMAT" WSP
        ```sql
        VIRTUAL TYPE label AS text;
        VIRTUAL TYPE metric AS numeric;
-       VIRTUAL TYPE named_point AS point;        -- references virtual type "point"
-       VIRTUAL TYPE tags AS text[];              -- array form
+       VIRTUAL TYPE location AS point;           -- PostgreSQL's point type
+       VIRTUAL TYPE tags AS label[];             -- a JSON array of label values
        ```
 
    -   **Composite** — an inline record with named, typed fields.
        Field types MAY themselves be virtual type references:
 
        ```sql
-       VIRTUAL TYPE point AS (x float8, y float8);
+       VIRTUAL TYPE coordinate AS (x float8, y float8);
 
        VIRTUAL TYPE line_item AS (
            sku      text,
            quantity integer,
-           price    numeric
+           price    numeric,
+           tags     label[]
        );
        ```
 
@@ -1786,13 +1788,48 @@ preferred-json-format-dir = "PREFERRED" WSP "JSON" WSP "FORMAT" WSP
    );
    ```
 
-   Adding `[]` to the reference signals a JSON array column and causes
-   DPG to emit `jsonb[]` instead of `jsonb`.
+   **Arrays.**  `[]` means an array of the type it follows, in the
+   position where it is written:
+
+   -   Inside a virtual type body, `T[]` is a JSON array whose elements
+       are `T` values (`tags label[]` above).
+   -   On a column or composite attribute, `T[]` is a PostgreSQL array,
+       as it is for every other type: `items line_item[]` is a `jsonb[]`
+       column, and each element is one `line_item` value.  A column that
+       holds a single JSON array uses a virtual type whose body is the
+       array (`VIRTUAL TYPE line_items AS line_item[];`, then `items
+       line_items`, a `jsonb` column).
+
+   **Name resolution.**  A virtual type shares PostgreSQL's type
+   namespace, so a type name in DPG source never means two things:
+
+   -   A virtual type's name MUST NOT be a PostgreSQL built-in type name
+       (any type in `pg_catalog`, or a SQL spelling of one, such as
+       `integer` or `boolean`).  Its qualified name MUST NOT already be
+       used by a declared type (including a range's multirange type) or
+       by a table, view, materialized view, or foreign table, each of
+       which has a row type of the same name.  Either is error DPG-E044.
+       The same name in a different schema is not a conflict.
+   -   An unqualified type reference on a column, a composite attribute,
+       or inside a virtual type body names a virtual type when one of
+       that name exists in the referencing object's own schema, or else
+       in the database's `default_schema` (Section 3.4).  Otherwise it is
+       an ordinary PostgreSQL type name.  A schema-qualified reference
+       names exactly that schema's virtual type, if one exists.
+
+   **Logical type in the snapshot.**  The snapshot records the full
+   declared type of every column that uses a virtual type, for tools
+   such as client generators.  A column record holds `type` (the
+   `json`/`jsonb` type PostgreSQL stores) and `virtual_type` (the
+   schema-qualified reference as declared, for example
+   `"public.line_item[]"`).  Inside a virtual type record, every type
+   reference that names a virtual type carries `"virtual": true` and its
+   schema; any other reference names a PostgreSQL type (Section 16.3).
 
    **Rules:**
 
-   -   `VIRTUAL TYPE` MAY be schema-qualified; if unqualified it
-       defaults to `default_schema`.
+   -   `VIRTUAL TYPE` MAY be schema-qualified; an unqualified one belongs
+       to its schema scope, or else to `default_schema` (Section 4.4).
 
    -   No `CREATE TYPE`, `ALTER TYPE`, or `DROP TYPE` is EVER emitted
        for a virtual type.
@@ -2125,8 +2162,8 @@ enforced-clause = "ENFORCED" / "NOT ENFORCED"
 
    [PG] `NOT NULL ... NO INHERIT` (inline, or as a named table-level
    constraint, Section 7.3), `ENFORCED`/`NOT ENFORCED` on `CHECK` and
-   `FOREIGN KEY` (PostgreSQL 18+), and `ON DELETE`/`ON UPDATE SET
-   NULL`/`SET DEFAULT (col-list)` (PostgreSQL 15+) are PostgreSQL's own
+   `FOREIGN KEY` (PostgreSQL 18+), and `ON DELETE SET NULL`/`SET
+   DEFAULT (col-list)` (PostgreSQL 15+) are PostgreSQL's own
    clauses, passed through unchanged and diffed as part of the column or
    constraint definition.
 
@@ -2413,7 +2450,7 @@ col-block-directive
    |-----------|------------------------|
    | `COMMENT 'text'` | `COMMENT ON COLUMN t.c IS '...'` |
    | `STATISTICS n` | `ALTER TABLE t ALTER COLUMN c SET STATISTICS n` |
-   | `STATISTICS DEFAULT` (PostgreSQL 17+) | `ALTER TABLE t ALTER COLUMN c SET STATISTICS DEFAULT` |
+   | `STATISTICS DEFAULT` | `ALTER TABLE t ALTER COLUMN c SET STATISTICS -1` (resets to the default on every supported version) |
    | `COMPRESSION method` | `ALTER TABLE t ALTER COLUMN c SET COMPRESSION m` |
    | `STORAGE type` | `ALTER TABLE t ALTER COLUMN c SET STORAGE s` |
    | `DEPRECATED 'msg'` | `COMMENT ON COLUMN t.c IS '[DEPRECATED] msg'` |
@@ -2455,7 +2492,7 @@ col-block-directive
    |--------|-------------|--------|
    | `GENERATED ... AS (expr)` added where none existed | `ALTER TABLE t DROP COLUMN c; ALTER TABLE t ADD COLUMN c type GENERATED ALWAYS AS (expr) STORED\|VIRTUAL` (PostgreSQL has no in-place form for turning a plain column into a generated one) | `DESTRUCTIVE` (the column's prior values are discarded, not merely rewritten in place) |
    | `STORED`↔`VIRTUAL` changed, expression unchanged | Same drop-and-recreate as above (`SET EXPRESSION` cannot change the kind) | `DESTRUCTIVE` |
-   | Existing generated expression text changed, `STORED`/`VIRTUAL` kind unchanged | `ALTER TABLE t ALTER COLUMN c SET EXPRESSION AS (expr)` (PostgreSQL 18+) | `CAUTION` |
+   | Existing generated expression text changed, `STORED`/`VIRTUAL` kind unchanged | `ALTER TABLE t ALTER COLUMN c SET EXPRESSION AS (expr)` (PostgreSQL 17+) | `CAUTION` |
    | `GENERATED ... AS (expr)` removed, column kept (`STORED`) | `ALTER TABLE t ALTER COLUMN c DROP EXPRESSION IF EXISTS` | `SAFE` (freezes the column's current values, no rewrite) |
    | `GENERATED ... AS (expr)` removed, column kept (`VIRTUAL`) | Same drop-and-recreate as the "added" row above, re-adding the column as plain (PostgreSQL rejects `DROP EXPRESSION` for a `VIRTUAL` column) | `DESTRUCTIVE` (a `VIRTUAL` column has no stored value to freeze in the first place; the re-added column comes back `NULL`, not the last computed value) |
 
@@ -2660,8 +2697,8 @@ INDEXES {
    -   Writing `CONCURRENTLY` on an individual index emits
        `CREATE INDEX CONCURRENTLY`, a `CAUTION` non-transactional
        operation (emitted after `COMMIT`) — *except* for a
-       brand-new table's own indexes (see below), where it is silently
-       ignored.
+       brand-new table's own indexes (see below), where it has no effect
+       and the linter warns (`concurrently-new-table`, Section 19.1).
 
    -   Omitting `CONCURRENTLY` emits plain `CREATE INDEX` (transactional;
        Safety `CAUTION` for index additions on non-empty tables). There is
@@ -2675,7 +2712,8 @@ INDEXES {
        CONCURRENTLY` inside a transaction block. The compiler therefore
        forces these non-concurrent unconditionally — an explicit
        `CONCURRENTLY` on such an index has no effect until a later
-       migration adds the index to the now-existing table.
+       migration adds the index to the now-existing table.  The same
+       applies to a brand-new materialized view's indexes.
 
    **Index identity:** An index is uniquely identified by its name
    within a schema.  Two indexes with the same name but different
@@ -3375,6 +3413,12 @@ view-directive = owner-dir / comment-dir / renamed-from-dir
    MUST appear at the END of the query text, immediately before the
    terminating `;`, per PostgreSQL syntax.
 
+   [PG] `WITH [LOCAL | CASCADED] CHECK OPTION` is the view option
+   `check_option = local | cascaded`; PostgreSQL stores both spellings
+   identically, so DPG treats them as the same declaration.  A view
+   option written without a value (`WITH (security_barrier)`) means
+   `true`.
+
    Examples:
 
 ```sql
@@ -3415,7 +3459,8 @@ SCHEMA public {
    | Change | DDL emitted | Safety |
    |--------|-------------|--------|
    | New view | `CREATE VIEW ...` | `SAFE` |
-   | Query changed, same output column list | `CREATE OR REPLACE VIEW ...` | `SAFE` |
+   | Query changed, same output column list | `CREATE OR REPLACE VIEW name [WITH (options)] AS ...`, restating every declared option (PostgreSQL resets any it omits) | `SAFE` |
+   | View options changed (`WITH (...)` or check option), query unchanged | `ALTER VIEW name SET (...)` / `RESET (...)` | `CAUTION` |
    | Output column list changed (any way) | `DROP VIEW CASCADE; CREATE VIEW` | `DESTRUCTIVE` |
    | Owner changed | `ALTER VIEW name OWNER TO role` | `SAFE` |
    | Comment changed | `COMMENT ON VIEW name IS '...'` | `SAFE` |
@@ -5098,7 +5143,7 @@ SCHEMA public {
    | Change | DDL emitted | Safety |
    |--------|-------------|--------|
    | New statistics object | `CREATE STATISTICS ...` | `SAFE` |
-   | `statistics_target` changed | `ALTER STATISTICS name SET STATISTICS n` | `SAFE` |
+   | `statistics_target` changed | `ALTER STATISTICS name SET STATISTICS n` (`-1` to reset) | `SAFE` |
    | Column list or kinds changed | `DROP STATISTICS; CREATE STATISTICS` | `DESTRUCTIVE` |
    | Object removed | `DROP STATISTICS name` | `SAFE` |
 
@@ -5625,6 +5670,7 @@ Phase 10: Emission
 {
   "name": "email",
   "type": "text",
+  "virtual_type": null,
   "not_null": true,
   "default": null,
   "identity": null,
@@ -5640,7 +5686,10 @@ Phase 10: Emission
 ```
 
    `not_null` is `true` when the column IS `NOT NULL` — note the
-   inverted sense relative to a `nullable` field.  `identity` holds the
+   inverted sense relative to a `nullable` field.  `virtual_type` is set
+   only for a column declared with a virtual type (Section 5.6): the
+   schema-qualified reference, with any `[]`, while `type` holds the
+   stored `json`/`jsonb` type.  `identity` holds the
    string `"ALWAYS"` or `"BY DEFAULT"` (or `null`), not a nested object.
 
    **Constraint snapshot record:**
@@ -5735,11 +5784,23 @@ Phase 10: Emission
 ```json
 {
   "schema": "public",
-  "name": "user_state",
-  "body": "\"active\" | \"suspended\" | \"deleted\"",
+  "name": "line_item",
+  "body": {
+    "kind": "composite",
+    "fields": [
+      { "name": "sku",  "type": { "kind": "type_ref", "name": "text" } },
+      { "name": "tags", "type": { "kind": "type_ref", "schema": "public",
+                                  "name": "label", "array": true,
+                                  "virtual": true } }
+    ]
+  },
   "comment": null
 }
 ```
+
+   `body.kind` is `type_ref`, `composite` (with `fields`), or `union`
+   (with `members`, each itself a body).  `json_format` is omitted when
+   the virtual type uses the default, `jsonb`.
 
    **Grant record (used in all per-object grant arrays):**
 
@@ -6085,6 +6146,7 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_users_email ON public.users (email);
    | `CREATE TABLE ... PARTITION OF ...` | `SAFE` |
    | `ALTER TABLE ADD COLUMN ... [DEFAULT ...]` | `SAFE` |
    | `ALTER TABLE ADD COLUMN ... NOT NULL` with no `DEFAULT` | `CAUTION` (fails if the table has rows) |
+   | `ALTER TABLE ADD COLUMN` that rewrites the table (see below) | `CAUTION` |
    | `ALTER TABLE ALTER COLUMN TYPE` (implicit cast) | `CAUTION` |
    | `ALTER TABLE ALTER COLUMN TYPE ... USING` | `CAUTION` |
    | `ALTER TABLE ALTER COLUMN TYPE` (no implicit cast, no USING) | `DESTRUCTIVE` |
@@ -6122,6 +6184,25 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_users_email ON public.users (email);
    | `DROP SCHEMA CASCADE` | `DESTRUCTIVE` |
    | `DROP EXTENSION CASCADE` | `DESTRUCTIVE` |
    | `DROP ROLE` | `DESTRUCTIVE` |
+
+   **`ADD COLUMN` that rewrites the table.**  `ADD COLUMN` is `CAUTION`
+   when PostgreSQL must write a value into every existing row, which
+   rewrites the table under an `ACCESS EXCLUSIVE` lock:
+
+   -   an identity column, a `SERIAL`-family column (Section 10), or a
+       `STORED` generated column;
+   -   a `DEFAULT` that calls a volatile function;
+   -   a column whose type is a domain with a `NOT NULL` or `CHECK`
+       constraint.
+
+   A constant or non-volatile `DEFAULT` is stored in the catalog without
+   touching rows, and a `VIRTUAL` generated column is computed on read;
+   both stay `SAFE`.  Volatility is decided offline.  A built-in
+   function has its `pg_catalog` volatility (a name with any `VOLATILE`
+   overload counts as volatile).  A function declared in the project has
+   its declared volatility, `VOLATILE` when none is declared, as in
+   PostgreSQL.  Any other function has unknown volatility and counts as
+   volatile.
 
 ### 17.3. Execution Modes
 
@@ -6703,6 +6784,7 @@ Options:
    | `serial-sequence-declared` | A hand-declared `SEQUENCE` collides with the auto-managed sequence name for a `GENERATED ... AS IDENTITY` column or a `SERIAL`/`BIGSERIAL`/`SMALLSERIAL` column's owned sequence (`<table>_<column>_seq`) in the same desired state. | Warning |
    | `unnecessary-revocation` | A `REVOKES` entry names a (role, privilege) pair with no matching `GRANTS` entry in that *same object's own declaration*. | Warning |
    | `min-pg-version` | A declared construct requires a PostgreSQL major version newer than the project's effective `min_pg_version` (Section 3.8). | Warning |
+   | `concurrently-new-table` | An index declares `CONCURRENTLY` on a table or materialized view that is not in the snapshot, where it has no effect (Section 7.7). Checked only when a snapshot is loaded (`dpg plan`, `dpg apply`). | Warning |
    | `stale-renamed-from` | `RENAMED FROM` directive references a name not in the snapshot (DPG-E021). Detected while differencing; see below. | Error |
    | `unguarded-enum-removal` | An ENUM value is removed without a `MIGRATE REMOVE` block (DPG-E014). Detected while differencing; see below. | Error |
    | `protected-drop-attempt` | The diff would drop a `PROTECTED` object (DPG-E022). Detected while differencing; see below. | Error |
@@ -6832,7 +6914,7 @@ serial-sequence-declared      = "off"
 
    | Field | Change detection | DDL | Safety |
    |-------|-----------------|-----|--------|
-   | Columns (added) | New col name not in snapshot | `ALTER TABLE t ADD COLUMN c TYPE [DEFAULT ...]` | `SAFE` |
+   | Columns (added) | New col name not in snapshot | `ALTER TABLE t ADD COLUMN c TYPE [DEFAULT ...]` | `SAFE`; `CAUTION` when it rewrites the table (Section 17.2) |
    | Columns (dropped) | Col name in snapshot, absent in desired | `ALTER TABLE t DROP COLUMN c` | `DESTRUCTIVE` |
    | Column type changed | `TypeRef.String()` differs | `ALTER TABLE t ALTER COLUMN c TYPE newtype [USING expr]` | `CAUTION` or `DESTRUCTIVE` |
    | Column NOT NULL added | `nullable` false→true (was true in snap) | `ALTER TABLE t ALTER COLUMN c SET NOT NULL` | `CAUTION` |
@@ -6840,7 +6922,7 @@ serial-sequence-declared      = "off"
    | Column DEFAULT added | `default` was nil | `ALTER TABLE t ALTER COLUMN c SET DEFAULT expr` | `SAFE` |
    | Column DEFAULT changed | `default` text differs | `ALTER TABLE t ALTER COLUMN c SET DEFAULT expr` | `SAFE` |
    | Column DEFAULT removed | `default` is nil | `ALTER TABLE t ALTER COLUMN c DROP DEFAULT` | `SAFE` |
-   | Column statistics | `statistics_target` differs | `ALTER TABLE t ALTER COLUMN c SET STATISTICS n` (or `DEFAULT`, PG17+) | `SAFE` |
+   | Column statistics | `statistics_target` differs | `ALTER TABLE t ALTER COLUMN c SET STATISTICS n` (or `-1` to reset) | `SAFE` |
    | Column compression | `compression` differs | `ALTER TABLE t ALTER COLUMN c SET COMPRESSION m` | `SAFE` |
    | Column storage | `storage` differs | `ALTER TABLE t ALTER COLUMN c SET STORAGE s` | `SAFE` |
    | Column comment | `comment` differs | `COMMENT ON COLUMN t.c IS '...'` | `SAFE` |
@@ -7303,7 +7385,7 @@ serial-sequence-declared      = "off"
    | Columns — identity (`AS IDENTITY`) | Declared, Diffed | In `()` list |
    | Column `COMPRESSION` | Declared, Diffed | `COLUMN c { COMPRESSION m; }` |
    | Column `STORAGE` | Declared, Diffed | `COLUMN c { STORAGE s; }` |
-   | Column statistics targets | Declared, Diffed | `COLUMN c { STATISTICS n \| DEFAULT; }` — `DEFAULT` is PG17+ |
+   | Column statistics targets | Declared, Diffed | `COLUMN c { STATISTICS n \| DEFAULT; }` — `DEFAULT` is emitted as `-1` |
    | Column comments | Declared, Diffed | `COLUMN c { COMMENT '...'; }` |
    | Column `DEPRECATED` | Declared, Diffed | `COLUMN c { DEPRECATED '...'; }` |
    | Column `USING` (type change) | Declared, Diffed | `COLUMN c { USING expr; }` |
@@ -7317,7 +7399,7 @@ serial-sequence-declared      = "off"
    | `NOT VALID` / `VALIDATE CONSTRAINT` | Declared, Diffed | Multi-migration lifecycle; extended to `NOT NULL` constraints in PG18 (Section 7.3) |
    | `ENFORCED`/`NOT ENFORCED` (`CHECK`/`FOREIGN KEY`) | Declared, Diffed | PG18+ (Sections 7.2/7.3) |
    | Temporal keys (`WITHOUT OVERLAPS`/`PERIOD`) | Declared, Diffed | PG18+; references an existing range/multirange column, catalogued as an ordinary `PRIMARY KEY`/`UNIQUE`/`FOREIGN KEY`, not `EXCLUDE` (Section 7.3) |
-   | FK `ON DELETE`/`ON UPDATE SET NULL`/`SET DEFAULT (col-list)` | Declared, Diffed | PG15+, column-scoped variant of the existing bare form (Section 7.2) |
+   | FK `ON DELETE SET NULL`/`SET DEFAULT (col-list)` | Declared, Diffed | PG15+, column-scoped variant of the existing bare form (Section 7.2) |
    | Indexes — all access methods | Declared, Diffed | btree, hash, gin, gist, brin, spgist, bloom |
    | Indexes — partial | Declared, Diffed | `WHERE` predicate as text |
    | Indexes — expression | Declared, Diffed | Expression as text |
@@ -7863,6 +7945,7 @@ WITH NO DATA {
    | DPG-E041 | `invalid_config_kind` | A `dpg.toml` has no `kind`, an unknown `kind`, a `kind` that does not match how it is loaded, or `kind = "root"` below the project root (Section 3.1). |
    | DPG-E042 | `unresolved_database_cluster` | A database is not inside a cluster directory and sets no `parent`, or its `parent` does not resolve to a cluster directory inside the project, or contradicts the cluster directory it is inside (Sections 3.1, 3.4). |
    | DPG-E043 | `nested_scope_directory` | A cluster directory is inside another cluster or database directory, or a database directory is inside another database directory (Section 3.1). |
+   | DPG-E044 | `virtual_type_name_conflict` | A `VIRTUAL TYPE` is named after a PostgreSQL built-in type, or its qualified name is already used by a declared type or relation (Section 5.6). |
 
 ---
 
@@ -8190,8 +8273,8 @@ TYPE user_status AS ENUM ('active', 'inactive', 'banned') {
 
    **Emitted DDL:** `CREATE TABLE` and `ADD COLUMN` write the shorthand
    keyword and omit `NOT NULL` and `DEFAULT`, which PostgreSQL creates
-   itself.  `ADD COLUMN` of such a column is `SAFE`, like an identity
-   column.
+   itself.  `ADD COLUMN` of such a column is `CAUTION`, like an identity
+   column, because filling it rewrites the table (Section 17.2).
 
    **Introspection:** a column is read back as `SERIAL`-family when it
    is an integer column whose default is `nextval()` on a sequence the
@@ -8257,9 +8340,10 @@ TYPE user_status AS ENUM ('active', 'inactive', 'banned') {
    `min_pg_version`.  A value means the construct requires at least
    that PostgreSQL major version; a value with a parenthetical
    qualifies which part of a Mixed row's construct the gate applies to
-   when the row's other part is floor-14.  A non-blank cell documents the
-   PostgreSQL version requirement.  Which of these the
-   `min-pg-version` rule checks is specified in Section 3.8.
+   when the row's other part is floor-14.  *(on change)* marks a
+   statement DPG emits only to change an existing object, not a
+   construct written in source.  Which of these the `min-pg-version`
+   rule checks is specified in Section 3.8.
 
    | Section | Construct | Classification | Min PG Version | Notes |
    |---|---|---|---|---|
@@ -8278,6 +8362,8 @@ TYPE user_status AS ENUM ('active', 'inactive', 'banned') {
    | Section 7.1 | `TABLESPACE` | PGSpecific | — | No standard tablespace concept. |
    | Section 7.1 | `INHERITS` | PGSpecific | — | PostgreSQL table inheritance; not in the standard. |
    | Section 7.1 | `UNLOGGED` | PGSpecific | — | PostgreSQL crash-safety trade-off, no standard equivalent. |
+   | Section 7.1 | `USING method` (table access method) | PGSpecific | 17 (partitioned tables only) | Floor-14 on an ordinary table. |
+   | Section 7.11 | `ALTER TABLE ... SET ACCESS METHOD` | PGSpecific | 15 (on change; `DEFAULT` form 17) | Emitted when a table's declared access method changes. |
    | Section 7.2 | Generated columns (`GENERATED ALWAYS AS ... STORED`) | Standard | — | SQL:2003 generated columns. |
    | Section 7.2 | Generated columns (`GENERATED ALWAYS AS ... VIRTUAL`) | Standard | 18 | SQL:2003 generated columns also standardize `VIRTUAL`; PostgreSQL only implemented the `STORED` variant until PostgreSQL 18 added this one. |
    | Section 7.2 | Identity columns (`GENERATED ... AS IDENTITY`) | Standard | — | SQL:2003 identity columns. |
@@ -8287,10 +8373,15 @@ TYPE user_status AS ENUM ('active', 'inactive', 'banned') {
    | Section 7.2 | `NOT VALID`/`VALIDATE CONSTRAINT` | PGSpecific | — | PostgreSQL's incremental constraint-validation lifecycle. |
    | Section 7.2 | `NOT NULL ... NO INHERIT` | PGSpecific | 18 | Extends the pre-existing `CHECK ... NO INHERIT` modifier (floor-14 PGSpecific) to `NOT NULL` constraints for the first time. |
    | Section 7.2 | `ENFORCED`/`NOT ENFORCED` (`CHECK`/`FOREIGN KEY`) | PGSpecific | 18 | PostgreSQL's own catalog-recorded-but-unchecked constraint mode; no SQL-standard citation for this exact clause. |
-   | Section 7.2 | FK `ON DELETE`/`ON UPDATE SET NULL`/`SET DEFAULT (col-list)` | PGSpecific | 15 | Column-scoped refinement of the standard bare `SET NULL`/`SET DEFAULT` form (the bare form is covered by the `CREATE TABLE` core row above); the column-list itself has no SQL-standard equivalent. |
+   | Section 7.2 | FK `ON DELETE SET NULL`/`SET DEFAULT (col-list)` | PGSpecific | 15 | Column-scoped refinement of the standard bare `SET NULL`/`SET DEFAULT` form (the bare form is covered by the `CREATE TABLE` core row above); the column-list itself has no SQL-standard equivalent. |
    | Section 7.3 | Table-level named `NOT NULL` constraint | Standard | 18 | PostgreSQL 18 gave `NOT NULL` the same named, catalogued constraint treatment `CHECK`/`PRIMARY KEY`/`UNIQUE`/`FOREIGN KEY` already had; additive to the pre-existing inline column-level form (Section 7.2 row above), not a replacement. |
+   | Sections 7.2-7.3, 7.7 | `UNIQUE ... NULLS NOT DISTINCT` (constraint or index) | Standard | 15 | SQL:2023 null treatment for unique constraints (feature F292). |
+   | Section 7.3 | `NOT VALID` on a `NOT NULL` constraint | PGSpecific | 18 | Extends the existing `NOT VALID` lifecycle to `NOT NULL` constraints. |
+   | Section 7.3 | `ALTER CONSTRAINT ... [NO] INHERIT` | PGSpecific | 18 (on change) | Emitted when only a `NOT NULL` constraint's `NO INHERIT` changes. |
+   | Section 7.3 | `EXCLUDE` constraint on a partitioned table | PGSpecific | 17 | Exclusion constraints themselves are floor-14 (Section 7.2 row above). |
    | Section 7.3 | Temporal keys (`WITHOUT OVERLAPS`/`PERIOD`, incl. temporal `FOREIGN KEY`) | Mixed | 18 | SQL:2011 standardizes temporal `PRIMARY KEY`/`UNIQUE`; PostgreSQL enforces it via an exclusion search under the hood while keeping the constraint catalogued as an ordinary `PRIMARY KEY`/`UNIQUE`/`FOREIGN KEY` — the concept is standard, the grammar and mechanism are PostgreSQL's own dialect. |
-   | Section 7.4 | Column `STATISTICS n` / `STATISTICS DEFAULT` | PGSpecific | 17 (`DEFAULT` keyword only; numeric target is floor-14) | Planner statistics-target tuning; no standard equivalent. |
+   | Section 7.4 | Column `STATISTICS n` / `STATISTICS DEFAULT` | PGSpecific | — | Planner statistics-target tuning; no standard equivalent.  `DEFAULT` is emitted as `SET STATISTICS -1`, which every supported version accepts. |
+   | Section 7.4 | `ALTER COLUMN ... SET EXPRESSION` | PGSpecific | 17 (on change) | Emitted when a generated column's expression changes and its `STORED`/`VIRTUAL` kind does not. |
    | Section 7.7 | `CREATE INDEX` core | Mixed | — | Indexes exist informally across all vendors but are not in ISO/IEC 9075 at all — classified PGSpecific as a whole (see next row), since "index" is not a standard DDL concept, only a near-universal vendor extension. |
    | Section 7.7 | `CREATE INDEX` (all forms: access methods, partial, expression, covering, opclass) | PGSpecific | — | No SQL-standard `CREATE INDEX` statement exists; every vendor's index DDL is proprietary. |
    | Section 7.8 | `ROW LEVEL SECURITY`/`CREATE POLICY` | PGSpecific | — | No standard row-security mechanism. |
@@ -8303,7 +8394,7 @@ TYPE user_status AS ENUM ('active', 'inactive', 'banned') {
    | Section 7.12 | `UNLOGGED TABLE` | PGSpecific | — | See Section 7.1 row. |
    | Section 7.12 | `CREATE FOREIGN TABLE` | Standard | — | SQL/MED (ISO/IEC 9075-9) standardizes foreign tables; PostgreSQL's FDW mechanism implements it. |
    | Section 7.13 | `PARTITION BY`/`PARTITION OF` | Standard | — | SQL:2016 adds declarative partitioning as a standard concept, though exact grammar varies by vendor; PostgreSQL's own syntax is a PG-specific dialect of a standardized concept — classified Mixed in spirit, PGSpecific in literal grammar. |
-   | Section 7.3 | `DROP CONSTRAINT ... ONLY` on a partitioned table (partition-local constraint declaration) | PGSpecific | 18 | PostgreSQL's own declarative-partitioning constraint-inheritance mechanism; no standard concept of detaching a constraint from a partitioned parent while it stays local to existing partitions. |
+   | Section 7.3 | `DROP CONSTRAINT ... ONLY` on a partitioned table (partition-local constraint declaration) | PGSpecific | 18 (on change) | PostgreSQL's own declarative-partitioning constraint-inheritance mechanism; no standard concept of detaching a constraint from a partitioned parent while it stays local to existing partitions. |
    | Section 8 | `CREATE VIEW` | Standard | — | Core SQL. |
    | Section 8 | `CREATE MATERIALIZED VIEW` | PGSpecific | — | Materialized views are a common vendor extension, not in ISO/IEC 9075. |
    | Section 8 | `RECURSIVE VIEW`/`WITH RECURSIVE` | Standard | — | SQL:1999+ recursive query support. |
@@ -8315,11 +8406,12 @@ TYPE user_status AS ENUM ('active', 'inactive', 'banned') {
    | Section 9.3 | `CREATE PROCEDURE` | Standard | — | SQL/PSM standardizes procedures distinct from functions. |
    | Section 9.4 | `CREATE AGGREGATE` | PGSpecific | — | User-defined aggregates with this declaration shape (`SFUNC`/`STYPE`/etc.) are PostgreSQL-specific; the standard has no equivalent `CREATE AGGREGATE`. |
    | Section 10 | `CREATE SEQUENCE` | Standard | — | SQL:2003+ standardizes sequences (`AS`/`INCREMENT`/`MINVALUE`/`MAXVALUE`/`START`/`CACHE`/`CYCLE` are all standard clauses). |
+   | Section 10 | `UNLOGGED SEQUENCE` | PGSpecific | 15 | PostgreSQL crash-safety trade-off, no standard equivalent. |
    | Section 10 | `OWNED BY` | PGSpecific | — | PostgreSQL's sequence-to-column ownership link has no standard equivalent. |
    | Section 11.1 | `CREATE ROLE`/`CREATE USER` core (`LOGIN`, `PASSWORD`) | Standard | — | SQL standardizes authorization identifiers, though PostgreSQL's unified role model (merging users and groups) is its own design. |
    | Section 11.1 | `SUPERUSER`/`CREATEDB`/`CREATEROLE`/`REPLICATION`/`BYPASSRLS`/`CONNECTION LIMIT` | PGSpecific | — | PostgreSQL-specific role attributes. |
    | Section 11.2 | `GRANT`/`REVOKE` core | Standard | — | Core SQL privilege model. |
-   | Section 7.10 | `MAINTAIN` privilege | PGSpecific | 17 | PostgreSQL-specific privilege covering VACUUM/ANALYZE/CLUSTER/REINDEX. |
+   | Section 7.10 | `MAINTAIN` privilege | PGSpecific | 17 | PostgreSQL-specific privilege covering VACUUM/ANALYZE/CLUSTER/REINDEX; gated on tables, columns, views, materialized views, and default privileges. |
    | Section 11.1 | Role membership (`GRANT role TO role`, `WITH ADMIN OPTION`/`WITH INHERIT`/`WITH SET`) | Mixed | 16 (`WITH INHERIT`/`WITH SET` only) | Standard SQL has roles and role grants; `WITH ADMIN OPTION` is standard and floor-14, `WITH INHERIT`/`WITH SET` are PostgreSQL-specific refinements of role-attribute inheritance. |
    | Section 11.4 | `ALTER DEFAULT PRIVILEGES` | PGSpecific | — | No standard mechanism for privilege templates applied to not-yet-created objects. |
    | Section 11.5 | Owner impersonation (`SET ROLE`/`RESET ROLE`) | Standard | — | SQL standardizes `SET ROLE`; PostgreSQL's specific creator-attribution semantics this section documents are PostgreSQL's own catalog behavior. |
@@ -8327,10 +8419,16 @@ TYPE user_status AS ENUM ('active', 'inactive', 'banned') {
    | Section 12.1 | `CREATE TEXT SEARCH CONFIGURATION`/`MAPPING FOR ... WITH ...` | PGSpecific | — | PostgreSQL full-text search is entirely proprietary. |
    | Sections 12.2-12.4 | Text Search Dictionary/Parser/Template | PGSpecific | — | Same as above. |
    | Section 13.1 | `CREATE PUBLICATION` | PGSpecific | — | PostgreSQL's own logical-replication publish/subscribe model. |
+   | Section 13.1 | Publication `FOR TABLES IN SCHEMA`, per-table column lists, per-table `WHERE` row filters | PGSpecific | 15 | |
+   | Section 13.1 | Publication option `publish_generated_columns` | PGSpecific | 18 | |
    | Section 13.2 | `CREATE SUBSCRIPTION` | PGSpecific | — | Same. |
+   | Section 13.2 | Subscription options `two_phase`, `disable_on_error` | PGSpecific | 15 | |
+   | Section 13.2 | Subscription options `origin`, `run_as_owner`, `password_required`, `streaming = parallel` | PGSpecific | 16 | |
+   | Section 13.2 | Subscription option `failover` | PGSpecific | 17 | |
    | Section 14.1 | `CREATE EVENT TRIGGER` | PGSpecific | — | No standard DDL-event trigger mechanism. |
    | Section 14.1 | Event Trigger `login` event | PGSpecific | 17 | One value of the `ON <event>` clause's event-type enum; every other value (`ddl_command_start`/`ddl_command_end`/`table_rewrite`/`sql_drop`) is floor-14. |
    | Section 14.2 | `CREATE COLLATION` | Standard | — | SQL:2003+ standardizes collations; PostgreSQL's ICU/libc provider mechanism is its own extension of the standard concept. |
+   | Section 14.2 | Collation `PROVIDER = builtin` | PGSpecific | 17 | PostgreSQL's own built-in collation provider. |
    | Section 14.2 | Collation `REFRESH VERSION` | PGSpecific | 15 | Updates the catalog's recorded collation-provider version; no standard equivalent. |
    | Section 14.2 | Collation `RULES` (ICU tailoring) | PGSpecific | 16 | PostgreSQL's own ICU collation-tailoring integration; no standard equivalent. |
    | Section 14.3 | `CREATE CAST` | Standard | — | SQL standardizes user-defined casts (`CREATE CAST`), though PostgreSQL's `WITH FUNCTION`/`WITHOUT FUNCTION`/`WITH INOUT` grammar has PostgreSQL-specific shorthand forms. |
