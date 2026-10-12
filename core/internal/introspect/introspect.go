@@ -1971,17 +1971,15 @@ ORDER  BY n.nspname, c.relname`
 			Recursive:    strings.HasPrefix(q, "WITH RECURSIVE"),
 			WithNoData:   materialized && withNoData,
 		}
-		// Tablespace/StorageParams (RFC Section 8.2) are only meaningful for
-		// a materialized view — real PostgreSQL rejects both on a plain
-		// view (pg_class.reltablespace/reloptions are always 0/NULL there
-		// anyway, so this guard is belt-and-suspenders, matching
-		// ir.View.Tablespace's doc comment).
+		// reloptions holds a materialized view's storage parameters
+		// (Section 8.2) or a plain view's options, check_option included
+		// (Section 8.1). Only a materialized view has a tablespace.
 		if materialized {
 			v.Tablespace = tablespace
-			for _, kv := range reloptions {
-				if k, val, ok := strings.Cut(kv, "="); ok {
-					v.StorageParams = append(v.StorageParams, pipeline.StorageParam{Key: k, Value: val})
-				}
+		}
+		for _, kv := range reloptions {
+			if k, val, ok := strings.Cut(kv, "="); ok {
+				v.StorageParams = append(v.StorageParams, pipeline.StorageParam{Key: k, Value: val})
 			}
 		}
 		viewIdx[schema+"."+name] = v

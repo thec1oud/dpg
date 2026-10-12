@@ -993,7 +993,17 @@ func renderObjectDPGWithRoleInheritDefaults(b *strings.Builder, obj pipeline.IRO
 			viewKW = kw("MATERIALIZED") + " " + kw("VIEW")
 		}
 		fmt.Fprintf(b, "\n%s %s", viewKW, quoteIdentIfNeeded(o.Name))
-		if o.Materialized && len(o.StorageParams) > 0 {
+		if len(o.Columns) > 0 {
+			b.WriteString(" (")
+			for i, c := range o.Columns {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				b.WriteString(quoteIdentIfNeeded(c))
+			}
+			b.WriteString(")")
+		}
+		if len(o.StorageParams) > 0 {
 			fmt.Fprintf(b, " %s (", kw("WITH"))
 			for i, p := range o.StorageParams {
 				if i > 0 {

@@ -578,6 +578,9 @@ type SnapView struct {
 	Indexes        []SnapIndex         `json:"indexes,omitempty"`
 	SecurityLabels []SnapSecurityLabel `json:"security_labels,omitempty"`
 	NameMaps       []SnapNameMapEntry  `json:"name_maps,omitempty"`
+	// Columns is the view's column-name list when the query can't carry
+	// it as aliases (ir.View.Columns).
+	Columns []string `json:"columns,omitempty"`
 }
 
 type SnapFunction struct {

@@ -4213,6 +4213,36 @@ func diffColRevocationSet(tbl, col string, snapRevs []snapshot.SnapGrant, desire
 	return ops
 }
 
+// viewHead renders a view's name, column-name list and WITH (...) options,
+// the part of CREATE [OR REPLACE] VIEW between VIEW and AS.
+func viewHead(o *ir.View) string {
+	var b strings.Builder
+	b.WriteString(qualIdent(o.Schema, o.Name))
+	if len(o.Columns) > 0 {
+		b.WriteString(" (")
+		for i, c := range o.Columns {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(quoteIdent(c))
+		}
+		b.WriteString(")")
+	}
+	if len(o.StorageParams) > 0 {
+		b.WriteString(" WITH (")
+		for i, p := range o.StorageParams {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(p.Key)
+			b.WriteString("=")
+			b.WriteString(p.Value)
+		}
+		b.WriteString(")")
+	}
+	return b.String()
+}
+
 func createView(o *ir.View) []pipeline.DiffOp {
 	var b strings.Builder
 	b.WriteString("CREATE ")
@@ -4231,19 +4261,7 @@ func createView(o *ir.View) []pipeline.DiffOp {
 	// query, not one already wrapped in WITH RECURSIVE, and additionally
 	// requires an explicit column list DPG doesn't track separately from Query.
 	b.WriteString("VIEW ")
-	b.WriteString(qualIdent(o.Schema, o.Name))
-	if o.Materialized && len(o.StorageParams) > 0 {
-		b.WriteString(" WITH (")
-		for i, p := range o.StorageParams {
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			b.WriteString(p.Key)
-			b.WriteString("=")
-			b.WriteString(p.Value)
-		}
-		b.WriteString(")")
-	}
+	b.WriteString(viewHead(o))
 	if o.Materialized && o.Tablespace != nil {
 		b.WriteString(" TABLESPACE ")
 		b.WriteString(quoteIdent(*o.Tablespace))
@@ -6596,7 +6614,11 @@ func diffView(o *ir.View, snap *snapshot.SnapView) ([]pipeline.DiffOp, error) {
 
 	// Recursive flag change or a materialized view query change requires DROP + CREATE
 	// because PG has no in-place ALTER for these.
-	if snap.Recursive != o.Recursive ||
+	// A column list is only kept for a query with `*` (ir.View.Columns).
+	// The live catalog can't show one, so a snapshot read from it has
+	// none; only a list the snapshot does record is compared.
+	columnsChanged := snap.Columns != nil && !slices.Equal(o.Columns, snap.Columns)
+	if snap.Recursive != o.Recursive || columnsChanged ||
 		(o.Materialized && normalizeWS(o.Query) != normalizeWS(snap.Query)) {
 		ops = append(ops, destructiveOp(fmt.Sprintf("DROP %s IF EXISTS %s;", viewKind, tbl), pos))
 		ops = append(ops, createView(o)...)
@@ -6621,7 +6643,11 @@ func diffView(o *ir.View, snap *snapshot.SnapView) ([]pipeline.DiffOp, error) {
 			ops = append(ops, createView(o)...)
 			return ops, nil
 		}
-		ops = append(ops, safeOp(fmt.Sprintf("CREATE OR REPLACE VIEW %s AS %s;", tbl, o.Query), pos))
+		// CREATE OR REPLACE VIEW resets every view option it doesn't
+		// restate, so it carries the desired WITH (...) list.
+		ops = append(ops, safeOp(fmt.Sprintf("CREATE OR REPLACE VIEW %s AS %s;", viewHead(o), o.Query), pos))
+	} else if !o.Materialized {
+		ops = append(ops, diffStorageParamsSetReset("ALTER VIEW", tbl, o.StorageParams, snap.StorageParams, pos)...)
 	}
 
 	if o.Materialized && snap.WithNoData != o.WithNoData {

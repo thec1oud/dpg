@@ -51,10 +51,10 @@ VIEW secure_user_view WITH (security_barrier = true) AS
 ```
 
 ```sql
-CREATE OR REPLACE VIEW "public"."secure_user_view"
-    WITH (security_barrier = true) AS
-    SELECT id, email FROM users WHERE tenant_id = current_tenant();
+CREATE VIEW "public"."secure_user_view" WITH (security_barrier=true) AS SELECT id, email FROM users WHERE tenant_id = current_tenant();
 ```
+
+`security_invoker` works the same way. An option written without a value, such as `WITH (security_barrier)`, means `true`.
 
 ## View with `WITH CHECK OPTION`
 
@@ -65,10 +65,10 @@ VIEW active_orders AS
 ```
 
 ```sql
-CREATE OR REPLACE VIEW "public"."active_orders" AS
-    SELECT * FROM orders WHERE status != 'cancelled'
-    WITH LOCAL CHECK OPTION;
+CREATE VIEW "public"."active_orders" WITH (check_option=local) AS SELECT * FROM orders WHERE status <> 'cancelled';
 ```
+
+PostgreSQL stores `WITH [LOCAL | CASCADED] CHECK OPTION` as the view option `check_option`, so DPG writes it that way. Writing `WITH (check_option = local)` yourself means the same thing.
 
 ## View with grants and comment
 
@@ -92,5 +92,6 @@ GRANT SELECT ON "public"."admin_summary" TO "app_readonly";
 
 | Change | SQL emitted | Safety |
 |--------|-------------|--------|
-| Query body changes; output column list unchanged | `CREATE OR REPLACE VIEW` | `SAFE` |
+| Query body changes; output column list unchanged | `CREATE OR REPLACE VIEW`, restating the view's options (PostgreSQL resets any it omits) | `SAFE` |
+| View options or check option change; query unchanged | `ALTER VIEW ... SET (...)` / `RESET (...)` | `CAUTION` |
 | Output column list changes in any way | `DROP VIEW CASCADE` then `CREATE VIEW` | `DESTRUCTIVE` |

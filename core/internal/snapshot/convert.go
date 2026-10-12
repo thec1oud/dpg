@@ -887,6 +887,7 @@ func toSnapView(o *ir.View) *SnapView {
 		WithNoData:    o.WithNoData,
 		Tablespace:    o.Tablespace,
 		StorageParams: flattenParams(o.StorageParams),
+		Columns:       o.Columns,
 	}
 	for _, g := range o.Grants {
 		sv.Grants = append(sv.Grants, toSnapGrant(g))

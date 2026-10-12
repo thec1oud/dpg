@@ -1550,6 +1550,16 @@ func (b *Builder) buildView(vs *pg_query.ViewStmt, block pipeline.BlockAST, pos 
 		Recursive:    recursive,
 		SrcPos:       pos,
 	}
+	if cols := nodeListToNames(vs.Aliases); len(cols) > 0 && !foldViewColumnNames(vs.Query, cols) {
+		v.Columns = cols
+	}
+	v.StorageParams = viewOptions(vs.Options)
+	switch vs.WithCheckOption {
+	case pg_query.ViewCheckOption_LOCAL_CHECK_OPTION:
+		v.StorageParams = setViewOption(v.StorageParams, "check_option", "local")
+	case pg_query.ViewCheckOption_CASCADED_CHECK_OPTION:
+		v.StorageParams = setViewOption(v.StorageParams, "check_option", "cascaded")
+	}
 	// Deparse the view query as a full statement, not as a subexpression.
 	if vs.Query != nil {
 		pr := &pg_query.ParseResult{Stmts: []*pg_query.RawStmt{{Stmt: vs.Query}}}
@@ -1587,6 +1597,90 @@ func (b *Builder) buildView(vs *pg_query.ViewStmt, block pipeline.BlockAST, pos 
 	return v, nil
 }
 
+// foldViewColumnNames applies a view's column-name list to its query as
+// target-list aliases, the form PostgreSQL's own pg_get_viewdef shows, so
+// the stored query compares equal to the live one. A set operation takes
+// its names from its leftmost branch. An alias equal to a plain column
+// reference's own name is left off, as pg_get_viewdef does. Returns false,
+// changing nothing, when the names can't be placed by position: a `*` in
+// the target list, a VALUES list, or more names than output columns.
+func foldViewColumnNames(query *pg_query.Node, cols []string) bool {
+	sel := query.GetSelectStmt()
+	for sel != nil && sel.Op != pg_query.SetOperation_SETOP_NONE {
+		sel = sel.Larg
+	}
+	if sel == nil || len(sel.ValuesLists) > 0 || len(cols) > len(sel.TargetList) {
+		return false
+	}
+	for _, t := range sel.TargetList {
+		if cr := t.GetResTarget().GetVal().GetColumnRef(); cr != nil {
+			for _, f := range cr.Fields {
+				if f.GetAStar() != nil {
+					return false
+				}
+			}
+		}
+	}
+	for i, name := range cols {
+		rt := sel.TargetList[i].GetResTarget()
+		rt.Name = name
+		if cr := rt.GetVal().GetColumnRef(); cr != nil {
+			if parts := nodeListToNames(cr.Fields); len(parts) > 0 && parts[len(parts)-1] == name {
+				rt.Name = ""
+			}
+		}
+	}
+	return true
+}
+
+// viewOptions converts a plain view's WITH (...) list. A bare option name
+// means true, as in PostgreSQL. Values written as bare words (local,
+// cascaded) are parsed by PostgreSQL as type names, so they are read by
+// name rather than deparsed.
+func viewOptions(options []*pg_query.Node) []pipeline.StorageParam {
+	var params []pipeline.StorageParam
+	for _, opt := range options {
+		de := opt.GetDefElem()
+		if de == nil {
+			continue
+		}
+		params = append(params, pipeline.StorageParam{Key: de.Defname, Value: defElemValue(de.Arg)})
+	}
+	return params
+}
+
+// defElemValue renders an option value the way PostgreSQL stores it in
+// reloptions: "true" for a bare option, otherwise the value's text.
+func defElemValue(arg *pg_query.Node) string {
+	switch {
+	case arg == nil:
+		return "true"
+	case arg.GetString_() != nil:
+		return arg.GetString_().Sval
+	case arg.GetTypeName() != nil:
+		return strings.Join(nodeListToNames(arg.GetTypeName().Names), ".")
+	case arg.GetInteger() != nil:
+		return strconv.Itoa(int(arg.GetInteger().Ival))
+	case arg.GetFloat() != nil:
+		return arg.GetFloat().Fval
+	case arg.GetBoolean() != nil:
+		return strconv.FormatBool(arg.GetBoolean().Boolval)
+	default:
+		return nodeToText(arg)
+	}
+}
+
+// setViewOption sets key to value in params, replacing an existing entry.
+func setViewOption(params []pipeline.StorageParam, key, value string) []pipeline.StorageParam {
+	for i := range params {
+		if params[i].Key == key {
+			params[i].Value = value
+			return params
+		}
+	}
+	return append(params, pipeline.StorageParam{Key: key, Value: value})
+}
+
 // buildMaterializedView handles CREATE MATERIALIZED VIEW, which — unlike a
 // plain CREATE VIEW — pg_query parses as CreateTableAsStmt (Objtype ==
 // OBJECT_MATVIEW), not ViewStmt: PostgreSQL's own grammar implements
@@ -1617,6 +1711,11 @@ func (b *Builder) buildMaterializedView(cta *pg_query.CreateTableAsStmt, block p
 		}
 		if len(cta.Into.Options) > 0 {
 			v.StorageParams = buildOrderedOptions(cta.Into.Options)
+		}
+	}
+	if cta.Into != nil {
+		if cols := nodeListToNames(cta.Into.ColNames); len(cols) > 0 && !foldViewColumnNames(cta.Query, cols) {
+			v.Columns = cols
 		}
 	}
 	// Deparse the query as a full statement, not as a subexpression — same

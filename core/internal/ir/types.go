@@ -734,14 +734,18 @@ type View struct {
 	Grants            []Grant
 	Revocations       []Revocation
 	WithNoData        bool // MATERIALIZED VIEW ... WITH NO DATA
-	// Tablespace/StorageParams are Section 8.2's TABLESPACE/WITH (...)
-	// clauses on a materialized view (real PostgreSQL rejects both on a
-	// plain VIEW, so meaningless when Materialized is false). Changing
-	// either is a targeted ALTER MATERIALIZED VIEW ... SET TABLESPACE/
-	// SET|RESET (...), SAFE — confirmed live, same as Table.Tablespace/
-	// StorageParams' identical treatment.
+	// Tablespace is Section 8.2's TABLESPACE clause, materialized views
+	// only. StorageParams is the WITH (...) list: storage parameters on a
+	// materialized view (Section 8.2), or view options on a plain view
+	// (Section 8.1: security_barrier, security_invoker, and check_option,
+	// which also holds a trailing WITH [LOCAL|CASCADED] CHECK OPTION).
+	// PostgreSQL keeps both in pg_class.reloptions.
 	Tablespace    *string
 	StorageParams []pipeline.StorageParam
+	// Columns is the view's column-name list (RFC Section 8.1), kept only
+	// when it can't be written into Query as target-list aliases (a query
+	// with `*`); otherwise the builder folds it into Query and this is nil.
+	Columns []string
 	// Indexes is only meaningful when Materialized is true — real PostgreSQL
 	// does not support indexes on a plain or recursive view, only on a
 	// materialized view (or a table). RFC Section 8.2's matview-block grammar is
