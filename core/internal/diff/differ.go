@@ -541,6 +541,14 @@ func renamedFromKey(obj pipeline.IRObject) string {
 		if o.RenamedFrom != nil {
 			return *o.RenamedFrom
 		}
+	case *ir.Sequence:
+		if o.RenamedFrom != nil {
+			return qualKey(oldSchema(o.Schema, o.RenamedFromSchema), *o.RenamedFrom)
+		}
+	case *ir.TSConfig:
+		if o.RenamedFrom != nil {
+			return qualKey(oldSchema(o.Schema, o.RenamedFromSchema), *o.RenamedFrom)
+		}
 	case *ir.TSDict:
 		if o.RenamedFrom != nil {
 			return qualKey(oldSchema(o.Schema, o.RenamedFromSchema), *o.RenamedFrom)
@@ -5778,7 +5786,8 @@ func diffTSTemplate(o *ir.TSTemplate, snap *snapshot.SnapOpaque) ([]pipeline.Dif
 // snapshot's mappings, which no longer describe anything real. Otherwise
 // mappings are diffed at the per-token-type level (diffTSConfigMappings).
 func diffTSConfig(o *ir.TSConfig, snap *snapshot.SnapOpaque) ([]pipeline.DiffOp, error) {
-	ops, err := diffOpaqueIR(o.QualifiedName(), o.Body, o.Reconstructed, o.Comment, snap, o.SrcPos)
+	hashBody := opaqueBodyForHash(o.Body, o.Schema, o.Name, snap.Schema, snap.Name)
+	ops, err := diffOpaqueIRHash(o.QualifiedName(), o.Body, hashBody, o.Reconstructed, o.Comment, snap, o.SrcPos)
 	if err != nil {
 		return nil, err
 	}
@@ -5796,6 +5805,10 @@ func diffTSConfig(o *ir.TSConfig, snap *snapshot.SnapOpaque) ([]pipeline.DiffOp,
 		}
 		return ops, nil
 	}
+	// RENAMED FROM (Section 12.1): after the comment, which names the old
+	// configuration, and before the owner and mapping changes, which name
+	// the new one.
+	ops = renameOpaqueIfUnchanged(ops, "TEXT SEARCH CONFIGURATION", snap, o.Schema, o.Name, o.SrcPos)
 	// OWNER TO (Section 12.1) — skipped on the destructive (recreate) path
 	// above, same reasoning as diffTSDict's identical guard: createOpaque
 	// doesn't apply Owner at all, so this only fires on the no-recreate
@@ -5953,6 +5966,18 @@ func diffSequence(o *ir.Sequence, snap *snapshot.SnapSequence) []pipeline.DiffOp
 	pos := o.SrcPos
 	ident := qualIdent(o.Schema, o.Name)
 
+	// RENAMED FROM (RFC Section 10): SET SCHEMA then RENAME TO, as for a
+	// table; everything after refers to the new name.
+	var renameOps []pipeline.DiffOp
+	if snap.Schema != o.Schema {
+		renameOps = append(renameOps, safeOp(
+			fmt.Sprintf("ALTER SEQUENCE %s SET SCHEMA %s;", qualIdent(snap.Schema, snap.Name), quoteIdent(o.Schema)), pos))
+	}
+	if snap.Name != o.Name {
+		renameOps = append(renameOps, cautionOp(
+			fmt.Sprintf("ALTER SEQUENCE %s RENAME TO %s;", qualIdent(o.Schema, snap.Name), quoteIdent(o.Name)), pos))
+	}
+
 	// AS type change (RFC audit item #14): per the RFC's own diffing
 	// table, this is DROP + CREATE, DESTRUCTIVE — PostgreSQL has no
 	// in-place ALTER SEQUENCE ... AS that DPG chose to expose (unlike
@@ -5960,11 +5985,11 @@ func diffSequence(o *ir.Sequence, snap *snapshot.SnapSequence) []pipeline.DiffOp
 	// place). Checked before paramsChanged since it takes over the whole
 	// diff, same shape as diffType's DOMAIN base-type-change branch.
 	if o.AsType != nil && o.AsType.String() != snap.AsType {
-		ops := []pipeline.DiffOp{destructiveOp(fmt.Sprintf("DROP SEQUENCE IF EXISTS %s;", ident), pos)}
+		ops := []pipeline.DiffOp{destructiveOp(fmt.Sprintf("DROP SEQUENCE IF EXISTS %s;", qualIdent(snap.Schema, snap.Name)), pos)}
 		return append(ops, createSequence(o)...)
 	}
 
-	var ops []pipeline.DiffOp
+	ops := renameOps
 
 	// UNLOGGED toggled (Section 10) — same targeted CAUTION ALTER as an
 	// unlogged table's identical toggle (Section 7.12), not a recreate.

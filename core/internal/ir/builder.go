@@ -2338,6 +2338,10 @@ func (b *Builder) buildSequence(cs *pg_query.CreateSeqStmt, block pipeline.Block
 		Unlogged: cs.Sequence != nil && cs.Sequence.Relpersistence == "u",
 		SrcPos:   pos,
 	}
+	if block.RenamedFrom != nil {
+		s.RenamedFrom = &block.RenamedFrom.Name
+		s.RenamedFromSchema = renamedFromSchema(block.RenamedFrom)
+	}
 	if block.Comment != nil {
 		s.Comment = &block.Comment.Value
 	}
@@ -3217,6 +3221,10 @@ func (b *Builder) buildDefineStmt(ds *pg_query.DefineStmt, block pipeline.BlockA
 		tc := &TSConfig{Schema: schema, Name: name, Body: rawBody, SrcPos: pos}
 		tc.ParserSchema, tc.ParserName = defElemQualifiedName(ds.Definition, "parser")
 		tc.Mappings = append(tc.Mappings, block.Mappings...)
+		if block.RenamedFrom != nil {
+			tc.RenamedFrom = &block.RenamedFrom.Name
+			tc.RenamedFromSchema = renamedFromSchema(block.RenamedFrom)
+		}
 		if block.Comment != nil {
 			tc.Comment = &block.Comment.Value
 		}

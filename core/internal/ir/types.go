@@ -980,6 +980,10 @@ func (t *Type) irObject()               {}
 type Sequence struct {
 	Schema string
 	Name   string
+	// RenamedFrom/RenamedFromSchema name the sequence's previous identity
+	// (RENAMED FROM, RFC Section 10).
+	RenamedFrom       *string
+	RenamedFromSchema *string
 	// Unlogged is RFC Section 10's UNLOGGED prefix — trades crash-safety
 	// (the sequence's current value is not WAL-logged) for reduced write
 	// overhead, the same tradeoff as an unlogged table (Section 7.12).
@@ -1848,7 +1852,11 @@ type TSConfig struct {
 	// OWNER concept for a config too, unlike TSParser/TSTemplate).
 	Owner         *string
 	Reconstructed bool // Body rebuilt from the catalog; see Tablespace.Reconstructed
-	SrcPos        pipeline.SourcePos
+	// RenamedFrom/RenamedFromSchema name the configuration's previous
+	// identity (RENAMED FROM, RFC Section 12.1).
+	RenamedFrom       *string
+	RenamedFromSchema *string
+	SrcPos            pipeline.SourcePos
 }
 
 func (t *TSConfig) QualifiedName() string   { return qualName(t.Schema, t.Name) }
