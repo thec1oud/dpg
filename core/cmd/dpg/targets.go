@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/thec1oud/dpg/internal/compiler"
 	"github.com/thec1oud/dpg/internal/executor"
@@ -100,7 +103,7 @@ func connectDatabase(ctx context.Context, cl *project.Cluster, db *project.Datab
 		}
 		conn, err := executor.Connect(ctx, connStr)
 		if err != nil {
-			return nil, ui.WrapDB(err)
+			return nil, ui.WrapDB(withMissingDatabaseHint(err))
 		}
 		return conn, nil
 	}
@@ -118,7 +121,18 @@ func connectDatabase(ctx context.Context, cl *project.Cluster, db *project.Datab
 	}
 	conn, err := executor.ConnectToDatabase(ctx, connStr, db.Name())
 	if err != nil {
-		return nil, ui.WrapDB(err)
+		return nil, ui.WrapDB(withMissingDatabaseHint(err))
 	}
 	return conn, nil
+}
+
+// withMissingDatabaseHint adds a hint to a connection error caused by the
+// target database not existing (SQLSTATE 3D000): DPG never creates
+// databases (RFC Section 23), so the database must be created first.
+func withMissingDatabaseHint(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "3D000" {
+		return fmt.Errorf("%w\nhint: DPG does not create databases (RFC Section 23); create the database before running dpg against it", err)
+	}
+	return err
 }
