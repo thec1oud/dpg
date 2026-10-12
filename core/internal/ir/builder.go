@@ -144,6 +144,9 @@ func (b *Builder) Build(pg pipeline.PGParseResult, block pipeline.BlockAST) (pip
 	if obj == nil {
 		return nil, nil
 	}
+	if err := checkBlockDirectives(obj, block); err != nil {
+		return nil, err
+	}
 	// Inside a schema scope (SCHEMA { } block or schemas/<name>/ directory),
 	// a schema qualifier on the declared name may only repeat that schema
 	// (RFC Section 4.4).
