@@ -10,7 +10,7 @@ weight: 2
 
 **Idempotent.** Applying the same plan twice produces zero SQL on the second run.
 
-**Safety-classified.** Every generated statement is tagged `SAFE`, `CAUTION`, `DESTRUCTIVE`, or `MANUAL`. Destructive operations are blocked by default; they require `--allow-destructive` to proceed.
+**Safety-classified.** Every generated statement is tagged `SAFE`, `CAUTION`, or `DESTRUCTIVE`. Destructive operations are blocked by default; they require `--allow-destructive` to proceed.
 
 **Additive grants.** DPG only emits `GRANT`. It never auto-revokes. Removing a `GRANTS` entry emits nothing — write an explicit `REVOKES { }` block to revoke.
 

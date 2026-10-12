@@ -43,6 +43,18 @@ func (e *PgxExecutor) Apply(ctx context.Context, m pipeline.Migration, conn pipe
 		return sb.ExecSQL(resolver)
 	}
 
+	// Steps that must be committed before the transaction starts (an enum
+	// value the transaction uses, RFC Section 5.1.1).
+	for _, op := range m.PreTransactional {
+		text, err := execText(op)
+		if err != nil {
+			return fmt.Errorf("executor: %s: %w", op.SQL(), err)
+		}
+		if _, err := conn.Exec(ctx, text); err != nil {
+			return fmt.Errorf("executor: %s: %w", op.SQL(), err)
+		}
+	}
+
 	// Transactional block.
 	if len(m.Transactional) > 0 {
 		tx, err := conn.Begin(ctx)

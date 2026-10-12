@@ -130,7 +130,7 @@ With --strict, lint warnings are promoted to errors and block the apply.`,
 	cmd.Flags().BoolP("yes", "y", false, "skip interactive approval prompt")
 	cmd.Flags().Bool("allow-destructive", false, "allow destructive operations")
 	cmd.Flags().Bool("approve-partition-rebuild", false,
-		"allow partition strategy rebuild (implies --allow-destructive for partition ops)")
+		"acknowledge an instruction-only partition strategy rebuild step")
 	cmd.Flags().Bool("dry-run", false, "print the migration plan but do not execute or update the snapshot")
 	cmd.Flags().Bool("no-snapshot", false, "skip snapshot update after a successful apply")
 	cmd.Flags().Bool("strict", false, "treat lint warnings as errors (blocks apply if any exist)")

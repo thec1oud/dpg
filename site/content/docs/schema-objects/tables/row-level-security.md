@@ -121,6 +121,8 @@ CREATE POLICY "service_read" ON "public"."orders"
 ## Policy change behaviour
 
 - Adding a policy: `CREATE POLICY` — `SAFE`.
-- Changing a policy's expression: `DROP POLICY` + `CREATE POLICY` — `CAUTION`.
-- Removing a policy: `DROP POLICY` — `SAFE`.
+- Changing a policy's `TO`, `USING`, or `WITH CHECK`: `ALTER POLICY` — `SAFE`.
+- Changing a policy's `FOR` command or `AS PERMISSIVE`/`RESTRICTIVE`: `DROP POLICY` + `CREATE POLICY` — `CAUTION`.
+- Removing a permissive policy: `DROP POLICY` — `SAFE` (it only narrows access).
+- Removing a restrictive policy: `DROP POLICY` — `CAUTION` (it widens access).
 - Enabling/disabling RLS: `ALTER TABLE ENABLE/DISABLE ROW LEVEL SECURITY` — `CAUTION`.

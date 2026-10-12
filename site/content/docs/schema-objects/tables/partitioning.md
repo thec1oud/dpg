@@ -223,7 +223,7 @@ version.
 |-----------|--------|-------|
 | Add a partition | `SAFE` | `CREATE TABLE ... PARTITION OF` |
 | Remove a partition | `DESTRUCTIVE` | `DROP TABLE partition_name` |
-| Change partition strategy | `MANUAL` | Requires `--approve-partition-rebuild`; full table rebuild |
+| Change partition strategy | `DESTRUCTIVE` (instruction-only) | Requires `--approve-partition-rebuild`; full table rebuild |
 | Drop a constraint from the parent, keep it on existing partitions (PG18+) | `SAFE` | `ALTER TABLE ONLY parent DROP CONSTRAINT name` |
 | Add/remove a partition's own local constraint | `CAUTION`/`DESTRUCTIVE` | `ALTER TABLE partition ADD/DROP CONSTRAINT name` |
 

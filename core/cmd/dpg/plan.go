@@ -34,6 +34,7 @@ type planJSON struct {
 type opJSON struct {
 	SQL    string `json:"sql"`
 	Safety string `json:"safety"`
+	Mode   string `json:"mode"`
 	File   string `json:"file,omitempty"`
 	Line   int    `json:"line,omitempty"`
 }
@@ -200,7 +201,8 @@ func newPlanCmd() *cobra.Command {
 database with --live) and print the minimal SQL required to reach the
 desired state. No database connection is required unless --live is set.
 
-Safe, Caution, Destructive, and Manual operations are labelled in the output.
+Caution and Destructive operations, and instruction-only steps DPG does not
+perform itself, are labelled in the output.
 
 Use --format json for machine-readable output suitable for CI or tooling.
 Use --watch to re-run automatically whenever source files change.`,
@@ -304,7 +306,7 @@ func renderPlanJSON(ops []pipeline.DiffOp, meta pipeline.MigrationMeta) error {
 	}
 	for _, o := range ops {
 		pos := o.Pos()
-		oj := opJSON{SQL: o.SQL(), Safety: o.Safety().String()}
+		oj := opJSON{SQL: o.SQL(), Safety: o.Safety().String(), Mode: o.Mode().String()}
 		if pos.File != "" {
 			oj.File = emit.RelSourcePath(meta.SourceRoot, pos.File)
 			oj.Line = pos.Line

@@ -172,9 +172,12 @@ Source file references (`[source: ...]`) appear before every statement group.
 | `SAFE` | No data loss possible | Applied automatically |
 | `CAUTION` | Locks acquired; performance impact possible | Applied with warning logged |
 | `DESTRUCTIVE` | Data loss possible | Blocked unless `--allow-destructive` |
-| `MANUAL` | Cannot run inside a transaction, or requires manual operator action | Executable `MANUAL` ops emitted after `COMMIT`; instruction-only `MANUAL` ops printed but never executed |
 
-Concurrent index creation is always `MANUAL` — emitted as a non-transactional step after `COMMIT`. Partition strategy changes are also `MANUAL` and require `--approve-partition-rebuild`.
+Separately from its safety class, every operation has an execution mode:
+
+- **Transactional** (the default): runs inside the migration's transaction.
+- **Non-transactional**: runs after `COMMIT`, because PostgreSQL refuses it inside a transaction block. Examples are `CREATE INDEX CONCURRENTLY` (a `CAUTION` op) and `CREATE TABLESPACE` (a `SAFE` op).
+- **Instruction-only**: a comment describing a step DPG doesn't perform, shown in the plan and never executed. A partition strategy change is a `DESTRUCTIVE` instruction and needs `--approve-partition-rebuild`; other instructions are informational notes and never block `apply`.
 
 ## Idempotency guarantee
 

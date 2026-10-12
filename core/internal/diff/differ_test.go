@@ -1759,10 +1759,10 @@ func TestDiffConcurrentIndexOnExistingTableExplicit(t *testing.T) {
 	if idxOp == nil {
 		t.Fatalf("expected CONCURRENTLY index op, got: %v", sqlList(ops))
 	}
-	if idxOp.Safety() != pipeline.Manual {
-		t.Errorf("expected Manual safety for concurrent index")
+	if idxOp.Safety() != pipeline.Caution {
+		t.Errorf("expected Caution safety for concurrent index")
 	}
-	if idxOp.Transactional() {
+	if idxOp.Mode() == pipeline.ModeTransactional {
 		t.Errorf("concurrent index must not be transactional")
 	}
 }
@@ -1837,7 +1837,7 @@ func TestDiffEnumAddValue(t *testing.T) {
 	if ops[0].Safety() != pipeline.Safe {
 		t.Errorf("expected Safe safety for ADD VALUE (RFC Section 1.4's PG 14 floor is past the PG 12 transaction-block restriction)")
 	}
-	if !ops[0].Transactional() {
+	if ops[0].Mode() != pipeline.ModeTransactional {
 		t.Errorf("expected ADD VALUE to run transactionally")
 	}
 }
@@ -6982,9 +6982,8 @@ func TestDiffColumnGrantRemovedIsCaution(t *testing.T) {
 	}
 }
 
-// TestDiffPolicyRemovedIsCaution guards RFC audit item #26: a dropped RLS
-// policy silently widens row visibility — behavior-changing even though no
-// data is lost — so DROP POLICY must be cautionOp, not safeOp.
+// TestDiffPolicyRemovedIsCaution guards RFC Section 17.2: dropping a
+// RESTRICTIVE policy widens access, so DROP POLICY is Caution.
 func TestDiffPolicyRemovedIsCaution(t *testing.T) {
 	d := New()
 	snap := &pipeline.Snapshot{}
@@ -7016,6 +7015,31 @@ func TestDiffPolicyRemovedIsCaution(t *testing.T) {
 	}
 	if op.Safety() != pipeline.Caution {
 		t.Errorf("expected DROP POLICY to be Caution, got %s", op.Safety())
+	}
+}
+
+// TestDiffPermissivePolicyRemovedIsSafe guards RFC Section 17.2: dropping a
+// PERMISSIVE policy only narrows access, so DROP POLICY is Safe.
+func TestDiffPermissivePolicyRemovedIsSafe(t *testing.T) {
+	snap := &pipeline.Snapshot{}
+	_ = snap.SetObject("public.t", &snapshot.SnapObject{
+		Kind: "table",
+		Table: &snapshot.SnapTable{
+			Schema:   "public",
+			Name:     "t",
+			Columns:  []snapshot.SnapColumn{{Name: "id", Type: "bigint"}},
+			Policies: []snapshot.SnapPolicy{{Name: "readers", Command: "SELECT", Permissive: true}},
+		},
+	})
+	desired := []pipeline.IRObject{&ir.Table{Schema: "public", Name: "t",
+		Columns: []*ir.Column{{Name: "id", Type: ir.TypeRef{Name: "bigint"}}}}}
+	ops, err := New().Diff(desired, snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := findOpSQL(ops, `DROP POLICY IF EXISTS "readers"`)
+	if op == nil || op.Safety() != pipeline.Safe {
+		t.Fatalf("expected a Safe DROP POLICY, got: %v", sqlList(ops))
 	}
 }
 
@@ -8524,7 +8548,7 @@ func TestDiffCreateMaterViewWithNoData(t *testing.T) {
 	}
 }
 
-func TestDiffMaterViewWithNoDataChangedIsManual(t *testing.T) {
+func TestDiffMaterViewWithNoDataChangedIsNote(t *testing.T) {
 	d := New()
 	snap := &pipeline.Snapshot{}
 	_ = snap.SetObject("public.mv_summary", &snapshot.SnapObject{
@@ -8553,8 +8577,8 @@ func TestDiffMaterViewWithNoDataChangedIsManual(t *testing.T) {
 		t.Errorf("expected REFRESH MATERIALIZED VIEW notice, got: %v", sqlList(ops))
 	}
 	for _, o := range ops {
-		if strings.Contains(o.SQL(), "REFRESH") && o.Safety() != pipeline.Manual {
-			t.Errorf("WITH NO DATA change notice should be Manual, got %s", o.Safety())
+		if strings.Contains(o.SQL(), "REFRESH") && (o.Mode() != pipeline.ModeInstructionOnly || o.Safety() != pipeline.Safe) {
+			t.Errorf("WITH NO DATA change notice should be a Safe instruction-only note, got %s %s", o.Safety(), o.Mode())
 		}
 	}
 }
@@ -9515,10 +9539,10 @@ func TestDiffTableDetachedFrom(t *testing.T) {
 	}
 }
 
-// TestDiffTableDetachedFromConcurrentlyIsManual guards the CONCURRENTLY
+// TestDiffTableDetachedFromConcurrentlyIsNonTransactional guards the CONCURRENTLY
 // modifier's Safety classification (RFC's own diffing table: "MANUAL if
 // CONCURRENTLY written, else CAUTION").
-func TestDiffTableDetachedFromConcurrentlyIsManual(t *testing.T) {
+func TestDiffTableDetachedFromConcurrentlyIsNonTransactional(t *testing.T) {
 	d := New()
 	snap := &pipeline.Snapshot{}
 	_ = snap.SetObject("public.events", &snapshot.SnapObject{
@@ -9549,8 +9573,8 @@ func TestDiffTableDetachedFromConcurrentlyIsManual(t *testing.T) {
 		t.Errorf("expected %q, got: %v", want, sqlList(ops))
 	}
 	for _, op := range ops {
-		if strings.Contains(op.SQL(), "DETACH PARTITION") && op.Safety() != pipeline.Manual {
-			t.Errorf("DETACH PARTITION CONCURRENTLY safety = %v, want Manual", op.Safety())
+		if strings.Contains(op.SQL(), "DETACH PARTITION") && (op.Safety() != pipeline.Caution || op.Mode() != pipeline.ModeNonTransactional) {
+			t.Errorf("DETACH PARTITION CONCURRENTLY = %v %v, want Caution non-transactional", op.Safety(), op.Mode())
 		}
 	}
 }
@@ -9942,10 +9966,10 @@ func TestDiffSubPartitionAdded(t *testing.T) {
 	}
 }
 
-// TestDiffSubPartitionStrategyChangedIsManual mirrors
-// TestDiffPartitionStrategyChangedIsManual one level down: a sub-partition's
+// TestDiffSubPartitionStrategyChangedIsInstruction mirrors
+// TestDiffPartitionStrategyChangedIsInstruction one level down: a sub-partition's
 // OWN PARTITION BY strategy also cannot be altered in place.
-func TestDiffSubPartitionStrategyChangedIsManual(t *testing.T) {
+func TestDiffSubPartitionStrategyChangedIsInstruction(t *testing.T) {
 	d := New()
 	snap := &pipeline.Snapshot{}
 	_ = snap.SetObject("public.metrics", &snapshot.SnapObject{
@@ -9984,21 +10008,21 @@ func TestDiffSubPartitionStrategyChangedIsManual(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hasManual := false
+	hasInstruction := false
 	for _, o := range ops {
-		if o.Safety() == pipeline.Manual {
-			hasManual = true
+		if o.Mode() == pipeline.ModeInstructionOnly && o.Safety() == pipeline.Destructive {
+			hasInstruction = true
 		}
 	}
-	if !hasManual {
-		t.Errorf("expected a Manual op for sub-partition strategy change, got: %v", sqlList(ops))
+	if !hasInstruction {
+		t.Errorf("expected a Destructive instruction-only op for sub-partition strategy change, got: %v", sqlList(ops))
 	}
 	if containsSQL(ops, "DROP TABLE") {
 		t.Errorf("strategy change should not auto-drop, got: %v", sqlList(ops))
 	}
 }
 
-func TestDiffPartitionStrategyChangedIsManual(t *testing.T) {
+func TestDiffPartitionStrategyChangedIsInstruction(t *testing.T) {
 	d := New()
 	snap := &pipeline.Snapshot{}
 	_ = snap.SetObject("public.events", &snapshot.SnapObject{
@@ -10022,14 +10046,14 @@ func TestDiffPartitionStrategyChangedIsManual(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hasManual := false
+	hasInstruction := false
 	for _, o := range ops {
-		if o.Safety() == pipeline.Manual {
-			hasManual = true
+		if o.Mode() == pipeline.ModeInstructionOnly && o.Safety() == pipeline.Destructive {
+			hasInstruction = true
 		}
 	}
-	if !hasManual {
-		t.Errorf("expected Manual op for partition strategy change, got: %v", sqlList(ops))
+	if !hasInstruction {
+		t.Errorf("expected a Destructive instruction-only op for partition strategy change, got: %v", sqlList(ops))
 	}
 }
 
@@ -11986,9 +12010,8 @@ func TestDiffSequenceOwnedByNoneChangedIsSafeAlter(t *testing.T) {
 // TestDiffSequenceRestartWithValueEmittedEveryPlan guards RFC audit item
 // #68: RESTART [WITH n] is an imperative action with no persisted state to
 // diff against, so it must be unconditionally re-emitted on every plan for
-// as long as it remains declared, Safety Manual, but still transactional
-// (unlike CREATE TABLESPACE-style non-transactional Manual ops — real
-// PostgreSQL's ALTER SEQUENCE RESTART has no such restriction).
+// as long as it remains declared, Safety Caution, transactional (real
+// PostgreSQL's ALTER SEQUENCE RESTART has no transaction-block restriction).
 func TestDiffSequenceRestartWithValueEmittedEveryPlan(t *testing.T) {
 	d := New()
 	snap := &pipeline.Snapshot{}
@@ -12008,10 +12031,10 @@ func TestDiffSequenceRestartWithValueEmittedEveryPlan(t *testing.T) {
 	if op == nil {
 		t.Fatalf("expected ALTER SEQUENCE ... RESTART WITH 1000, got: %v", sqlList(ops))
 	}
-	if op.Safety() != pipeline.Manual {
-		t.Errorf("expected RESTART to be Manual safety, got %s", op.Safety())
+	if op.Safety() != pipeline.Caution {
+		t.Errorf("expected RESTART to be Caution safety, got %s", op.Safety())
 	}
-	if !op.Transactional() {
+	if op.Mode() != pipeline.ModeTransactional {
 		t.Error("expected RESTART to still run inside the migration's transaction, got Transactional() == false")
 	}
 
@@ -12050,8 +12073,8 @@ func TestDiffSequenceRestartEmitsRemovalReminder(t *testing.T) {
 	for _, op := range ops {
 		if strings.Contains(op.SQL(), "remove the RESTART directive") {
 			found = true
-			if op.Safety() != pipeline.Manual {
-				t.Errorf("expected removal-reminder comment to be Manual safety, got %s", op.Safety())
+			if op.Mode() != pipeline.ModeInstructionOnly || op.Safety() != pipeline.Safe {
+				t.Errorf("expected removal-reminder comment to be a Safe instruction-only note, got %s %s", op.Safety(), op.Mode())
 			}
 		}
 	}
@@ -14674,8 +14697,7 @@ func TestCreateSubscriptionExecSQLPlainLiteralNeverCallsResolver(t *testing.T) {
 // DROP SUBSCRIPTION error "cannot run inside a transaction block" in real
 // PostgreSQL — confirmed live against a real postgres:17 pair. Destructive
 // safety must survive the fix for DROP (still gated by --allow-destructive
-// in cmd/dpg/apply.go), which is why destructiveManualOp exists rather than
-// reusing manualOp (Safety=Manual) for it.
+// in cmd/dpg/apply.go), so DROP is a Destructive non-transactional op.
 func TestCreateSubscriptionIsNonTransactional(t *testing.T) {
 	ops, err := createSubscription(&ir.Subscription{
 		Name: "sub", ConnInfo: "-", Body: "CREATE SUBSCRIPTION sub CONNECTION '-' PUBLICATION pub",
@@ -14683,7 +14705,7 @@ func TestCreateSubscriptionIsNonTransactional(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ops[0].Transactional() {
+	if ops[0].Mode() == pipeline.ModeTransactional {
 		t.Error("CREATE SUBSCRIPTION must be non-transactional (PostgreSQL rejects create_slot=true inside a transaction block)")
 	}
 }
@@ -14706,7 +14728,7 @@ func TestCreateSubscriptionCommentIsAlsoNonTransactional(t *testing.T) {
 	if len(ops) != 2 {
 		t.Fatalf("expected 2 ops (CREATE + COMMENT), got %d", len(ops))
 	}
-	if ops[1].Transactional() {
+	if ops[1].Mode() == pipeline.ModeTransactional {
 		t.Error("create-time COMMENT ON SUBSCRIPTION must be non-transactional, matching CREATE's own bucket, or it runs before the subscription exists")
 	}
 	if !strings.Contains(ops[1].SQL(), "COMMENT ON SUBSCRIPTION") || !strings.Contains(ops[1].SQL(), comment) {
@@ -14721,7 +14743,7 @@ func TestDropSubscriptionIsNonTransactional(t *testing.T) {
 	if len(ops) != 1 {
 		t.Fatalf("expected 1 op, got %d", len(ops))
 	}
-	if ops[0].Transactional() {
+	if ops[0].Mode() == pipeline.ModeTransactional {
 		t.Error("DROP SUBSCRIPTION must be non-transactional (PostgreSQL rejects it inside a transaction block)")
 	}
 	if ops[0].Safety() != pipeline.Destructive {
@@ -15137,8 +15159,8 @@ func TestDiffOpaqueOfflineEditEmitsStructuredDropRecreate(t *testing.T) {
 		oldObj, newObj   pipeline.IRObject
 		wantDropSubstr   string
 		wantNewInBody    string
-		wantCreateSafety pipeline.Safety // zero value (Safe) unless overridden
-		dropIsSafe       bool            // false (Destructive) unless overridden — event_trigger is the sole exception, RFC Section 14.1
+		wantCreateNonTxn bool // CREATE must run outside the transaction
+		dropIsSafe       bool // false (Destructive) unless overridden — event_trigger is the sole exception, RFC Section 14.1
 	}{
 		{
 			name:           "tablespace",
@@ -15146,11 +15168,9 @@ func TestDiffOpaqueOfflineEditEmitsStructuredDropRecreate(t *testing.T) {
 			newObj:         &ir.Tablespace{Name: "ts", Location: "/data/ts2", Body: "CREATE TABLESPACE ts LOCATION '/data/ts2'"},
 			wantDropSubstr: `DROP TABLESPACE IF EXISTS "ts";`,
 			wantNewInBody:  "/data/ts2",
-			// Manual (non-transactional), not Safe like every other opaque
-			// kind: CREATE TABLESPACE cannot run inside a transaction block
-			// (confirmed live: "ERROR: CREATE TABLESPACE cannot run inside
-			// a transaction block") — see createOpaque's doc comment.
-			wantCreateSafety: pipeline.Manual,
+			// Safe but non-transactional: CREATE TABLESPACE cannot run
+			// inside a transaction block — see createOpaque's doc comment.
+			wantCreateNonTxn: true,
 		},
 		{
 			name:           "fdw",
@@ -15207,12 +15227,10 @@ func TestDiffOpaqueOfflineEditEmitsStructuredDropRecreate(t *testing.T) {
 			newObj:         &ir.Subscription{Name: "sub", ConnInfo: "x", Body: "CREATE SUBSCRIPTION sub CONNECTION 'x' PUBLICATION p2"},
 			wantDropSubstr: `DROP SUBSCRIPTION IF EXISTS "sub";`,
 			wantNewInBody:  "p2",
-			// Manual (non-transactional), not Safe like every other opaque
-			// kind: PostgreSQL's CREATE SUBSCRIPTION defaults to WITH
-			// (create_slot = true), which errors "cannot run inside a
-			// transaction block" — confirmed live, see createSubscription's
-			// doc comment.
-			wantCreateSafety: pipeline.Manual,
+			// Safe but non-transactional: CREATE SUBSCRIPTION defaults to
+			// WITH (create_slot = true), which cannot run inside a
+			// transaction block — see createSubscription's doc comment.
+			wantCreateNonTxn: true,
 		},
 		{
 			name:           "event_trigger",
@@ -15370,8 +15388,11 @@ func TestDiffOpaqueOfflineEditEmitsStructuredDropRecreate(t *testing.T) {
 			if ops[0].Safety() != wantDropSafety {
 				t.Errorf("DROP op safety = %v, want %v", ops[0].Safety(), wantDropSafety)
 			}
-			if ops[1].Safety() != tc.wantCreateSafety {
-				t.Errorf("CREATE op safety = %v, want %v", ops[1].Safety(), tc.wantCreateSafety)
+			if ops[1].Safety() != pipeline.Safe {
+				t.Errorf("CREATE op safety = %v, want SAFE", ops[1].Safety())
+			}
+			if (ops[1].Mode() == pipeline.ModeNonTransactional) != tc.wantCreateNonTxn {
+				t.Errorf("CREATE op mode = %v, want non-transactional %v", ops[1].Mode(), tc.wantCreateNonTxn)
 			}
 			for _, op := range ops {
 				if strings.Contains(op.SQL(), "manual DROP + recreate required") {
@@ -18726,7 +18747,7 @@ func TestDiffDomainStaleSnapshotDoesNotRecreate(t *testing.T) {
 // from source or from introspection, since it never depends on Reconstructed
 // or BodyHash at all.
 
-func TestDiffTablespaceLocationChangeIsDestructiveManual(t *testing.T) {
+func TestDiffTablespaceLocationChangeIsDestructiveNonTransactional(t *testing.T) {
 	d := New()
 	snap := &pipeline.Snapshot{}
 	_ = snap.SetObject("ts", &snapshot.SnapObject{
@@ -18748,21 +18769,18 @@ func TestDiffTablespaceLocationChangeIsDestructiveManual(t *testing.T) {
 	if !containsSQL(ops, "/data/ts2") {
 		t.Errorf("expected recreate to reflect the new location, got: %v", sqlList(ops))
 	}
-	// DROP TABLESPACE is Destructive (dropObject's destructiveManualOp);
-	// CREATE TABLESPACE is Manual (createOpaque's tablespace special-case)
-	// — both non-transactional (CREATE/DROP TABLESPACE cannot run inside a
-	// transaction block), but Safety() and Transactional() are independent
-	// fields (see destructiveManualOp's doc comment), so the two ops carry
-	// different Safety() values despite both being non-transactional.
+	// DROP TABLESPACE is Destructive and CREATE TABLESPACE is Safe; both
+	// are non-transactional (neither can run inside a transaction block).
+	// Safety and Mode are independent properties of an op.
 	for _, op := range ops {
 		switch {
 		case strings.Contains(op.SQL(), "DROP TABLESPACE"):
-			if op.Safety() != pipeline.Destructive {
-				t.Errorf("expected DROP TABLESPACE op to be Destructive safety, got %v: %s", op.Safety(), op.SQL())
+			if op.Safety() != pipeline.Destructive || op.Mode() != pipeline.ModeNonTransactional {
+				t.Errorf("expected DROP TABLESPACE to be Destructive non-transactional, got %v %v: %s", op.Safety(), op.Mode(), op.SQL())
 			}
 		case strings.Contains(op.SQL(), "CREATE TABLESPACE"):
-			if op.Safety() != pipeline.Manual {
-				t.Errorf("expected CREATE TABLESPACE op to be Manual safety, got %v: %s", op.Safety(), op.SQL())
+			if op.Safety() != pipeline.Safe || op.Mode() != pipeline.ModeNonTransactional {
+				t.Errorf("expected CREATE TABLESPACE to be Safe non-transactional, got %v %v: %s", op.Safety(), op.Mode(), op.SQL())
 			}
 		}
 	}
@@ -18987,7 +19005,7 @@ func TestDiffTablespaceStaleSnapshotDoesNotRecreate(t *testing.T) {
 		t.Errorf("stale snapshot must not trigger DROP TABLESPACE, got: %v", sqlList(ops))
 	}
 	for _, o := range ops {
-		if o.Safety() == pipeline.Destructive || o.Safety() == pipeline.Manual {
+		if o.Safety() == pipeline.Destructive || o.Mode() == pipeline.ModeInstructionOnly {
 			t.Errorf("stale snapshot transition must never be destructive/manual, got: %v", sqlList(ops))
 		}
 	}
@@ -20564,7 +20582,7 @@ func TestCreateCollationWithOwner(t *testing.T) {
 // TestDiffCollationRefreshVersionEmittedEveryPlan guards RFC audit item
 // #84: REFRESH VERSION is an imperative action with no persisted state to
 // diff against, so it must be unconditionally re-emitted on every plan for
-// as long as it remains declared, Safety Manual but still transactional
+// as long as it remains declared, Safety Caution, transactional
 // (real PostgreSQL's ALTER COLLATION REFRESH VERSION has no restriction
 // against running inside a transaction).
 func TestDiffCollationRefreshVersionEmittedEveryPlan(t *testing.T) {
@@ -20591,10 +20609,10 @@ func TestDiffCollationRefreshVersionEmittedEveryPlan(t *testing.T) {
 	if op == nil {
 		t.Fatalf("expected ALTER COLLATION ... REFRESH VERSION, got: %v", sqlList(ops))
 	}
-	if op.Safety() != pipeline.Manual {
-		t.Errorf("expected REFRESH VERSION to be Manual safety, got %s", op.Safety())
+	if op.Safety() != pipeline.Caution {
+		t.Errorf("expected REFRESH VERSION to be Caution safety, got %s", op.Safety())
 	}
-	if !op.Transactional() {
+	if op.Mode() != pipeline.ModeTransactional {
 		t.Error("expected REFRESH VERSION to still run inside the migration's transaction")
 	}
 
@@ -22658,6 +22676,51 @@ func TestDiffEventTriggerSecurityLabel(t *testing.T) {
 	}
 	if !containsSQL(ops, `ON EVENT TRIGGER "evt"`) {
 		t.Errorf("expected ON EVENT TRIGGER, got: %v", sqlList(ops))
+	}
+}
+
+// TestDiffEnumAddValueUsedInSameMigrationRunsFirst guards RFC Section 5.1.1:
+// when another statement in the migration uses a value being added to an
+// enum, the enum's ADD VALUEs run before the transaction, as IF NOT EXISTS;
+// otherwise they stay inside it.
+func TestDiffEnumAddValueUsedInSameMigrationRunsFirst(t *testing.T) {
+	snap := &pipeline.Snapshot{}
+	_ = snap.SetObject("public.status", &snapshot.SnapObject{
+		Kind: "type",
+		Type: &snapshot.SnapType{Schema: "public", Name: "status", Variant: "ENUM", Values: []string{"a"}},
+	})
+	enum := &ir.Type{Schema: "public", Name: "status", Variant: "ENUM", EnumValues: []string{"a", "b", "c"}}
+
+	ops, err := New().Diff([]pipeline.IRObject{enum}, snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range ops {
+		if strings.Contains(o.SQL(), "ADD VALUE") && o.Mode() != pipeline.ModeTransactional {
+			t.Errorf("unused new value should stay transactional: %s (%s)", o.SQL(), o.Mode())
+		}
+	}
+
+	def := "'b'::public.status"
+	tbl := &ir.Table{Schema: "public", Name: "t", Columns: []*ir.Column{
+		{Name: "s", Type: ir.TypeRef{Schema: "public", Name: "status"}, Default: &def},
+	}}
+	ops, err = New().Diff([]pipeline.IRObject{enum, tbl}, snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var adds int
+	for _, o := range ops {
+		if !strings.Contains(o.SQL(), "ADD VALUE") {
+			continue
+		}
+		adds++
+		if o.Mode() != pipeline.ModePreTransactional || !strings.Contains(o.SQL(), "ADD VALUE IF NOT EXISTS") {
+			t.Errorf("used new value should run before the transaction as IF NOT EXISTS: %s (%s)", o.SQL(), o.Mode())
+		}
+	}
+	if adds != 2 {
+		t.Fatalf("expected 2 ADD VALUE ops, got %d: %v", adds, sqlList(ops))
 	}
 }
 

@@ -20,7 +20,7 @@ type mockDiffOp struct{}
 func (mockDiffOp) SQL() string             { return "SELECT 1;" }
 func (mockDiffOp) Safety() pipeline.Safety { return pipeline.Safe }
 func (mockDiffOp) Pos() pipeline.SourcePos { return pipeline.SourcePos{} }
-func (mockDiffOp) Transactional() bool     { return true }
+func (mockDiffOp) Mode() pipeline.ExecMode { return pipeline.ModeTransactional }
 
 type mockDiffer struct{ ops []pipeline.DiffOp }
 
@@ -245,6 +245,41 @@ func TestApplyRejectsScalarConflict(t *testing.T) {
 		t.Fatalf("expected a DPG-E039 compile error, got: %v", err)
 	}
 	if exec.applyCount != 0 {
-		t.Errorf("executor called %d time(s); want 0 when blocked by --strict", exec.applyCount)
+		t.Errorf("executor called %d time(s); want 0 when compilation fails", exec.applyCount)
+	}
+}
+
+type instrOp struct{ safety pipeline.Safety }
+
+func (o instrOp) SQL() string             { return "-- a step DPG does not perform" }
+func (o instrOp) Safety() pipeline.Safety { return o.safety }
+func (instrOp) Pos() pipeline.SourcePos   { return pipeline.SourcePos{} }
+func (instrOp) Mode() pipeline.ExecMode   { return pipeline.ModeInstructionOnly }
+
+// TestApplyInstructionGate guards RFC Section 17.3: a Destructive
+// instruction-only op (a partition strategy rebuild) blocks apply until
+// --approve-partition-rebuild is given, while a Safe instruction-only note
+// never does. Instruction ops are never sent to the executor.
+func TestApplyInstructionGate(t *testing.T) {
+	run := func(op pipeline.DiffOp, approve bool) (error, *mockApplyExec) {
+		cl, db, migrationsDir := applyTestFixture(t)
+		exec := &mockApplyExec{}
+		err := runApply(cl, db, &mockStore{},
+			&mockDiffer{ops: []pipeline.DiffOp{op}},
+			&mockEmitter{},
+			exec,
+			&mockSecretResolver{},
+			applyOptions{yes: true, dryRun: true, migrationsDir: migrationsDir, approvePartitionRebuild: approve},
+		)
+		return err, exec
+	}
+	if err, _ := run(instrOp{pipeline.Safe}, false); err != nil {
+		t.Errorf("a Safe note must not require --approve-partition-rebuild, got: %v", err)
+	}
+	if err, _ := run(instrOp{pipeline.Destructive}, false); err == nil || !strings.Contains(err.Error(), "--approve-partition-rebuild") {
+		t.Errorf("a Destructive instruction must require --approve-partition-rebuild, got: %v", err)
+	}
+	if err, exec := run(instrOp{pipeline.Destructive}, true); err != nil || exec.applyCount != 0 {
+		t.Errorf("approved instruction: err %v, executor calls %d (want nil, 0)", err, exec.applyCount)
 	}
 }

@@ -103,10 +103,10 @@ func TestRoundtripCollationRefreshVersion(t *testing.T) {
 	if op == nil {
 		t.Fatalf("expected ALTER COLLATION ... REFRESH VERSION, got: %v", opsSQL(ops))
 	}
-	if op.Safety() != pipeline.Manual {
-		t.Errorf("expected REFRESH VERSION to be Manual safety, got %s", op.Safety())
+	if op.Safety() != pipeline.Caution {
+		t.Errorf("expected REFRESH VERSION to be Caution safety, got %s", op.Safety())
 	}
-	if !op.Transactional() {
+	if op.Mode() != pipeline.ModeTransactional {
 		t.Error("expected REFRESH VERSION to run inside the migration's transaction (bug #84 regressed)")
 	}
 

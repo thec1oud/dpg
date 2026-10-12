@@ -90,4 +90,4 @@ CREATE CONSTRAINT TRIGGER "check_ref"
 
 - Adding a trigger: `CREATE TRIGGER` — `SAFE`.
 - Changing any trigger property: `DROP TRIGGER` + `CREATE TRIGGER` — `CAUTION`.
-- Removing a trigger: `DROP TRIGGER` — `SAFE`.
+- Removing a trigger: `DROP TRIGGER` — `CAUTION` (whatever the trigger enforced stops).

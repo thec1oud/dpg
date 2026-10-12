@@ -662,7 +662,7 @@ type DetachedFrom struct {
 	// a partition's schema always matches its parent's.
 	ParentTable string
 	// Concurrently mirrors real PostgreSQL's ALTER TABLE ... DETACH
-	// PARTITION ... CONCURRENTLY — Safety Manual rather than Caution.
+	// PARTITION ... CONCURRENTLY — run outside the transaction.
 	Concurrently bool
 }
 
@@ -1019,7 +1019,7 @@ type Sequence struct {
 	// deliberately NOT snapshotted the way StartValue etc. are: Restart's
 	// mere presence in the desired source unconditionally re-emits
 	// ALTER SEQUENCE ... RESTART [WITH n] on every plan/apply for as long
-	// as it remains declared (Safety Manual), matching real PostgreSQL's
+	// as it remains declared (Safety Caution), matching real PostgreSQL's
 	// own documented recommendation to remove the directive from source
 	// once the reset has been applied. RestartWith is nil for a bare
 	// RESTART (PostgreSQL resets to the sequence's START value then).

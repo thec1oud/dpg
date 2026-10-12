@@ -108,12 +108,10 @@ TABLE orders (id INTEGER);`
 	}
 }
 
-// TestRoundtripDropPolicyAndTriggerAreCaution is the regression guard for
-// RFC audit item #26: DROP TRIGGER/DROP POLICY were uniformly safeOp despite
-// being silently behavior-changing (a dropped RLS policy widens row
-// visibility, a dropped trigger stops enforcing business logic). This proves
-// against a real database that removing a policy/trigger from source still
-// correctly drops them live, while now being tagged Caution.
+// TestRoundtripDropPolicyAndTriggerAreCaution guards RFC Section 17.2
+// against a real database: removing a restrictive policy (which widens
+// access) and a trigger (whose enforcement stops) from source drops them
+// live, tagged Caution.
 func TestRoundtripDropPolicyAndTriggerAreCaution(t *testing.T) {
 	connStr := testpg.Start(t)
 	ctx := context.Background()
@@ -139,7 +137,7 @@ END;
 $$ {}
 
 TABLE t (id INTEGER, owner_id INTEGER) {
-    POLICY p_owner FOR SELECT USING (true);
+    POLICY p_owner FOR SELECT AS RESTRICTIVE USING (true);
     TRIGGER trg_a AFTER INSERT FOR EACH ROW EXECUTE FUNCTION trg_touch();
 }`
 	if err := os.WriteFile(f, []byte(v1), 0o644); err != nil {
@@ -207,7 +205,7 @@ TABLE t (id INTEGER, owner_id INTEGER);`
 		t.Fatalf("expected DROP POLICY and DROP TRIGGER, got: %v", opsSQL(ops))
 	}
 	if dropPolicy.Safety() != pipeline.Caution {
-		t.Fatalf("expected DROP POLICY to be Caution, got %s — bug #26 regressed", dropPolicy.Safety())
+		t.Fatalf("expected DROP of a restrictive policy to be Caution, got %s", dropPolicy.Safety())
 	}
 	if dropTrigger.Safety() != pipeline.Caution {
 		t.Fatalf("expected DROP TRIGGER to be Caution, got %s — bug #26 regressed", dropTrigger.Safety())

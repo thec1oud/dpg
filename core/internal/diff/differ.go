@@ -31,36 +31,37 @@ type op struct {
 	sql    string
 	safety pipeline.Safety
 	pos    pipeline.SourcePos
-	txn    bool
+	mode   pipeline.ExecMode
 }
 
 func (o *op) SQL() string             { return o.sql }
 func (o *op) Safety() pipeline.Safety { return o.safety }
 func (o *op) Pos() pipeline.SourcePos { return o.pos }
-func (o *op) Transactional() bool     { return o.txn }
+func (o *op) Mode() pipeline.ExecMode { return o.mode }
 
 func safeOp(sql string, pos pipeline.SourcePos) *op {
-	return &op{sql: sql, safety: pipeline.Safe, pos: pos, txn: true}
+	return &op{sql: sql, safety: pipeline.Safe, pos: pos, mode: pipeline.ModeTransactional}
 }
 func cautionOp(sql string, pos pipeline.SourcePos) *op {
-	return &op{sql: sql, safety: pipeline.Caution, pos: pos, txn: true}
+	return &op{sql: sql, safety: pipeline.Caution, pos: pos, mode: pipeline.ModeTransactional}
 }
 func destructiveOp(sql string, pos pipeline.SourcePos) *op {
-	return &op{sql: sql, safety: pipeline.Destructive, pos: pos, txn: true}
-}
-func manualOp(sql string, pos pipeline.SourcePos) *op {
-	return &op{sql: sql, safety: pipeline.Manual, pos: pos, txn: false}
+	return &op{sql: sql, safety: pipeline.Destructive, pos: pos, mode: pipeline.ModeTransactional}
 }
 
-// manualTransactionalOp is Manual-safety (flags the statement for human
-// attention in plan/apply output) without manualOp's non-transactional
-// execution, which is a separate concern (statements PostgreSQL itself
-// refuses to run inside a transaction block, like CREATE TABLESPACE or
-// CREATE INDEX CONCURRENTLY). ALTER SEQUENCE RESTART has no such
-// restriction — treating it as non-transactional would let it commit and
-// persist even if the rest of the migration rolls back on a later failure.
-func manualTransactionalOp(sql string, pos pipeline.SourcePos) *op {
-	return &op{sql: sql, safety: pipeline.Manual, pos: pos, txn: true}
+// nonTxnOp is an op PostgreSQL refuses to run inside a transaction block
+// (CREATE INDEX CONCURRENTLY, CREATE TABLESPACE, CREATE SUBSCRIPTION, ...).
+// It runs after COMMIT, with its own safety class.
+func nonTxnOp(safety pipeline.Safety, sql string, pos pipeline.SourcePos) *op {
+	return &op{sql: sql, safety: safety, pos: pos, mode: pipeline.ModeNonTransactional}
+}
+
+// instructionOp is an SQL comment describing a step DPG does not perform.
+// It is shown in the plan and never executed. A Destructive instruction
+// (a partition strategy rebuild) must be acknowledged before apply; a Safe
+// one is an informational note.
+func instructionOp(safety pipeline.Safety, comment string, pos pipeline.SourcePos) *op {
+	return &op{sql: comment, safety: safety, pos: pos, mode: pipeline.ModeInstructionOnly}
 }
 
 // wrapCreateWithOwner wraps createOp in SET ROLE/RESET ROLE when owner is
@@ -70,7 +71,7 @@ func manualTransactionalOp(sql string, pos pipeline.SourcePos) *op {
 // than creating as the connecting role and reassigning afterward via a
 // trailing ALTER ... OWNER TO) matches real PostgreSQL creator semantics and
 // is what makes a matching DEFAULT PRIVILEGES FOR ROLE block actually fire.
-// Preserves createOp's own Safety()/Transactional() for the bookend ops, so
+// Preserves createOp's own Safety()/Mode() for the bookend ops, so
 // this works identically for an object whose CREATE must run outside a
 // transaction (e.g. TABLESPACE). Once an object exists, reassigning its
 // owner keeps using plain ALTER ... OWNER TO — see each diff*'s existing
@@ -80,25 +81,13 @@ func wrapCreateWithOwner(createOp pipeline.DiffOp, owner *string, pos pipeline.S
 		return []pipeline.DiffOp{createOp}
 	}
 	bookend := func(sql string) *op {
-		return &op{sql: sql, safety: createOp.Safety(), pos: pos, txn: createOp.Transactional()}
+		return &op{sql: sql, safety: createOp.Safety(), pos: pos, mode: createOp.Mode()}
 	}
 	return []pipeline.DiffOp{
 		bookend(fmt.Sprintf("SET ROLE %s;", quoteIdent(*owner))),
 		createOp,
 		bookend("RESET ROLE;"),
 	}
-}
-
-// destructiveManualOp is destructiveOp's non-transactional counterpart —
-// Safety() and Transactional() are independent fields on op (Emit buckets
-// purely on Transactional(); apply's --allow-destructive gate checks purely
-// on Safety()), so this combination is safe to construct directly rather
-// than needing a new interface. Used for DROP SUBSCRIPTION, which errors
-// "cannot run inside a transaction block" (confirmed live) — reusing
-// manualOp here would have silently dropped the --allow-destructive gate,
-// since apply.go's gate checks Safety() == Destructive specifically.
-func destructiveManualOp(sql string, pos pipeline.SourcePos) *op {
-	return &op{sql: sql, safety: pipeline.Destructive, pos: pos, txn: false}
 }
 
 // Differ implements pipeline.Differ.
@@ -334,7 +323,7 @@ func (d *Differ) Diff(desired []pipeline.IRObject, snap *pipeline.Snapshot) ([]p
 		matched := parentSnap.Table.Partitions[matchedIdx]
 		stmt := fmt.Sprintf("ALTER TABLE %s DETACH PARTITION %s", quoteQualIdent(parentKey), qualIdent(matched.Schema, matched.Name))
 		if tbl.DetachedFrom.Concurrently {
-			ops = append(ops, manualOp(stmt+" CONCURRENTLY;", tbl.SrcPos))
+			ops = append(ops, nonTxnOp(pipeline.Caution, stmt+" CONCURRENTLY;", tbl.SrcPos))
 		} else {
 			ops = append(ops, cautionOp(stmt+";", tbl.SrcPos))
 		}
@@ -382,7 +371,52 @@ func (d *Differ) Diff(desired []pipeline.IRObject, snap *pipeline.Snapshot) ([]p
 		}
 	}
 
-	return ops, nil
+	return placeEnumAdditions(ops), nil
+}
+
+// addValueOp is an ALTER TYPE ... ADD VALUE op, remembering which enum and
+// value it adds so placeEnumAdditions can move it before the transaction.
+type addValueOp struct {
+	*op
+	typeIdent string
+	value     string
+}
+
+// placeEnumAdditions implements RFC Section 5.1.1: PostgreSQL rejects using
+// an enum value inside the transaction that added it ("unsafe use of new
+// value"). When any other op in the migration mentions a value being added
+// (as the literal 'value'), every ADD VALUE for that enum is moved before
+// the transaction, as ADD VALUE IF NOT EXISTS so a retry after a later
+// failure is harmless. Each enum's ADD VALUEs move together because later
+// ones may be positioned relative to earlier ones.
+func placeEnumAdditions(ops []pipeline.DiffOp) []pipeline.DiffOp {
+	used := map[string]bool{} // typeIdent of an enum whose new value is used
+	for _, o := range ops {
+		av, ok := o.(*addValueOp)
+		if !ok || used[av.typeIdent] {
+			continue
+		}
+		lit := quoteLit(av.value)
+		for _, other := range ops {
+			if _, isAdd := other.(*addValueOp); isAdd || other.Mode() == pipeline.ModeInstructionOnly {
+				continue
+			}
+			if strings.Contains(other.SQL(), lit) {
+				used[av.typeIdent] = true
+				break
+			}
+		}
+	}
+	if len(used) == 0 {
+		return ops
+	}
+	for _, o := range ops {
+		if av, ok := o.(*addValueOp); ok && used[av.typeIdent] {
+			av.sql = strings.Replace(av.sql, " ADD VALUE ", " ADD VALUE IF NOT EXISTS ", 1)
+			av.mode = pipeline.ModePreTransactional
+		}
+	}
+	return ops
 }
 
 // buildVTypeSet collects all virtual type names from the desired IR, mapping
@@ -1290,7 +1324,7 @@ func dropObject(so *snapshot.SnapObject) []pipeline.DiffOp {
 		if so.Opaque != nil {
 			// DROP TABLESPACE cannot run inside a transaction block
 			// (confirmed live) — same restriction as CREATE TABLESPACE.
-			return []pipeline.DiffOp{destructiveManualOp(fmt.Sprintf("DROP TABLESPACE IF EXISTS %s;", quoteIdent(so.Opaque.Name)), zero)}
+			return []pipeline.DiffOp{nonTxnOp(pipeline.Destructive, fmt.Sprintf("DROP TABLESPACE IF EXISTS %s;", quoteIdent(so.Opaque.Name)), zero)}
 		}
 	case "fdw":
 		if so.Opaque != nil {
@@ -1319,11 +1353,11 @@ func dropObject(so *snapshot.SnapObject) []pipeline.DiffOp {
 		}
 	case "subscription":
 		if so.Opaque != nil {
-			// destructiveManualOp, not destructiveOp: DROP SUBSCRIPTION
+			// Non-transactional, not destructiveOp: DROP SUBSCRIPTION
 			// errors "cannot run inside a transaction block" (confirmed
 			// live) — the same non-transactional constraint CREATE
 			// SUBSCRIPTION has, see createSubscription's doc comment.
-			return []pipeline.DiffOp{destructiveManualOp(fmt.Sprintf("DROP SUBSCRIPTION IF EXISTS %s;", quoteIdent(so.Opaque.Name)), zero)}
+			return []pipeline.DiffOp{nonTxnOp(pipeline.Destructive, fmt.Sprintf("DROP SUBSCRIPTION IF EXISTS %s;", quoteIdent(so.Opaque.Name)), zero)}
 		}
 	case "event_trigger":
 		if so.Opaque != nil {
@@ -1592,7 +1626,7 @@ func createOpaque(name, body, kind, schema string, pos pipeline.SourcePos) ([]pi
 	// "TABLESPACE") and lowercase snake_case (diffOpaqueIR's snap.Kind
 	// "tablespace"), hence the case-insensitive compare.
 	if strings.EqualFold(kind, "tablespace") {
-		return []pipeline.DiffOp{manualOp(sql, pos)}, nil
+		return []pipeline.DiffOp{nonTxnOp(pipeline.Safe, sql, pos)}, nil
 	}
 	return []pipeline.DiffOp{safeOp(sql, pos)}, nil
 }
@@ -1858,8 +1892,7 @@ var _ pipeline.SecretBearingOp = (*subscriptionCreateOp)(nil)
 // when set — Comment isn't part of Body (it lives in the { } block), so it
 // needs its own statement, same shape as every other Comment-bearing kind.
 //
-// Built via manualOp, the same non-transactional precedent already used for
-// CREATE INDEX CONCURRENTLY: PostgreSQL's CREATE SUBSCRIPTION defaults to
+// Non-transactional (nonTxnOp), the same as CREATE INDEX CONCURRENTLY: PostgreSQL's CREATE SUBSCRIPTION defaults to
 // WITH (create_slot = true), which errors "cannot run inside a transaction
 // block" — confirmed live (this was a real, pre-existing bug predating
 // secret-reference support entirely; createOpaque's generic path used
@@ -1875,15 +1908,15 @@ func createSubscription(o *ir.Subscription) ([]pipeline.DiffOp, error) {
 		return nil, fmt.Errorf("SUBSCRIPTION %s: body not captured; define it explicitly in a .dpg source file", o.Name)
 	}
 	ops := []pipeline.DiffOp{&subscriptionCreateOp{
-		op:       manualOp(o.Body+";", o.SrcPos),
+		op:       nonTxnOp(pipeline.Safe, o.Body+";", o.SrcPos),
 		connInfo: o.ConnInfo,
 	}}
 	if o.Owner != nil {
 		ops = wrapCreateWithOwner(ops[0], o.Owner, o.SrcPos)
 	}
 	if o.Comment != nil {
-		// manualOp (non-transactional), not safeOp: emit buckets ops purely
-		// by Transactional() into two separate lists, and the executor runs
+		// Non-transactional, not safeOp: emit buckets ops purely by Mode()
+		// into two separate lists, and the executor runs
 		// the WHOLE transactional block before any non-transactional op —
 		// confirmed live. A transactional COMMENT here would run BEFORE the
 		// non-transactional CREATE above, erroring "subscription does not
@@ -1892,17 +1925,17 @@ func createSubscription(o *ir.Subscription) ([]pipeline.DiffOp, error) {
 		// diffSubscription's standalone comment-only-change path has no such
 		// ordering hazard (the subscription already exists there) and stays
 		// transactional.
-		ops = append(ops, manualOp(
+		ops = append(ops, nonTxnOp(pipeline.Safe,
 			fmt.Sprintf("COMMENT ON SUBSCRIPTION %s IS %s;", quoteIdent(o.Name), quoteLit(*o.Comment)),
 			o.SrcPos,
 		))
 	}
-	// manualOp for the same ordering reason as COMMENT above: CREATE
+	// Non-transactional for the same ordering reason as COMMENT above: CREATE
 	// SUBSCRIPTION is itself non-transactional, so a transactional
 	// SECURITY LABEL here would run before it exists.
 	for _, l := range o.SecurityLabels {
 		label := l.Label
-		ops = append(ops, manualOp(securityLabelSQL(l.Provider, "SUBSCRIPTION "+quoteIdent(o.Name), &label), o.SrcPos))
+		ops = append(ops, nonTxnOp(pipeline.Safe, securityLabelSQL(l.Provider, "SUBSCRIPTION "+quoteIdent(o.Name), &label), o.SrcPos))
 	}
 	return ops, nil
 }
@@ -2425,12 +2458,12 @@ func diffStatisticsObject(o *ir.StatisticsObject, snap *snapshot.SnapOpaque) ([]
 }
 
 // collationRefreshVersionOp builds the imperative, non-persisted REFRESH
-// VERSION op — see ir.Collation.RefreshVersion's doc comment. Manual but
+// VERSION op — see ir.Collation.RefreshVersion's doc comment. Caution and
 // transactional, same reasoning as sequenceRestartOp: real PostgreSQL's
 // ALTER COLLATION ... REFRESH VERSION has no restriction against running
 // inside a transaction.
 func collationRefreshVersionOp(o *ir.Collation) pipeline.DiffOp {
-	return manualTransactionalOp(
+	return cautionOp(
 		fmt.Sprintf("ALTER COLLATION %s REFRESH VERSION;", qualIdent(o.Schema, o.Name)),
 		o.SrcPos,
 	)
@@ -3913,7 +3946,7 @@ func createIndex(schema, table string, idx *ir.Index, concurrent bool) []pipelin
 
 	var ops []pipeline.DiffOp
 	if concurrent {
-		ops = append(ops, manualOp(b.String(), idx.Pos))
+		ops = append(ops, nonTxnOp(pipeline.Caution, b.String(), idx.Pos))
 	} else {
 		ops = append(ops, cautionOp(b.String(), idx.Pos))
 	}
@@ -4391,7 +4424,7 @@ func createSimpleGrantOps(grantKind, ident string, grants []ir.Grant, revocation
 		sql := fmt.Sprintf("GRANT %s ON %s %s TO %s", privStr(g.Privileges), grantKind, ident, roleList(g.Roles))
 		sql += grantOptSuffix(g)
 		if manual {
-			ops = append(ops, manualOp(sql+";", pos))
+			ops = append(ops, nonTxnOp(pipeline.Safe, sql+";", pos))
 		} else {
 			ops = append(ops, safeOp(sql+";", pos))
 		}
@@ -4399,7 +4432,7 @@ func createSimpleGrantOps(grantKind, ident string, grants []ir.Grant, revocation
 	for _, r := range revocations {
 		ro := explicitRevokeOp(r, grantKind+" "+ident, pos)
 		if manual {
-			ro.txn = false
+			ro.mode = pipeline.ModeNonTransactional
 		}
 		ops = append(ops, ro)
 	}
@@ -4534,7 +4567,7 @@ func createSequence(o *ir.Sequence) []pipeline.DiffOp {
 }
 
 // sequenceRestartOp builds the imperative, non-persisted RESTART op — see
-// Sequence.Restart's doc comment. Manual since it's a one-shot action
+// Sequence.Restart's doc comment. Caution since it's a one-shot action
 // PostgreSQL itself recommends removing from source after applying, not a
 // steady-state property like every other sequence option.
 func sequenceRestartOp(ident string, o *ir.Sequence) pipeline.DiffOp {
@@ -4542,7 +4575,7 @@ func sequenceRestartOp(ident string, o *ir.Sequence) pipeline.DiffOp {
 	if o.RestartWith != nil {
 		sql += fmt.Sprintf(" WITH %d", *o.RestartWith)
 	}
-	return manualTransactionalOp(sql+";", o.SrcPos)
+	return cautionOp(sql+";", o.SrcPos)
 }
 
 // writeSeqParams appends explicit sequence parameters to b for any non-nil fields.
@@ -5969,7 +6002,7 @@ func diffSequence(o *ir.Sequence, snap *snapshot.SnapSequence) []pipeline.DiffOp
 		// PostgreSQL's own documented usage pattern for RESTART (Section 10):
 		// a one-shot reset that should be removed from source once applied.
 		ops = append(ops, sequenceRestartOp(ident, o))
-		ops = append(ops, manualOp(fmt.Sprintf(
+		ops = append(ops, instructionOp(pipeline.Safe, fmt.Sprintf(
 			"-- remove the RESTART directive on %s once this reset has been applied; it will be re-emitted on every future plan/apply while it remains declared",
 			ident,
 		), pos))
@@ -6592,7 +6625,7 @@ func diffView(o *ir.View, snap *snapshot.SnapView) ([]pipeline.DiffOp, error) {
 	}
 
 	if o.Materialized && snap.WithNoData != o.WithNoData {
-		ops = append(ops, manualOp(
+		ops = append(ops, instructionOp(pipeline.Safe,
 			fmt.Sprintf("-- WITH NO DATA changed on %s %s; refresh manually: REFRESH MATERIALIZED VIEW %s;",
 				viewKind, tbl, tbl),
 			pos,
@@ -7155,10 +7188,9 @@ func diffType(o *ir.Type, snap *snapshot.SnapType, fullSnap *pipeline.Snapshot, 
 
 		ops = append(ops, renameOps...)
 
-		// ALTER TYPE ADD VALUE couldn't run inside a transaction block
-		// before PG 12 (RFC Section 5.1.1) — moot given RFC Section 1.4's documented
-		// version floor of 14, so this always runs transactionally.
-		// Positional control (BEFORE/AFTER, audit item #18) is inferred
+		// ADD VALUE runs inside the migration's transaction unless another
+		// statement in the migration uses the new value — see
+		// placeEnumAdditions (RFC Section 5.1.1). Positional control (BEFORE/AFTER, audit item #18) is inferred
 		// purely from where a new value sits in the desired list relative
 		// to values that already exist live (including one just renamed
 		// into place above), not a separate directive: walking left to
@@ -7194,7 +7226,7 @@ func diffType(o *ir.Type, snap *snapshot.SnapType, fullSnap *pipeline.Snapshot, 
 					stmt = fmt.Sprintf("ALTER TYPE %s ADD VALUE %s;", typeIdent, quoteLit(v))
 				}
 			}
-			ops = append(ops, safeOp(stmt, pos))
+			ops = append(ops, &addValueOp{op: safeOp(stmt, pos), typeIdent: typeIdent, value: v})
 			lastKnown = v
 		}
 	}
@@ -7321,7 +7353,7 @@ func diffEnumRemove(o *ir.Type, snap *snapshot.SnapType, fullSnap *pipeline.Snap
 	ops = append(ops, createTypeGrantOps(o)...)
 
 	// Step 7: cleanup instruction for manual rollback.
-	ops = append(ops, manualOp(fmt.Sprintf("-- On failure run: DROP TYPE IF EXISTS %s;", shadowIdent), pos))
+	ops = append(ops, instructionOp(pipeline.Safe, fmt.Sprintf("-- On failure run: DROP TYPE IF EXISTS %s;", shadowIdent), pos))
 
 	return ops, nil
 }
@@ -7795,7 +7827,7 @@ func diffPartitions(tbl string, o *ir.Table, snap *snapshot.SnapTable, pos pipel
 		desiredPB = o.PartitionBy.Strategy + " (" + strings.Join(o.PartitionBy.Columns, ", ") + ")"
 	}
 	if snap.PartitionBy != desiredPB {
-		ops = append(ops, manualOp(
+		ops = append(ops, instructionOp(pipeline.Destructive,
 			fmt.Sprintf("-- PARTITION BY changed on %s; table must be recreated to alter the partition strategy", tbl),
 			pos,
 		))
@@ -7914,7 +7946,7 @@ func diffPartitionList(schema, parent string, desired []*ir.Partition, snap []sn
 		case sp.PartitionBy != desiredPB:
 			// A sub-partition's own PARTITION BY strategy cannot be altered
 			// in place either.
-			ops = append(ops, manualOp(
+			ops = append(ops, instructionOp(pipeline.Destructive,
 				fmt.Sprintf("-- PARTITION BY changed on %s; table must be recreated to alter the partition strategy", partTbl),
 				p.SrcPos,
 			))
@@ -8241,7 +8273,7 @@ func diffColumns(tbl string, o *ir.Table, snap *snapshot.SnapTable, vtypes map[s
 			if col.NotNull && col.Default == nil && col.Identity == nil && col.Generated == nil && col.Serial == nil && !notNullConstrainedCols[col.Name] {
 				safety = pipeline.Caution
 			}
-			ops = append(ops, &op{sql: b.String(), safety: safety, pos: col.SrcPos, txn: true})
+			ops = append(ops, &op{sql: b.String(), safety: safety, pos: col.SrcPos, mode: pipeline.ModeTransactional})
 			if txt := effectiveComment(col.Comment, col.Deprecated); txt != nil {
 				ops = append(ops, safeOp(
 					fmt.Sprintf("COMMENT ON COLUMN %s.%s IS %s;", tbl, quoteIdent(col.Name), quoteLit(*txt)),
@@ -8310,7 +8342,7 @@ func diffColumns(tbl string, o *ir.Table, snap *snapshot.SnapTable, vtypes map[s
 				sql:    fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s TYPE %s%s;", tbl, quoteIdent(col.Name), resolvedType, using),
 				safety: safety,
 				pos:    col.SrcPos,
-				txn:    true,
+				mode:   pipeline.ModeTransactional,
 			})
 		}
 		ops = append(ops, diffGeneratedColumn(tbl, col, sc, resolvedType)...)
@@ -10255,12 +10287,15 @@ func diffPolicies(schema, table string, o *ir.Table, snap *snapshot.SnapTable) (
 		if _, wasRenamed := renamedFrom[sp.Name]; wasRenamed {
 			continue
 		}
-		// A dropped RLS policy silently widens row visibility —
-		// behavior-changing even though no data is lost (RFC audit item #26).
-		ops = append(ops, cautionOp(
-			fmt.Sprintf("DROP POLICY IF EXISTS %s ON %s;", quoteIdent(sp.Name), tblIdent),
-			pipeline.SourcePos{},
-		))
+		// Dropping a RESTRICTIVE policy widens what roles can see or change,
+		// so it is CAUTION (RFC Section 17.2). Dropping a PERMISSIVE policy
+		// only narrows access, so it is SAFE.
+		dropSQL := fmt.Sprintf("DROP POLICY IF EXISTS %s ON %s;", quoteIdent(sp.Name), tblIdent)
+		if sp.Permissive {
+			ops = append(ops, safeOp(dropSQL, pipeline.SourcePos{}))
+		} else {
+			ops = append(ops, cautionOp(dropSQL, pipeline.SourcePos{}))
+		}
 	}
 	for _, pol := range o.Policies {
 		existing, exists := snapByName[pol.Name]

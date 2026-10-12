@@ -439,10 +439,21 @@ const (
 	// Destructive indicates possible data loss. Blocked by default; requires
 	// --allow-destructive on dpg apply.
 	Destructive = pipeline.Destructive
-	// Manual indicates a non-transactional operation (e.g. CREATE INDEX
-	// CONCURRENTLY) or an instruction-only step that must be performed by the
-	// operator outside DPG. Shown in plan output but never executed automatically.
-	Manual = pipeline.Manual
+)
+
+// ExecMode says how a migration operation is carried out, independently of
+// its Safety (RFC Section 17.3).
+type ExecMode = pipeline.ExecMode
+
+const (
+	// ModeTransactional ops run inside the migration's transaction.
+	ModeTransactional = pipeline.ModeTransactional
+	// ModeNonTransactional ops run after COMMIT (e.g. CREATE INDEX
+	// CONCURRENTLY).
+	ModeNonTransactional = pipeline.ModeNonTransactional
+	// ModeInstructionOnly ops describe a step DPG does not perform; they are
+	// shown in plan output and never executed.
+	ModeInstructionOnly = pipeline.ModeInstructionOnly
 )
 
 // Migration is the complete output of an Emitter: ordered SQL statements

@@ -180,14 +180,13 @@ type RawObject struct {
 	Pos    SourcePos
 }
 
-// Safety classifies the risk of a migration operation.
+// Safety classifies the risk of a migration operation (RFC Section 17.2).
 type Safety int
 
 const (
 	Safe        Safety = iota
-	Caution            // locks or performance impact possible
+	Caution            // locks, rewrites, or access/integrity changes possible
 	Destructive        // data loss possible; blocked by default
-	Manual             // cannot run inside a transaction (e.g. CREATE INDEX CONCURRENTLY)
 )
 
 func (s Safety) String() string {
@@ -198,10 +197,43 @@ func (s Safety) String() string {
 		return "CAUTION"
 	case Destructive:
 		return "DESTRUCTIVE"
-	case Manual:
-		return "MANUAL"
 	default:
 		return "UNKNOWN"
+	}
+}
+
+// ExecMode says how a migration operation is carried out (RFC Section 17.3),
+// independently of its Safety.
+type ExecMode int
+
+const (
+	// ModeTransactional ops run inside the migration's transaction.
+	ModeTransactional ExecMode = iota
+	// ModeNonTransactional ops run after COMMIT, each on its own, because
+	// PostgreSQL refuses them inside a transaction block.
+	ModeNonTransactional
+	// ModePreTransactional ops are non-transactional ops that must run
+	// before BEGIN, each on its own: an enum ADD VALUE whose new value is
+	// used by a statement in the transaction (PostgreSQL rejects using a
+	// value added in the same, uncommitted transaction).
+	ModePreTransactional
+	// ModeInstructionOnly ops are SQL comments describing a step DPG does
+	// not perform; they are shown in the plan and never executed.
+	ModeInstructionOnly
+)
+
+func (m ExecMode) String() string {
+	switch m {
+	case ModeTransactional:
+		return "transactional"
+	case ModeNonTransactional:
+		return "non-transactional"
+	case ModePreTransactional:
+		return "non-transactional (before the transaction)"
+	case ModeInstructionOnly:
+		return "instruction-only"
+	default:
+		return "unknown"
 	}
 }
 
@@ -210,9 +242,9 @@ type DiffOp interface {
 	SQL() string
 	Safety() Safety
 	Pos() SourcePos
-	// Transactional returns false for MANUAL ops that must execute
-	// outside a transaction block (e.g. concurrent index operations).
-	Transactional() bool
+	// Mode says whether the op runs inside the migration's transaction,
+	// after it, or not at all (an instruction for the operator).
+	Mode() ExecMode
 }
 
 // PGParseResult wraps the output of the PGSQLParser.
@@ -299,6 +331,7 @@ type MigrationMeta struct {
 // Migration is the output of the Emitter stage.
 type Migration struct {
 	Meta             MigrationMeta
+	PreTransactional []DiffOp // executed before BEGIN, one at a time
 	Transactional    []DiffOp // wrapped in BEGIN/COMMIT
 	NonTransactional []DiffOp // executed after COMMIT
 }

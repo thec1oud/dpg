@@ -121,7 +121,7 @@ With --strict, lint warnings are promoted to errors and block the apply.`,
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "skip interactive approval prompt")
 	cmd.Flags().BoolVar(&allowDestructive, "allow-destructive", false, "allow destructive operations")
 	cmd.Flags().BoolVar(&approvePartitionRebuild, "approve-partition-rebuild", false,
-		"allow partition strategy rebuild (implies --allow-destructive for partition ops)")
+		"acknowledge an instruction-only partition strategy rebuild step")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the migration plan but do not execute or update the snapshot")
 	cmd.Flags().BoolVar(&noSnapshot, "no-snapshot", false, "skip snapshot update after a successful apply")
 	cmd.Flags().BoolVar(&strict, "strict", false, "treat lint warnings as errors (blocks apply if any exist)")
@@ -140,12 +140,10 @@ type applyOptions struct {
 	lintCfg                 pipeline.LinterConfig
 }
 
-// isInstructionOp reports whether op is a comment-only Manual op that
-// describes a manual step rather than executable SQL (e.g. partition strategy
-// change, WITH NO DATA change). These ops are shown in the plan but must never
-// be sent to the executor.
+// isInstructionOp reports whether op is an instruction-only step (RFC Section
+// 17.3): shown in the plan, never sent to the executor.
 func isInstructionOp(op pipeline.DiffOp) bool {
-	return op.Safety() == pipeline.Manual && len(op.SQL()) > 0 && op.SQL()[0] == '-'
+	return op.Mode() == pipeline.ModeInstructionOnly
 }
 
 func runApply(
@@ -204,16 +202,14 @@ func runApply(
 
 	if !opts.allowDestructive {
 		for _, op := range ops {
-			if op.Safety() == pipeline.Destructive {
+			if op.Safety() == pipeline.Destructive && !isInstructionOp(op) {
 				return fmt.Errorf("DPG-E025: migration contains destructive operations; re-run with --allow-destructive to proceed\n  first: %s", op.SQL())
 			}
 		}
 	}
 
-	// Gate instruction-only Manual ops (e.g. partition strategy changes) behind
-	// --approve-partition-rebuild. These ops are shown in the plan but must not
-	// be sent to the executor — they describe steps the operator must perform
-	// manually outside of DPG.
+	// Instruction-only ops are shown in the plan but never sent to the
+	// executor.
 	var instructionOps []pipeline.DiffOp
 	var executableOps []pipeline.DiffOp
 	for _, op := range ops {
@@ -223,8 +219,15 @@ func runApply(
 			executableOps = append(executableOps, op)
 		}
 	}
-	if len(instructionOps) > 0 && !opts.approvePartitionRebuild {
-		return fmt.Errorf("migration requires manual steps (partition strategy change or similar);\nre-run with --approve-partition-rebuild to acknowledge and proceed\n  first: %s", instructionOps[0].SQL())
+	// A Destructive instruction (a partition strategy rebuild) is a step
+	// the operator must perform; apply refuses to continue until it is
+	// acknowledged. Safe instructions are informational notes.
+	if !opts.approvePartitionRebuild {
+		for _, op := range instructionOps {
+			if op.Safety() == pipeline.Destructive {
+				return fmt.Errorf("migration requires a manual partition strategy rebuild;\nre-run with --approve-partition-rebuild to acknowledge and proceed\n  first: %s", op.SQL())
+			}
+		}
 	}
 
 	rev, _ := gitRevision()
@@ -381,7 +384,7 @@ func runClusterApply(
 
 	if !opts.allowDestructive {
 		for _, op := range ops {
-			if op.Safety() == pipeline.Destructive {
+			if op.Safety() == pipeline.Destructive && !isInstructionOp(op) {
 				return fmt.Errorf("DPG-E025: cluster migration contains destructive operations; re-run with --allow-destructive\n  first: %s", op.SQL())
 			}
 		}

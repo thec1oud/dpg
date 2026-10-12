@@ -27,7 +27,7 @@ dpg apply [flags]
 
 ```
       --allow-destructive           allow destructive operations
-      --approve-partition-rebuild   allow partition strategy rebuild (implies --allow-destructive for partition ops)
+      --approve-partition-rebuild   acknowledge an instruction-only partition strategy rebuild step
       --cluster string              cluster to apply (required when multiple clusters exist)
       --database string             database to apply (required when multiple databases exist)
       --dry-run                     print the migration plan but do not execute or update the snapshot

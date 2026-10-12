@@ -52,7 +52,12 @@ type testOp struct {
 
 func (o testOp) SQL() string             { return o.sql }
 func (o testOp) Safety() pipeline.Safety { return pipeline.Safe }
-func (o testOp) Transactional() bool     { return o.txn }
+func (o testOp) Mode() pipeline.ExecMode {
+	if o.txn {
+		return pipeline.ModeTransactional
+	}
+	return pipeline.ModeNonTransactional
+}
 func (o testOp) Pos() pipeline.SourcePos { return pipeline.SourcePos{} }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

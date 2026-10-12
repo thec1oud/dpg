@@ -65,7 +65,7 @@ CREATE COLLATION "public"."my_collation" (COPY = pg_catalog."default");
 |--------|-----|--------|
 | Owner changed | `ALTER COLLATION OWNER TO` | `SAFE` |
 | Renamed (`RENAMED FROM`) | `ALTER COLLATION RENAME TO` (+ `SET SCHEMA` if schema-qualified) | `CAUTION` |
-| `REFRESH VERSION` present in source | `ALTER COLLATION REFRESH VERSION` (re-emitted every apply while present) | `MANUAL` |
+| `REFRESH VERSION` present in source | `ALTER COLLATION REFRESH VERSION` (re-emitted every apply while present) | `CAUTION` |
 | Any other property change (`LOCALE`/`PROVIDER`/`RULES`/`FROM` target/etc.) | `DROP COLLATION` + `CREATE COLLATION` | `DESTRUCTIVE` |
 
 Columns using the collation must be re-indexed after a drop-and-recreate.

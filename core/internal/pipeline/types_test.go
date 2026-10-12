@@ -12,7 +12,6 @@ func TestSafetyString(t *testing.T) {
 		{Safe, "SAFE"},
 		{Caution, "CAUTION"},
 		{Destructive, "DESTRUCTIVE"},
-		{Manual, "MANUAL"},
 	}
 	for _, tc := range cases {
 		if got := tc.s.String(); got != tc.want {

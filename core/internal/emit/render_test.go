@@ -17,7 +17,7 @@ type testOp struct {
 func (o testOp) SQL() string             { return o.sql }
 func (o testOp) Safety() pipeline.Safety { return o.safety }
 func (o testOp) Pos() pipeline.SourcePos { return o.pos }
-func (o testOp) Transactional() bool     { return true }
+func (o testOp) Mode() pipeline.ExecMode { return pipeline.ModeTransactional }
 
 func TestRenderNoChanges(t *testing.T) {
 	var buf strings.Builder
@@ -138,6 +138,28 @@ func TestRenderHeader(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected %q in output header, got:\n%s", want, out)
 		}
+	}
+}
+
+// TestRenderAllOneTransactionPerDatabase guards RFC Section 17.1: a
+// PostgreSQL transaction cannot span databases, so a multi-database plan
+// shows a separate BEGIN/COMMIT for each database, in apply order.
+func TestRenderAllOneTransactionPerDatabase(t *testing.T) {
+	op := testOp{sql: "SELECT 1;", safety: pipeline.Safe}
+	migs := []pipeline.Migration{
+		{Meta: pipeline.MigrationMeta{Cluster: "c", Database: "app"}, Transactional: []pipeline.DiffOp{op}},
+		{Meta: pipeline.MigrationMeta{Cluster: "c", Database: "crm"}, Transactional: []pipeline.DiffOp{op}},
+	}
+	var buf strings.Builder
+	if err := RenderAll(&buf, migs, DefaultRenderOptions()); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if n := strings.Count(out, "BEGIN;"); n != 2 {
+		t.Errorf("expected 2 BEGIN blocks, got %d:\n%s", n, out)
+	}
+	if strings.Index(out, "app") > strings.Index(out, "crm") {
+		t.Errorf("databases out of order:\n%s", out)
 	}
 }
 

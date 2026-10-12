@@ -88,10 +88,10 @@ func TestRoundtripSequenceRestart(t *testing.T) {
 	if op == nil {
 		t.Fatalf("expected ALTER SEQUENCE ... RESTART WITH 1000, got: %v", opsSQL(ops))
 	}
-	if op.Safety() != pipeline.Manual {
-		t.Errorf("expected RESTART to be Manual safety, got %s", op.Safety())
+	if op.Safety() != pipeline.Caution {
+		t.Errorf("expected RESTART to be Caution safety, got %s", op.Safety())
 	}
-	if !op.Transactional() {
+	if op.Mode() != pipeline.ModeTransactional {
 		t.Error("expected RESTART to run inside the migration's transaction (bug #68 regressed)")
 	}
 
