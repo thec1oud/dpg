@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0-alpha.1] — 2026-10-12
+
+### Added
+
+- Record migrations without a database; CI check; log repair and rebase
+- Object fingerprints; migrations refuse to change drifted objects
+- Apply preflight and migration guards; verify at the database's position
+- Database ledger; apply settles the log's migrations a database hasn't run
+- Migration log with offline replay, baselines and adoption migrations
+- Ops name their object; warn on a snapshot format mismatch
+- Adopt insertions, grants, macro parts and dependencies; interactive mode
+- Dpg resolve and drift acknowledgements
+- Record source spans and index where each property is declared
+- Compare declared properties only and classify drift
+- [ignore] config section and undeclared-role handling
+- Declare an extended statistics object's target
+- Support constraint triggers
+- Reject block directives an object kind doesn't accept (DPG-E024)
+- Check every declared version-gated construct
+- Warn on CONCURRENTLY for a new table's indexes
+- Resolve virtual type references at compile time (DPG-E044)
+- Model a range type's multirange name and rename it in place
+- Enforce unified ;/{ terminator rules (DPG-E037/E038)
+- Implement Section 9.2 SET param = value / FROM CURRENT
+- Warn when an unreconstructable object is omitted
+- Implement DPG-E019 stale-column-reference detection
+- Implement DPG-E005 conflicting-set-member detection
+- Implement E007/E008/E009 misuse detection
+- Label 13 mislabeled DPG-Ennn codes, implement 3 missing ones
+- Implement RENAMED FROM support
+
+### Fixed
+
+- Table and matview SET TABLESPACE are CAUTION
+- Depend on introspected column types written schema-qualified
+- Report block directive errors at the directive
+- Five plan --live false positives
+- End the migration header's Cluster line
+- Hint that DPG does not create databases
+- Keep every comment, Part 1 clause and macro spread
+- Reject COMMENT on a user mapping
+- Rename sequences and text search configurations in place
+- Compare a `*` view with the live catalog without its select list
+- Reset an extended statistics target with -1, not DEFAULT
+- Classify indexes created with a new table or view as SAFE
+- Classify an ADD COLUMN that rewrites the table as CAUTION
+- Carry plain view options, check option and column list
+- Keep the column list of ON DELETE SET NULL/SET DEFAULT
+- Make a table-level PRIMARY KEY's columns NOT NULL
+- Keep source positions accurate and root-relative
+- Remove stray semicolon-before-block and own-line brace bugs
+- Tag DPG-E021/E022 correctly; emit sequence RESTART reminder
+- Parse bare ENUM shorthand; fix doubled AS ENUM on dump
+- Normalize BOM and CRLF/CR line endings on source read
+- Correct MAINTAIN privilege version-gate's RFC section citation
+
+### Changed
+
+- Rewrite the roles page in the RFC's role syntax
+- One PG/DPG layout for every object section
+- Fix statistics target, constraint trigger and sequence rename pages
+- Specify virtual type naming, view options and version gating
+- Read-through revision of the DPG specification
+- Split MANUAL into safety class and execution mode
+- Typed dpg.toml files and per-database connections
+- Enforce schema scope and honour default_schema (DPG-E040)
+- Make conflicting scalar declarations an error (DPG-E039)
+- Align DPG block keywords with PostgreSQL spelling
+- Sync docs-site examples with unified terminator rules
+- Unify Section 4.5 statement-terminator rules
+- Phase 3 section-by-section audit against core/ and docs site
+- Sync docs-site pages with actual diff/introspect behavior
+- Retract DPG-E016, its premise was factually wrong
+- Document that partition RLS does not protect direct access
+- Fix semantic self-consistency gaps from architectural audit
+- Fix internal self-consistency gaps found in pre-lock audit
+- Document npm trusted-publisher toggle for grammar-only releases
+
 ## [0.5.5-alpha.6] — 2026-08-26
 
 - No changes.
