@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -119,6 +121,9 @@ func runVerifyAll(clusterName, databaseName string) ([]verifyTarget, error) {
 			if err != nil {
 				return nil, fmt.Errorf("%s (cluster): %w", cl.Name(), err)
 			}
+			if err := applyAckFile(proj, cl.Name(), cl.ClusterSnapshotKey(), r); err != nil {
+				return nil, err
+			}
 			targets = append(targets, verifyTarget{Cluster: cl.Name(), Database: "(cluster)", Report: r})
 		}
 		databases, err := resolveDatabases(cl, databaseName)
@@ -131,10 +136,29 @@ func runVerifyAll(clusterName, databaseName string) ([]verifyTarget, error) {
 			if err != nil {
 				return nil, fmt.Errorf("%s/%s: %w", cl.Name(), db.Name(), err)
 			}
+			if err := applyAckFile(proj, cl.Name(), db.Name(), r); err != nil {
+				return nil, err
+			}
 			targets = append(targets, verifyTarget{Cluster: cl.Name(), Database: db.Name(), Report: r})
 		}
 	}
 	return targets, nil
+}
+
+// ackPath is the acknowledgement file of a cluster's database, or of its
+// cluster-level objects (database = the cluster snapshot key).
+func ackPath(proj *project.Project, cluster, database string) string {
+	return filepath.Join(proj.DPGDir(), "acknowledged", cluster, database+".json")
+}
+
+// applyAckFile marks the report's acknowledged items (RFC Section 18.3).
+func applyAckFile(proj *project.Project, cluster, database string, r *drift.Report) error {
+	acks, err := drift.LoadAcks(ackPath(proj, cluster, database))
+	if err != nil {
+		return err
+	}
+	drift.ApplyAcks(r, acks, time.Now())
+	return nil
 }
 
 // runVerify compares one database's objects with its snapshot.
@@ -312,6 +336,27 @@ var verifyGroups = []struct {
 	{drift.Converged, "converged (the database already has the source's change; the snapshot is out of date)", ui.Yellow},
 	{drift.Unmanaged, "unmanaged", ui.Yellow},
 	{drift.Warning, "warnings", ui.Yellow},
+	{acknowledgedGroup, "acknowledged", ui.Dim},
+}
+
+// acknowledgedGroup is the display section for acknowledged items, which
+// keep their own group.
+const acknowledgedGroup drift.Group = -1
+
+// describeAck describes an acknowledgement.
+func describeAck(a drift.Ack, g drift.Group) string {
+	s := "acknowledged " + g.String()
+	if a.By != "" {
+		s += " by " + a.By
+	}
+	s += " on " + a.At.Format("2006-01-02")
+	if a.Expires != nil {
+		s += ", until " + a.Expires.Format("2006-01-02")
+	}
+	if a.Reason != "" {
+		s += ": " + a.Reason
+	}
+	return s
 }
 
 // renderVerifyText writes the human-readable report.
@@ -330,7 +375,7 @@ func renderVerifyText(w io.Writer, targets []verifyTarget, color bool) {
 		for _, g := range verifyGroups {
 			var items []drift.Item
 			for _, it := range t.Report.Items {
-				if it.Group == g.group {
+				if (g.group == acknowledgedGroup) == (it.Acknowledged != nil) && (it.Acknowledged != nil || it.Group == g.group) {
 					items = append(items, it)
 				}
 			}
@@ -341,6 +386,12 @@ func renderVerifyText(w io.Writer, targets []verifyTarget, color bool) {
 			fmt.Fprintf(w, "  %s\n", g.paint(g.heading, color))
 			for _, it := range items {
 				fmt.Fprintf(w, "    %s  %s\n", it.ID, describeItem(it))
+				switch {
+				case it.Acknowledged != nil:
+					fmt.Fprintf(w, "      %s\n", ui.Dim(describeAck(*it.Acknowledged, it.Group), color))
+				case it.Lapsed != nil:
+					fmt.Fprintf(w, "      %s\n", ui.Yellow("acknowledgement lapsed: the values changed or it expired", color))
+				}
 				for _, s := range it.SQL {
 					fmt.Fprintf(w, "      %s\n", ui.Dim(s, color))
 				}
@@ -352,6 +403,9 @@ func renderVerifyText(w io.Writer, targets []verifyTarget, color bool) {
 	for _, g := range verifyGroups {
 		if n := counts[g.group]; n > 0 {
 			name := g.group.String()
+			if g.group == acknowledgedGroup {
+				name = "acknowledged"
+			}
 			if n > 1 && (g.group == drift.Conflict || g.group == drift.Warning) {
 				name += "s"
 			}
@@ -373,6 +427,11 @@ type verifyItemJSON struct {
 	Snapshot string   `json:"snapshot,omitempty"`
 	Live     string   `json:"live,omitempty"`
 	SQL      []string `json:"sql,omitempty"`
+	// Acknowledged is the item's acknowledgement; Lapsed marks one that no
+	// longer applies.
+	Acknowledged *drift.Ack `json:"acknowledged,omitempty"`
+	Lapsed       bool       `json:"lapsed,omitempty"`
+	Source       string     `json:"source,omitempty"`
 }
 
 type verifyTargetJSON struct {
@@ -392,7 +451,8 @@ func renderVerifyJSON(w io.Writer, targets []verifyTarget, hasDrift bool) error 
 		for _, it := range t.Report.Items {
 			tj.Items = append(tj.Items, verifyItemJSON{
 				ID: it.ID, Group: it.Group.String(), Kind: it.Kind, Object: it.Object, Property: it.Property,
-				Change: it.Change, Snapshot: it.Snapshot, Live: it.Live, SQL: it.SQL,
+				Change: it.Change, Snapshot: it.Snapshot, Live: it.Live, Source: it.Source, SQL: it.SQL,
+				Acknowledged: it.Acknowledged, Lapsed: it.Lapsed != nil,
 			})
 		}
 		out.Targets = append(out.Targets, tj)

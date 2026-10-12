@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/thec1oud/dpg/internal/drift"
 )
@@ -60,5 +61,34 @@ func TestRenderVerifyJSON(t *testing.T) {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("missing %s in %s", want, b.String())
 		}
+	}
+}
+
+// TestRenderVerifyAcknowledged: an acknowledged item is listed apart and
+// doesn't count as drift; a lapsed acknowledgement is flagged on the item.
+func TestRenderVerifyAcknowledged(t *testing.T) {
+	at := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
+	ack := drift.Ack{ID: "role:r/comment", By: "dan", At: at, Reason: "migration in progress"}
+	lapsed := drift.Ack{ID: "role:r/owner", At: at}
+	targets := []verifyTarget{{Cluster: "prod", Database: "(cluster)", Report: &drift.Report{Items: []drift.Item{
+		{ID: "role:r/comment", Group: drift.Drift, Change: "changed", Snapshot: `"a"`, Live: `"b"`, Acknowledged: &ack},
+		{ID: "role:r/owner", Group: drift.Drift, Change: "changed", Snapshot: `"x"`, Live: `"y"`, Lapsed: &lapsed},
+	}}}}
+	var b bytes.Buffer
+	renderVerifyText(&b, targets, false)
+	out := b.String()
+	for _, want := range []string{
+		"  drift\n    role:r/owner",
+		"acknowledgement lapsed",
+		"  acknowledged\n    role:r/comment",
+		"acknowledged drift by dan on 2026-10-12: migration in progress",
+		"1 drift, 1 acknowledged",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if !targets[0].Report.HasDrift() {
+		t.Error("the lapsed item still fails")
 	}
 }

@@ -67,12 +67,18 @@ type Item struct {
 	// in the snapshot), "changed", or for a revoked privilege granted again
 	// live, "regranted".
 	Change string
-	// Snapshot and Live describe the two values, when the item has them.
-	Snapshot, Live string
+	// Snapshot and Live describe the two values, when the item has them;
+	// Source is the source's value of the property, when the source
+	// declares the object.
+	Snapshot, Live, Source string
 	// SQL holds the statements that restore the declared state, when they
 	// can be computed (the object's source declaration equals its snapshot
 	// entry; see Detect).
 	SQL []string
+	// Acknowledged is the acknowledgement covering the item (ApplyAcks);
+	// an acknowledged item doesn't fail dpg verify. Lapsed is an
+	// acknowledgement of the item that no longer applies.
+	Acknowledged, Lapsed *Ack
 }
 
 // Report is the result of Detect, sorted by object.
@@ -80,15 +86,19 @@ type Report struct {
 	Items []Item
 }
 
-// HasDrift reports whether any item is drift, a conflict or converged.
+// HasDrift reports whether any item is drift, a conflict or converged and
+// not acknowledged.
 func (r *Report) HasDrift() bool {
 	for _, it := range r.Items {
-		if it.Group.Failing() {
+		if it.Failing() {
 			return true
 		}
 	}
 	return false
 }
+
+// Failing reports whether the item makes dpg verify exit 1.
+func (it Item) Failing() bool { return it.Group.Failing() && it.Acknowledged == nil }
 
 // Options configures Detect.
 type Options struct {
@@ -240,6 +250,9 @@ func Detect(differ pipeline.Differ, live []pipeline.IRObject, stored *pipeline.S
 		}
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", key, err)
+		}
+		if hasSource {
+			fillSource(items, src)
 		}
 		r.Items = append(r.Items, items...)
 	}
@@ -587,4 +600,116 @@ func patchProperty(raw json.RawMessage, property string, src map[string]any) (js
 	}
 	outer[innerKey] = inner
 	return json.Marshal(outer)
+}
+
+// fillSource sets each item's Source to the source's value of its
+// property.
+func fillSource(items []Item, src pipeline.IRObject) {
+	so := snapshot.ToSnapObject(stripIRGrants(src))
+	if so == nil {
+		return
+	}
+	raw, err := json.Marshal(so)
+	if err != nil {
+		return
+	}
+	m, _, err := innerMap(raw)
+	if err != nil || m == nil {
+		return
+	}
+	for i := range items {
+		p := items[i].Property
+		if p == "" || strings.Contains(p, "grant:") {
+			continue
+		}
+		if ek, name, isElem := strings.Cut(p, ":"); isElem {
+			name = unescapeName(name)
+			for listKey, kind := range elementKinds {
+				if kind != ek {
+					continue
+				}
+				if byName, _, ok := namedElements(m[listKey]); ok {
+					items[i].Source = compact(byName[name])
+				}
+			}
+			continue
+		}
+		items[i].Source = compact(m[p])
+	}
+}
+
+// RestoreOps returns the operations that give the live object the source's
+// value of property ("" for what no single property accounts for): the
+// differ's source-to-live operations for the object, as dpg plan --live
+// computes them, attributed like Detect's items.
+func RestoreOps(differ pipeline.Differ, src, live pipeline.IRObject, key, property string) ([]pipeline.DiffOp, error) {
+	liveSnap := &pipeline.Snapshot{Live: true}
+	if err := snapshot.Populate(liveSnap, []pipeline.IRObject{live}); err != nil {
+		return nil, err
+	}
+	liveRaw, ok := liveSnap.Objects[key]
+	if !ok {
+		return nil, fmt.Errorf("%s: not in the database", key)
+	}
+	liveRaw, err := stripJSONGrants(liveRaw)
+	if err != nil {
+		return nil, err
+	}
+	desired := stripIRGrants(src)
+	ops, err := differ.Diff([]pipeline.IRObject{desired}, &pipeline.Snapshot{Live: true, Objects: map[string]json.RawMessage{key: liveRaw}})
+	if err != nil || len(ops) == 0 {
+		return nil, err
+	}
+	srcSO := snapshot.ToSnapObject(desired)
+	if srcSO == nil {
+		return nil, fmt.Errorf("%s: no snapshot form", key)
+	}
+	srcRaw, err := json.Marshal(srcSO)
+	if err != nil {
+		return nil, err
+	}
+	changes, rest, err := attribute(differ, desired, key, liveRaw, srcRaw, true, opSQL(ops))
+	if err != nil {
+		return nil, err
+	}
+	want := rest
+	if property != "" {
+		want = nil
+		for _, c := range changes {
+			if c.property == property {
+				want = c.sql
+			}
+		}
+	}
+	// The ops whose SQL the property accounts for, as a multiset.
+	count := map[string]int{}
+	for _, s := range want {
+		count[s]++
+	}
+	var out []pipeline.DiffOp
+	for _, op := range ops {
+		if count[op.SQL()] > 0 {
+			count[op.SQL()]--
+			out = append(out, op)
+		}
+	}
+	return out, nil
+}
+
+// PatchProperty returns the snapshot entry raw with property (a top-level
+// key, or "elementkind:name" for one element of a list) taken from the
+// entry fresh.
+func PatchProperty(raw, fresh json.RawMessage, property string) (json.RawMessage, error) {
+	m, _, err := innerMap(fresh)
+	if err != nil {
+		return nil, err
+	}
+	if m == nil {
+		return raw, nil
+	}
+	out, err := patchProperty(raw, property, m)
+	if err != nil || out == nil {
+		return raw, err
+	}
+	return out, nil
 }
