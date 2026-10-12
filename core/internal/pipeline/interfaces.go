@@ -76,6 +76,13 @@ type IRBuilder interface {
 	// be resolved there — this runs as its own stage, after Merger.Merge
 	// and before DependencyResolver.Sort, mutating objects in place.
 	ResolveLikeClauses(objects []IRObject) error
+
+	// ResolveVirtualTypes resolves column and composite-attribute types
+	// that name a VIRTUAL TYPE (Section 5.6) to its json/jsonb type,
+	// recording the qualified reference, and rejects virtual type names
+	// that collide with a PostgreSQL type. Runs after ResolveLikeClauses
+	// and before DependencyResolver.Sort, mutating objects in place.
+	ResolveVirtualTypes(objects []IRObject, defaultSchema string) error
 }
 
 // Merger merges same-object IRObject declarations from multiple .dpg files

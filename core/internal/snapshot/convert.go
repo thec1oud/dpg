@@ -489,13 +489,13 @@ func toSnapObject(obj pipeline.IRObject) *SnapObject {
 func toSnapVtypeBody(body ir.VtypeBody) SnapVtypeBody {
 	switch b := body.(type) {
 	case ir.VtypeTypeRef:
-		return SnapVtypeBody{Kind: "type_ref", Schema: b.Schema, Name: b.Name, IsArray: b.IsArray}
+		return SnapVtypeBody{Kind: "type_ref", Schema: b.Schema, Name: b.Name, IsArray: b.IsArray, Virtual: b.Virtual}
 	case ir.VtypeComposite:
 		fields := make([]SnapVtypeField, len(b.Fields))
 		for i, f := range b.Fields {
 			fields[i] = SnapVtypeField{
 				Name: f.Name,
-				Type: SnapVtypeBody{Kind: "type_ref", Schema: f.Type.Schema, Name: f.Type.Name, IsArray: f.Type.IsArray},
+				Type: SnapVtypeBody{Kind: "type_ref", Schema: f.Type.Schema, Name: f.Type.Name, IsArray: f.Type.IsArray, Virtual: f.Type.Virtual},
 			}
 		}
 		return SnapVtypeBody{Kind: "composite", Fields: fields}
@@ -652,6 +652,9 @@ func toSnapColumn(col *ir.Column) SnapColumn {
 		sc.IdentityStartValue = col.Identity.StartValue
 		sc.IdentityCache = col.Identity.Cache
 		sc.IdentityCycle = col.Identity.Cycle
+	}
+	if col.VirtualType != nil {
+		sc.VirtualType = col.VirtualType.String()
 	}
 	if col.Generated != nil {
 		sc.Generated = &col.Generated.Expr

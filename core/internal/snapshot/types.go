@@ -414,11 +414,15 @@ type SnapPartition struct {
 }
 
 type SnapColumn struct {
-	Name     string  `json:"name"`
-	Type     string  `json:"type"`
-	NotNull  bool    `json:"not_null,omitempty"`
-	Default  *string `json:"default,omitempty"`
-	Identity *string `json:"identity,omitempty"` // "ALWAYS" or "BY DEFAULT"
+	Name string `json:"name"`
+	Type string `json:"type"`
+	// VirtualType is the schema-qualified VIRTUAL TYPE reference the
+	// column was declared with (RFC Section 5.6), e.g. "public.line_item[]";
+	// Type then holds the json/jsonb type stored in PostgreSQL.
+	VirtualType string  `json:"virtual_type,omitempty"`
+	NotNull     bool    `json:"not_null,omitempty"`
+	Default     *string `json:"default,omitempty"`
+	Identity    *string `json:"identity,omitempty"` // "ALWAYS" or "BY DEFAULT"
 	// Identity sequence options — mirror ir.Identity's identical fields,
 	// nil/false meaning "not declared", same convention as SnapSequence's
 	// own IncrementBy/MinValue/etc. below. Meaningless when Identity is nil.
@@ -788,6 +792,9 @@ type SnapVtypeBody struct {
 	Schema  string `json:"schema,omitempty"`
 	Name    string `json:"name,omitempty"`
 	IsArray bool   `json:"array,omitempty"`
+	// Virtual marks a reference to a declared VIRTUAL TYPE (schema is
+	// then always set); otherwise the reference names a PostgreSQL type.
+	Virtual bool `json:"virtual,omitempty"`
 	// composite fields
 	Fields []SnapVtypeField `json:"fields,omitempty"`
 	// union fields

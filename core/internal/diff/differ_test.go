@@ -6453,6 +6453,9 @@ func TestVirtualTypeNoSQL(t *testing.T) {
 	desired := []pipeline.IRObject{
 		makeVtype("public", "user_state", ir.VtypeTypeRef{Name: "text"}),
 	}
+	if err := ir.ResolveVirtualTypes(desired, "public"); err != nil {
+		t.Fatal(err)
+	}
 	ops, err := d.Diff(desired, &pipeline.Snapshot{})
 	if err != nil {
 		t.Fatal(err)
@@ -6478,6 +6481,9 @@ func TestVirtualTypeNoSQLOnChange(t *testing.T) {
 		makeVtype("public", "user_state", ir.VtypeComposite{
 			Fields: []ir.VtypeField{{Name: "val", Type: ir.VtypeTypeRef{Name: "integer"}}},
 		}),
+	}
+	if err := ir.ResolveVirtualTypes(desired, "public"); err != nil {
+		t.Fatal(err)
 	}
 	ops, err := d.Diff(desired, snap)
 	if err != nil {
@@ -6635,6 +6641,9 @@ func TestCreateTableWithVirtualTypeColumn(t *testing.T) {
 			},
 		},
 	}
+	if err := ir.ResolveVirtualTypes(desired, "public"); err != nil {
+		t.Fatal(err)
+	}
 	ops, err := d.Diff(desired, &pipeline.Snapshot{})
 	if err != nil {
 		t.Fatal(err)
@@ -6667,6 +6676,9 @@ func TestCreateTableWithVirtualTypeArrayColumn(t *testing.T) {
 			},
 		},
 	}
+	if err := ir.ResolveVirtualTypes(desired, "public"); err != nil {
+		t.Fatal(err)
+	}
 	ops, err := d.Diff(desired, &pipeline.Snapshot{})
 	if err != nil {
 		t.Fatal(err)
@@ -6690,6 +6702,9 @@ func TestCreateTableWithSchemaQualifiedVirtualTypeColumn(t *testing.T) {
 				{Name: "payment", Type: ir.TypeRef{Schema: "billing", Name: "payment_method"}},
 			},
 		},
+	}
+	if err := ir.ResolveVirtualTypes(desired, "public"); err != nil {
+		t.Fatal(err)
 	}
 	ops, err := d.Diff(desired, &pipeline.Snapshot{})
 	if err != nil {
@@ -6727,6 +6742,9 @@ func TestAddColumnWithVirtualTypeResolvesToJsonb(t *testing.T) {
 			},
 		},
 	}
+	if err := ir.ResolveVirtualTypes(desired, "public"); err != nil {
+		t.Fatal(err)
+	}
 	ops, err := d.Diff(desired, snap)
 	if err != nil {
 		t.Fatal(err)
@@ -6753,6 +6771,9 @@ func TestCompositeTypeWithVirtualTypeAttrResolvesToJsonb(t *testing.T) {
 				{Name: "detail", Type: ir.TypeRef{Name: "address_detail"}},
 			},
 		},
+	}
+	if err := ir.ResolveVirtualTypes(desired, "public"); err != nil {
+		t.Fatal(err)
 	}
 	ops, err := d.Diff(desired, &pipeline.Snapshot{})
 	if err != nil {
@@ -6786,6 +6807,9 @@ func TestCreateTableVirtualTypePreferredJson(t *testing.T) {
 			},
 		},
 	}
+	if err := ir.ResolveVirtualTypes(desired, "public"); err != nil {
+		t.Fatal(err)
+	}
 	ops, err := d.Diff(desired, &pipeline.Snapshot{})
 	if err != nil {
 		t.Fatal(err)
@@ -6817,6 +6841,9 @@ func TestCreateTableVirtualTypePreferredJsonArray(t *testing.T) {
 			},
 		},
 	}
+	if err := ir.ResolveVirtualTypes(desired, "public"); err != nil {
+		t.Fatal(err)
+	}
 	ops, err := d.Diff(desired, &pipeline.Snapshot{})
 	if err != nil {
 		t.Fatal(err)
@@ -6842,6 +6869,9 @@ func TestCreateTableVirtualTypeDefaultIsJsonb(t *testing.T) {
 			},
 		},
 	}
+	if err := ir.ResolveVirtualTypes(desired, "public"); err != nil {
+		t.Fatal(err)
+	}
 	ops, err := d.Diff(desired, &pipeline.Snapshot{})
 	if err != nil {
 		t.Fatal(err)
@@ -6865,6 +6895,9 @@ func TestNonVirtualTypeColumnNotAffected(t *testing.T) {
 				{Name: "name", Type: ir.TypeRef{Name: "text"}},
 			},
 		},
+	}
+	if err := ir.ResolveVirtualTypes(desired, "public"); err != nil {
+		t.Fatal(err)
 	}
 	ops, err := d.Diff(desired, &pipeline.Snapshot{})
 	if err != nil {
@@ -22745,5 +22778,57 @@ func TestDiffRangeMultirangeNameChangeIsRename(t *testing.T) {
 	}
 	if !containsSQL(ops, `ALTER TYPE "public"."floatmultirange" RENAME TO "float_ranges";`) {
 		t.Fatalf("expected a multirange rename, got: %v", sqlList(ops))
+	}
+}
+
+// TestVirtualTypeColumnSnapshotRoundTrip guards RFC Section 5.6: a column
+// typed as a virtual type snapshots as its json/jsonb type plus the
+// qualified reference, so re-planning against that snapshot is a no-op.
+// A snapshot that stored the unresolved reference as the type is also no
+// drift.
+func TestVirtualTypeColumnSnapshotRoundTrip(t *testing.T) {
+	build := func() []pipeline.IRObject {
+		objs := []pipeline.IRObject{
+			makeVtype("public", "line_item", ir.VtypeComposite{
+				Fields: []ir.VtypeField{{Name: "sku", Type: ir.VtypeTypeRef{Name: "text"}}},
+			}),
+			&ir.Table{Schema: "public", Name: "orders", Columns: []*ir.Column{
+				{Name: "items", Type: ir.TypeRef{Name: "line_item", ArrayDims: 1}},
+			}},
+		}
+		if err := ir.ResolveVirtualTypes(objs, "public"); err != nil {
+			t.Fatal(err)
+		}
+		return objs
+	}
+	snap := &pipeline.Snapshot{}
+	if err := snapshot.Populate(snap, build()); err != nil {
+		t.Fatal(err)
+	}
+	var so snapshot.SnapObject
+	if _, err := snap.GetObject("public.orders", &so); err != nil {
+		t.Fatal(err)
+	}
+	if c := so.Table.Columns[0]; c.Type != "jsonb[]" || c.VirtualType != "public.line_item[]" {
+		t.Errorf("snapshot column = type %q, virtual_type %q", c.Type, c.VirtualType)
+	}
+	ops, err := New().Diff(build(), snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ops) != 0 {
+		t.Errorf("expected no ops re-planning against own snapshot, got %v", sqlList(ops))
+	}
+
+	so.Table.Columns[0].Type = "line_item[]"
+	so.Table.Columns[0].VirtualType = ""
+	legacy := &pipeline.Snapshot{}
+	_ = legacy.SetObject("public.orders", &so)
+	ops, err = New().Diff(build(), legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ops) != 0 {
+		t.Errorf("expected no ops against a legacy unresolved snapshot, got %v", sqlList(ops))
 	}
 }

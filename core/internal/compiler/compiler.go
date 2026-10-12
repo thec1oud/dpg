@@ -282,6 +282,12 @@ func CompileWith(files []string, dbDir string, reg *pipeline.Registry, opts Opti
 		return nil, nameMapWarnings, err
 	}
 
+	// Stage 4.6: Resolve virtual type references (Section 5.6) after LIKE
+	// has copied columns in, so copied columns resolve too.
+	if err := irBuilder.ResolveVirtualTypes(merged, opts.DefaultSchema); err != nil {
+		return nil, nameMapWarnings, err
+	}
+
 	// Stage 5: Topological sort with FK / type dependency resolution.
 	sorted, sortErr := resolver.Sort(merged)
 	if sortErr != nil {

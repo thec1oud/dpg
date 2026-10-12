@@ -75,6 +75,12 @@ type Column struct {
 	Name        string
 	RenamedFrom *string
 	Type        TypeRef
+	// VirtualType is the schema-qualified VIRTUAL TYPE this column or
+	// composite attribute was declared with (RFC Section 5.6), array
+	// dimensions included; nil for an ordinary type. Type then holds the
+	// json/jsonb type PostgreSQL actually stores. Set by
+	// ResolveVirtualTypes.
+	VirtualType *TypeRef
 	NotNull     bool
 	Default     *string    // raw expression text
 	Generated   *Generated // GENERATED ALWAYS AS
@@ -1935,13 +1941,15 @@ func (t *TSTemplate) irObject()               {}
 // It is one of VtypeTypeRef, VtypeComposite, or VtypeUnion.
 type VtypeBody interface{ vtypeBody() }
 
-// VtypeTypeRef references a PostgreSQL built-in type or another declared
-// VIRTUAL TYPE.  IsArray marks a [] suffix (used when assigning as a column
-// type to get jsonb[] instead of jsonb).
+// VtypeTypeRef references a PostgreSQL type or another declared VIRTUAL
+// TYPE. IsArray marks a [] suffix: a JSON array of that type.
 type VtypeTypeRef struct {
 	Schema  string // empty for unqualified references
 	Name    string
 	IsArray bool
+	// Virtual is true when the reference names a declared VIRTUAL TYPE;
+	// Schema is then always set. Set by ResolveVirtualTypes.
+	Virtual bool
 }
 
 func (r VtypeTypeRef) vtypeBody() {}

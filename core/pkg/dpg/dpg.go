@@ -193,7 +193,9 @@ type VirtualType = ir.VirtualType
 
 // Column is a single column in a table, view, or composite type. It includes
 // type information, nullability, defaults, generated/identity specs, storage
-// attributes, and column-level grants.
+// attributes, and column-level grants. A column declared with a virtual
+// type has VirtualType set to the qualified reference and Type set to the
+// json/jsonb type stored in PostgreSQL.
 type Column = ir.Column
 
 // TypeRef is a SQL type reference with optional schema qualification, type

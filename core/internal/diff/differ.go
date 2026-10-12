@@ -125,9 +125,6 @@ func (d *Differ) Diff(desired []pipeline.IRObject, snap *pipeline.Snapshot) ([]p
 		markAttachedFromTargets(tbl.Schema, tbl.Partitions, consumed)
 	}
 
-	// Build virtual type set up-front so all passes can resolve jsonb references.
-	vtypes := buildVTypeSet(desired)
-
 	// Pass 0: create brand-new schemas before anything else. Pass 1's
 	// cross-schema SET SCHEMA (RFC Section 7.6) can target a schema that is
 	// declared in this same apply but doesn't exist in the live database
@@ -153,7 +150,7 @@ func (d *Differ) Diff(desired []pipeline.IRObject, snap *pipeline.Snapshot) ([]p
 		if found {
 			continue
 		}
-		createOps, err := createObject(obj, vtypes)
+		createOps, err := createObject(obj)
 		if err != nil {
 			return nil, err
 		}
@@ -211,7 +208,7 @@ func (d *Differ) Diff(desired []pipeline.IRObject, snap *pipeline.Snapshot) ([]p
 		// an unhandled combination, the same class of narrow edge case the
 		// RFC itself declines to support for RENAMED FROM combined with
 		// ATTACHED FROM/DETACHED FROM on one entry.
-		alterOps, err := diffObject(obj, &oldSnap, snap, vtypes, nil)
+		alterOps, err := diffObject(obj, &oldSnap, snap, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -357,13 +354,13 @@ func (d *Differ) Diff(desired []pipeline.IRObject, snap *pipeline.Snapshot) ([]p
 			return nil, fmt.Errorf("diff: decoding snapshot for %q: %w", key, err)
 		}
 		if !found {
-			createOps, err := createObject(obj, vtypes)
+			createOps, err := createObject(obj)
 			if err != nil {
 				return nil, err
 			}
 			ops = append(ops, createOps...)
 		} else {
-			alterOps, err := diffObject(obj, &so, snap, vtypes, skipDetachedByParent[key])
+			alterOps, err := diffObject(obj, &so, snap, skipDetachedByParent[key])
 			if err != nil {
 				return nil, err
 			}
@@ -419,27 +416,6 @@ func placeEnumAdditions(ops []pipeline.DiffOp) []pipeline.DiffOp {
 	return ops
 }
 
-// buildVTypeSet collects all virtual type names from the desired IR, mapping
-// each name (qualified and unqualified) to its preferred JSON format ("json"
-// or "jsonb").  An empty JsonFormat on the VirtualType defaults to "jsonb".
-func buildVTypeSet(desired []pipeline.IRObject) map[string]string {
-	vtypes := make(map[string]string)
-	for _, obj := range desired {
-		if vt, ok := obj.(*ir.VirtualType); ok {
-			format := vt.JsonFormat
-			if format == "" {
-				format = "jsonb"
-			}
-			vtypes[vt.QualifiedName()] = format
-			vtypes[vt.Name] = format
-		}
-	}
-	return vtypes
-}
-
-// resolveColType returns the SQL type string for a column TypeRef.  When the
-// type refers to a declared virtual type it is replaced by the virtual type's
-// preferred JSON format (json or jsonb), with [] repeated for array dimensions.
 // isLegacySerialTypeName reports whether typeName is the literal,
 // un-normalized SERIAL-family type name a pre-upgrade snapshot may have
 // stored (before Column.Serial existed, typeNameToRef passed "serial"/
@@ -455,7 +431,18 @@ func isLegacySerialTypeName(typeName string) bool {
 	}
 }
 
-// legacyTypeNameBeforeFix reconstructs what resolveColType/TypeRef.String()
+// legacyVirtualTypeSnapshot reports whether sc is a snapshot column that
+// stored col's virtual type reference as its type, unresolved, rather than
+// the json/jsonb type PostgreSQL holds.
+func legacyVirtualTypeSnapshot(col *ir.Column, sc *snapshot.SnapColumn) bool {
+	if col.VirtualType == nil || sc.VirtualType != "" {
+		return false
+	}
+	bare := ir.TypeRef{Name: col.VirtualType.Name, ArrayDims: col.VirtualType.ArrayDims}
+	return sc.Type == col.VirtualType.String() || sc.Type == bare.String()
+}
+
+// legacyTypeNameBeforeFix reconstructs what TypeRef.String()
 // would have rendered for resolvedType before 2026-08-17's PGCatalogName fix
 // added "time"->"time without time zone", "timestamp"->"timestamp without
 // time zone", and "varbit"->"bit varying" mappings (all three previously
@@ -481,21 +468,6 @@ func legacyTypeNameBeforeFix(resolvedType string) string {
 		s = "varbit" + strings.TrimPrefix(s, "bit varying")
 	}
 	return s + arraySuffix
-}
-
-func resolveColType(t ir.TypeRef, vtypes map[string]string) string {
-	key := t.Name
-	if t.Schema != "" {
-		key = t.Schema + "." + t.Name
-	}
-	if format, ok := vtypes[key]; ok {
-		s := format
-		for i := 0; i < t.ArrayDims; i++ {
-			s += "[]"
-		}
-		return s
-	}
-	return t.String()
 }
 
 // renamedFromKey returns the snapshot key under the OLD name for objects that
@@ -827,7 +799,7 @@ func effectiveComment(comment, deprecated *string) *string {
 // (defaults, identity, generated, NOT NULL, grants, comments) — real
 // PostgreSQL's ALTER TYPE ... ATTRIBUTE grammar only has ADD/DROP/ALTER
 // TYPE/RENAME.
-func diffCompositeAttrs(typeIdent string, attrs []*ir.Column, snap []snapshot.SnapColumn, vtypes map[string]string) ([]pipeline.DiffOp, error) {
+func diffCompositeAttrs(typeIdent string, attrs []*ir.Column, snap []snapshot.SnapColumn) ([]pipeline.DiffOp, error) {
 	var ops []pipeline.DiffOp
 
 	snapByName := make(map[string]*snapshot.SnapColumn, len(snap))
@@ -892,7 +864,7 @@ func diffCompositeAttrs(typeIdent string, attrs []*ir.Column, snap []snapshot.Sn
 			}
 		}
 		sc, exists := snapByName[snapAttrName]
-		resolvedType := resolveColType(a.Type, vtypes)
+		resolvedType := a.Type.String()
 		collateClause := ""
 		if a.Collation != "" {
 			collateClause = fmt.Sprintf(" COLLATE %s", quoteQualifiedIdent(a.Collation))
@@ -908,7 +880,7 @@ func diffCompositeAttrs(typeIdent string, attrs []*ir.Column, snap []snapshot.Sn
 		// RFC Section 5.2: a type or COLLATE change are both DESTRUCTIVE, via the
 		// same ALTER ATTRIBUTE TYPE statement (COLLATE is an optional
 		// trailing clause on it, not a separate ALTER).
-		if resolvedType != sc.Type || a.Collation != sc.Collation {
+		if (resolvedType != sc.Type && !legacyVirtualTypeSnapshot(a, sc)) || a.Collation != sc.Collation {
 			ops = append(ops, destructiveOp(
 				fmt.Sprintf("ALTER TYPE %s ALTER ATTRIBUTE %s TYPE %s%s;", typeIdent, quoteIdent(a.Name), resolvedType, collateClause),
 				a.SrcPos,
@@ -1442,20 +1414,20 @@ func dropObject(so *snapshot.SnapObject) []pipeline.DiffOp {
 
 // ── CREATE operations ─────────────────────────────────────────────────────────
 
-func createObject(obj pipeline.IRObject, vtypes map[string]string) ([]pipeline.DiffOp, error) {
+func createObject(obj pipeline.IRObject) ([]pipeline.DiffOp, error) {
 	switch o := obj.(type) {
 	case *ir.Schema:
 		return createSchema(o), nil
 	case *ir.Extension:
 		return createExtension(o), nil
 	case *ir.Table:
-		return createTable(o, vtypes), nil
+		return createTable(o), nil
 	case *ir.View:
 		return createView(o), nil
 	case *ir.Function:
 		return createFunction(o), nil
 	case *ir.Type:
-		return createType(o, vtypes), nil
+		return createType(o), nil
 	case *ir.Sequence:
 		return createSequence(o), nil
 	case *ir.Role:
@@ -3426,7 +3398,7 @@ func createExtension(o *ir.Extension) []pipeline.DiffOp {
 	return ops
 }
 
-func createTable(o *ir.Table, vtypes map[string]string) []pipeline.DiffOp {
+func createTable(o *ir.Table) []pipeline.DiffOp {
 	var b strings.Builder
 	switch {
 	case o.Unlogged:
@@ -3591,7 +3563,7 @@ func createTable(o *ir.Table, vtypes map[string]string) []pipeline.DiffOp {
 			// rather than DPG hand-reconstructing that expansion itself.
 			b.WriteString(*col.Serial)
 		} else {
-			b.WriteString(resolveColType(col.Type, vtypes))
+			b.WriteString(col.Type.String())
 		}
 		// Suppress NOT NULL for PK columns — PRIMARY KEY already implies it.
 		// Also suppress for SERIAL — PG's own macro-expansion adds it. Also
@@ -4343,7 +4315,7 @@ func buildFunctionSQL(o *ir.Function) string {
 	return ir.RenderCreateFunctionSQL(o)
 }
 
-func createType(o *ir.Type, vtypes map[string]string) []pipeline.DiffOp {
+func createType(o *ir.Type) []pipeline.DiffOp {
 	var ops []pipeline.DiffOp
 	switch o.Variant {
 	case "ENUM":
@@ -4360,7 +4332,7 @@ func createType(o *ir.Type, vtypes map[string]string) []pipeline.DiffOp {
 		b.WriteString(");")
 		ops = append(ops, safeOp(b.String(), o.SrcPos))
 	case "COMPOSITE":
-		ops = append(ops, safeOp(buildCompositeTypeSQL(o, vtypes), o.SrcPos))
+		ops = append(ops, safeOp(buildCompositeTypeSQL(o), o.SrcPos))
 	case "DOMAIN":
 		ops = append(ops, wrapCreateWithOwner(safeOp(buildDomainSQL(o), o.SrcPos), o.Owner, o.SrcPos)...)
 		if o.Comment != nil {
@@ -4477,7 +4449,7 @@ func compositeAttrCommentOps(typeIdent string, a *ir.Column, snapComment *string
 	)}
 }
 
-func buildCompositeTypeSQL(o *ir.Type, vtypes map[string]string) string {
+func buildCompositeTypeSQL(o *ir.Type) string {
 	var b strings.Builder
 	b.WriteString("CREATE TYPE ")
 	b.WriteString(qualIdent(o.Schema, o.Name))
@@ -4488,7 +4460,7 @@ func buildCompositeTypeSQL(o *ir.Type, vtypes map[string]string) string {
 		}
 		b.WriteString(quoteIdent(attr.Name))
 		b.WriteString(" ")
-		b.WriteString(resolveColType(attr.Type, vtypes))
+		b.WriteString(attr.Type.String())
 		if attr.Collation != "" {
 			b.WriteString(" COLLATE ")
 			b.WriteString(quoteQualifiedIdent(attr.Collation))
@@ -4915,7 +4887,7 @@ func createRole(o *ir.Role) []pipeline.DiffOp {
 // skipDetachedChildren, only meaningful for the *ir.Table case, is Pass
 // 2.5's per-parent set of child partition names being detached this run
 // (see Diff's own doc comment) — nil everywhere else.
-func diffObject(desired pipeline.IRObject, snap *snapshot.SnapObject, fullSnap *pipeline.Snapshot, vtypes map[string]string, skipDetachedChildren map[string]bool) ([]pipeline.DiffOp, error) {
+func diffObject(desired pipeline.IRObject, snap *snapshot.SnapObject, fullSnap *pipeline.Snapshot, skipDetachedChildren map[string]bool) ([]pipeline.DiffOp, error) {
 	switch o := desired.(type) {
 	case *ir.Extension:
 		if snap.Extension == nil {
@@ -4941,7 +4913,7 @@ func diffObject(desired pipeline.IRObject, snap *snapshot.SnapObject, fullSnap *
 		if snap.Table == nil {
 			return nil, nil
 		}
-		return diffTable(o, snap.Table, fullSnap, vtypes, skipDetachedChildren)
+		return diffTable(o, snap.Table, fullSnap, skipDetachedChildren)
 	case *ir.View:
 		if snap.View == nil {
 			return nil, nil
@@ -4956,7 +4928,7 @@ func diffObject(desired pipeline.IRObject, snap *snapshot.SnapObject, fullSnap *
 		if snap.Type == nil {
 			return nil, nil
 		}
-		return diffType(o, snap.Type, fullSnap, vtypes)
+		return diffType(o, snap.Type, fullSnap)
 	case *ir.Procedure:
 		if snap.Opaque == nil {
 			return nil, nil
@@ -6803,7 +6775,7 @@ func diffDependsOnExtension(objKW, sig string, current, desired []string, pos pi
 	return ops
 }
 
-func diffType(o *ir.Type, snap *snapshot.SnapType, fullSnap *pipeline.Snapshot, vtypes map[string]string) ([]pipeline.DiffOp, error) {
+func diffType(o *ir.Type, snap *snapshot.SnapType, fullSnap *pipeline.Snapshot) ([]pipeline.DiffOp, error) {
 	var ops []pipeline.DiffOp
 	pos := o.SrcPos
 	typeIdent := qualIdent(o.Schema, o.Name)
@@ -6842,7 +6814,7 @@ func diffType(o *ir.Type, snap *snapshot.SnapType, fullSnap *pipeline.Snapshot, 
 	}
 
 	if o.Variant == "COMPOSITE" && snap.Variant == "COMPOSITE" {
-		attrOps, err := diffCompositeAttrs(typeIdent, o.CompositeAttrs, snap.CompositeAttrs, vtypes)
+		attrOps, err := diffCompositeAttrs(typeIdent, o.CompositeAttrs, snap.CompositeAttrs)
 		if err != nil {
 			return nil, err
 		}
@@ -6907,7 +6879,7 @@ func diffType(o *ir.Type, snap *snapshot.SnapType, fullSnap *pipeline.Snapshot, 
 			// COLLATE, RFC Section 5.4's own diffing table) is fixed at creation.
 			// RFC Section 5.4 explicitly requires DROP DOMAIN CASCADE for either.
 			ops = append(ops, destructiveOp(fmt.Sprintf("DROP DOMAIN IF EXISTS %s CASCADE;", typeIdent), pos))
-			ops = append(ops, createType(o, vtypes)...)
+			ops = append(ops, createType(o)...)
 			return ops, nil
 		}
 		if !ptrEq(o.DomainDefault, snap.DomainDefault) {
@@ -7057,7 +7029,7 @@ func diffType(o *ir.Type, snap *snapshot.SnapType, fullSnap *pipeline.Snapshot, 
 		}
 		if immutableHash != "" && snap.BaseImmutableHash != "" && immutableHash != snap.BaseImmutableHash {
 			ops = append(ops, destructiveOp(fmt.Sprintf("DROP TYPE IF EXISTS %s;", typeIdent), pos))
-			ops = append(ops, createType(o, vtypes)...)
+			ops = append(ops, createType(o)...)
 			return ops, nil
 		}
 		var setClauses []string
@@ -7125,7 +7097,7 @@ func diffType(o *ir.Type, snap *snapshot.SnapType, fullSnap *pipeline.Snapshot, 
 				cascade = " CASCADE"
 			}
 			ops = append(ops, destructiveOp(fmt.Sprintf("DROP TYPE IF EXISTS %s%s;", typeIdent, cascade), pos))
-			ops = append(ops, createType(o, vtypes)...)
+			ops = append(ops, createType(o)...)
 			return ops, nil
 		}
 		// RFC Section 5.3: a change to MULTIRANGE_TYPE_NAME alone renames the
@@ -7415,7 +7387,7 @@ func replicaIdentityClause(ri ir.ReplicaIdentity) string {
 	return mode
 }
 
-func diffTable(o *ir.Table, snap *snapshot.SnapTable, fullSnap *pipeline.Snapshot, vtypes map[string]string, skipDetachedChildren map[string]bool) ([]pipeline.DiffOp, error) {
+func diffTable(o *ir.Table, snap *snapshot.SnapTable, fullSnap *pipeline.Snapshot, skipDetachedChildren map[string]bool) ([]pipeline.DiffOp, error) {
 	var ops []pipeline.DiffOp
 	pos := o.SrcPos
 	tbl := qualIdent(o.Schema, o.Name)
@@ -7446,7 +7418,7 @@ func diffTable(o *ir.Table, snap *snapshot.SnapTable, fullSnap *pipeline.Snapsho
 	// same as diffView's handling of a materialized view's query change.
 	if o.Foreign && !ptrEq(o.ForeignServer, snap.ForeignServer) {
 		ops = append(ops, destructiveOp(fmt.Sprintf("DROP FOREIGN TABLE IF EXISTS %s;", tbl), pos))
-		ops = append(ops, createTable(o, vtypes)...)
+		ops = append(ops, createTable(o)...)
 		return ops, nil
 	}
 	if o.Foreign {
@@ -7551,7 +7523,7 @@ func diffTable(o *ir.Table, snap *snapshot.SnapTable, fullSnap *pipeline.Snapsho
 		ops = append(ops, diffTableStorageParams(tbl, o.StorageParams, snap.StorageParams, pos)...)
 	}
 
-	colOps, renamedCols, droppedCols, err := diffColumns(tbl, o, snap, vtypes)
+	colOps, renamedCols, droppedCols, err := diffColumns(tbl, o, snap)
 	if err != nil {
 		return nil, err
 	}
@@ -8125,7 +8097,7 @@ func checkNoStaleColumnRefs(o *ir.Table, renamedCols map[string]string) error {
 	return nil
 }
 
-func diffColumns(tbl string, o *ir.Table, snap *snapshot.SnapTable, vtypes map[string]string) ([]pipeline.DiffOp, map[string]string, map[string]bool, error) {
+func diffColumns(tbl string, o *ir.Table, snap *snapshot.SnapTable) ([]pipeline.DiffOp, map[string]string, map[string]bool, error) {
 	// A typed table (Section 7.1's OF type_name) never has its own
 	// independently-diffed Columns in this codebase — the desired side is
 	// always empty (buildTable rejects any WITH OPTIONS narrowing column,
@@ -8260,7 +8232,7 @@ func diffColumns(tbl string, o *ir.Table, snap *snapshot.SnapTable, vtypes map[s
 			if col.Serial != nil {
 				fmt.Fprintf(&b, "ALTER TABLE %s ADD COLUMN %s %s", tbl, quoteIdent(col.Name), *col.Serial)
 			} else {
-				fmt.Fprintf(&b, "ALTER TABLE %s ADD COLUMN %s %s", tbl, quoteIdent(col.Name), resolveColType(col.Type, vtypes))
+				fmt.Fprintf(&b, "ALTER TABLE %s ADD COLUMN %s %s", tbl, quoteIdent(col.Name), col.Type.String())
 			}
 			if col.NotNull && col.Serial == nil && !notNullConstrainedCols[col.Name] {
 				b.WriteString(" NOT NULL")
@@ -8316,7 +8288,7 @@ func diffColumns(tbl string, o *ir.Table, snap *snapshot.SnapTable, vtypes map[s
 		}
 
 		// Alter existing column.
-		resolvedType := resolveColType(col.Type, vtypes)
+		resolvedType := col.Type.String()
 		if col.Serial != nil && isLegacySerialTypeName(sc.Type) {
 			// Pre-upgrade snapshot stored the literal, un-normalized
 			// "serial"/"bigserial"/"smallserial" type name (this project's
@@ -8335,6 +8307,11 @@ func diffColumns(tbl string, o *ir.Table, snap *snapshot.SnapTable, vtypes map[s
 			// actually changed, only DPG's own rendering of it has. Treat
 			// as no drift; self-heals to the new spelling on this run's
 			// save, same pattern as the SERIAL case just above.
+		} else if legacyVirtualTypeSnapshot(col, sc) {
+			// A snapshot written before virtual type references were
+			// resolved at compile time stored the reference itself
+			// ("line_item[]") as the column type; the live column is
+			// already json/jsonb. No drift; self-heals on save.
 		} else if resolvedType != sc.Type {
 			using := ""
 			// RFC Section 7.2/Section 17.2 "Column type change diffing": a type change is
