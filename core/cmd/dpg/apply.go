@@ -14,6 +14,7 @@ import (
 	"github.com/thec1oud/dpg/internal/compiler"
 	"github.com/thec1oud/dpg/internal/emit"
 	"github.com/thec1oud/dpg/internal/executor"
+	"github.com/thec1oud/dpg/internal/ignore"
 	"github.com/thec1oud/dpg/internal/ir"
 	"github.com/thec1oud/dpg/internal/linter"
 	"github.com/thec1oud/dpg/internal/pipeline"
@@ -95,6 +96,7 @@ With --strict, lint warnings are promoted to errors and block the apply.`,
 				if len(cl.SourceFiles) > 0 {
 					clusterOpts := opts
 					clusterOpts.lintCfg.MinPGVersion = cl.EffectiveMinPGVersion(proj.RootConfig)
+					clusterOpts.ignore = ignore.New(cl.EffectiveIgnore(proj.RootConfig))
 					if err := runClusterApply(cl, store, differ, emitter, applyExec, secretResolver, clusterOpts); err != nil {
 						return fmt.Errorf("%s (cluster): %w", cl.Name(), err)
 					}
@@ -107,6 +109,7 @@ With --strict, lint warnings are promoted to errors and block the apply.`,
 				for _, db := range databases {
 					dbOpts := opts
 					dbOpts.lintCfg.MinPGVersion = db.EffectiveMinPGVersion(cl, proj.RootConfig)
+					dbOpts.ignore = ignore.New(db.EffectiveIgnore(cl, proj.RootConfig))
 					if err := runApply(cl, db, store, differ, emitter, applyExec, secretResolver, dbOpts); err != nil {
 						return fmt.Errorf("%s/%s: %w", cl.Name(), db.Name(), err)
 					}
@@ -138,6 +141,7 @@ type applyOptions struct {
 	strict                  bool
 	migrationsDir           string
 	lintCfg                 pipeline.LinterConfig
+	ignore                  *ignore.Rules
 }
 
 // isInstructionOp reports whether op is an instruction-only step (RFC Section
@@ -164,10 +168,16 @@ func runApply(
 	if err != nil {
 		return err
 	}
+	if err := opts.ignore.CheckDeclared(desired); err != nil {
+		return err
+	}
 
 	snap, err := store.Load(cl.Name(), db.Name())
 	if err != nil {
 		return fmt.Errorf("snapshot load: %w", err)
+	}
+	if err := opts.ignore.FilterSnapshot(snap); err != nil {
+		return err
 	}
 
 	lintCfg := opts.lintCfg
@@ -352,6 +362,9 @@ func runClusterApply(
 	if err != nil {
 		return err
 	}
+	if err := opts.ignore.CheckDeclared(desired); err != nil {
+		return err
+	}
 
 	diags := linter.FilterMergeDiagnostics(mergeDiags, opts.lintCfg)
 	if l, ok := pipeline.Resolve[pipeline.Linter](pipeline.Default, pipeline.KeyLinter); ok {
@@ -373,6 +386,9 @@ func runClusterApply(
 	snap, err := store.Load(cl.Name(), cl.ClusterSnapshotKey())
 	if err != nil {
 		return fmt.Errorf("snapshot load: %w", err)
+	}
+	if err := opts.ignore.FilterSnapshot(snap); err != nil {
+		return err
 	}
 
 	ops, err := differ.Diff(desired, snap)

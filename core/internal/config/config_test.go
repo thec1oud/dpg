@@ -681,3 +681,53 @@ func TestLoadCluster_OptionsTableRemoved(t *testing.T) {
 		t.Errorf("[cluster.options] should be an unknown key (DPG-E001), got %v", err)
 	}
 }
+
+func TestLoadCluster_IgnoreSection(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "dpg.toml", `
+kind = "cluster"
+[cluster]
+name = "prod"
+[ignore]
+roles   = ["rdsadmin", "rds_*"]
+schemas = ["cron"]
+`)
+	cfg, err := config.LoadCluster(path)
+	if err != nil {
+		t.Fatalf("LoadCluster: %v", err)
+	}
+	got := cfg.Ignore.ByKind()
+	if len(got) != 2 || len(got["role"]) != 2 || got["schema"][0] != "cron" {
+		t.Errorf("ByKind: got %v", got)
+	}
+}
+
+func TestLoadCluster_IgnoreUnknownKey(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "dpg.toml", `
+kind = "cluster"
+[cluster]
+name = "prod"
+[ignore]
+rolez = ["x"]
+`)
+	_, err := config.LoadCluster(path)
+	if err == nil || !strings.Contains(err.Error(), "DPG-E001") || !strings.Contains(err.Error(), "ignore.rolez") {
+		t.Errorf("expected DPG-E001 naming ignore.rolez, got %v", err)
+	}
+}
+
+func TestLoadDatabase_IgnoreInvalidPattern(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "dpg.toml", `
+kind = "database"
+[database]
+name = "app"
+[ignore]
+tables = ["bad["]
+`)
+	_, err := config.LoadDatabase(path)
+	if err == nil || !strings.Contains(err.Error(), "[ignore]") {
+		t.Errorf("expected an [ignore] pattern error, got %v", err)
+	}
+}

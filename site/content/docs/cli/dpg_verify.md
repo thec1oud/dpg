@@ -12,7 +12,12 @@ Check the live database for drift against the snapshot
 Introspects the live database catalog and compares it against the committed
 snapshot. Reports any objects that differ from the declared state (drift).
 
-Exits 0 when no drift is detected. Exits 1 when drift is found.
+A role that exists in the cluster but is not in the snapshot is reported as
+a warning, not drift. Objects matching an [ignore] pattern in dpg.toml are
+not compared.
+
+Exits 0 when no drift is detected (warnings included). Exits 1 when drift
+is found.
 
 ```
 dpg verify [flags]

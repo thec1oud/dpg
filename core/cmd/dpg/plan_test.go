@@ -181,6 +181,7 @@ func TestPlanRejectsScalarConflict(t *testing.T) {
 	_, err := buildPlan(cl, db, &pipeline.Snapshot{}, &mockDiffer{}, &mockEmitter{},
 		pipeline.LinterConfig{},
 		"text",
+		nil,
 	)
 
 	if err == nil || !strings.Contains(err.Error(), "may only be declared with one value") {

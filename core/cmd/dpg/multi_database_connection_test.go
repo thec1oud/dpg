@@ -146,7 +146,7 @@ func TestMultiDatabaseClusterConnectsToCorrectDatabase(t *testing.T) {
 		t.Fatalf("os.Pipe: %v", pipeErr)
 	}
 	os.Stderr = w
-	_, err = runVerify(cl, dbB, store, introspect.New(), diff.New(), emit.New(), resolver)
+	_, err = runVerify(cl, dbB, store, introspect.New(), diff.New(), emit.New(), resolver, nil)
 	w.Close()
 	os.Stderr = origStderr
 	if err != nil {

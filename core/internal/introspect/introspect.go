@@ -3228,6 +3228,10 @@ ORDER  BY n.nspname, c.relname, grantee, a.privilege_type`
 // residual spurious-drift risk for that one field specifically, same class
 // of gap as several other live-vs-declared text-format mismatches already
 // flagged elsewhere in this codebase.
+//
+// The bootstrap superuser is skipped by OID (always 10), not by name: it is
+// named after whoever ran initdb (POSTGRES_USER in the official Docker
+// image), not necessarily "postgres".
 func introspectRoles(ctx context.Context, conn pipeline.Querier) ([]pipeline.IRObject, error) {
 	const q = `
 SELECT r.rolname,
@@ -3243,7 +3247,7 @@ SELECT r.rolname,
        r.rolvaliduntil::text
 FROM   pg_roles r
 WHERE  r.rolname NOT LIKE 'pg_%'
-AND    r.rolname <> 'postgres'
+AND    r.oid <> 10
 ORDER  BY r.rolname`
 
 	rs, err := conn.QueryRows(ctx, q)

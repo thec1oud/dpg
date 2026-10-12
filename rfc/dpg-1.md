@@ -75,6 +75,7 @@ Copyright Notice
     3.6.  Discovery Algorithm
     3.7.  Block Merge Conflict Resolution
     3.8.  Minimum PostgreSQL Version Targeting
+    3.9.  Ignored Objects
 4.  Language Fundamentals
     4.1.  Source File Format
     4.2.  The Two-Part Syntax Model
@@ -611,6 +612,11 @@ keyword_case = "upper"
 # files are archived after a successful `dpg apply`. Default:
 # ".dpg/migrations". Set to "" to disable archiving entirely.
 directory = ".dpg/migrations"
+
+[ignore]
+# Objects that exist in a database but are not managed by DPG
+# (Section 3.9). OPTIONAL; allowed in every dpg.toml.
+# extensions = ["pg_stat_statements"]
 ```
 
    The compiler MUST reject any key in any `dpg.toml` that is not
@@ -655,6 +661,11 @@ url = "postgresql://user@host:5432/postgres"
 # cluster-level objects (roles, tablespaces, PARAMETER PRIVILEGES).
 # OPTIONAL; unset falls through to the root's value. See Section 3.8.
 # min_pg_version = 16
+
+[ignore]
+# Objects this environment has that DPG does not manage, such as a
+# hosting platform's roles (Section 3.9). OPTIONAL.
+# roles = ["rdsadmin", "rds_*"]
 ```
 
    [DPG] **Connections.**  `url` and `link` are both OPTIONAL: they are
@@ -707,6 +718,11 @@ default_schema = "public"
 # min_pg_version (Sections 3.2/3.3) for this database only. OPTIONAL;
 # unset falls through to the cluster's value. See Section 3.8.
 # min_pg_version = 17
+
+[ignore]
+# Objects in this database that DPG does not manage (Section 3.9).
+# OPTIONAL.
+# schemas = ["cron"]
 ```
 
    [DPG] `parent` MUST resolve inside the project root to a directory
@@ -846,6 +862,48 @@ default_schema = "public"
    function bodies, `DEFAULT` and `CHECK` expressions) is not checked.
 
 ---
+
+### 3.9. Ignored Objects
+
+   [DPG] The `[ignore]` section of a `dpg.toml` lists name patterns of
+   objects that exist in a database but are not managed by DPG, such as
+   the roles, schemas and extensions a hosting platform creates.  The
+   lists of the project root, the cluster and the database apply
+   together, so patterns for one environment belong in that cluster's
+   `dpg.toml`.
+
+```toml
+[ignore]
+roles      = ["rdsadmin", "rds_*"]
+schemas    = ["cron"]
+extensions = ["pg_stat_statements"]
+functions  = ["public.pgaudit_*"]
+```
+
+   Each key names an object kind; its value is a list of patterns, in
+   which `*` matches any run of characters and `?` any one character.
+   For a schema-scoped kind, a pattern containing `.` matches
+   `schema.name` and any other pattern matches the name in every
+   schema.  An object in an ignored schema is ignored too.
+
+   Keys: `roles`, `tablespaces`, `schemas`, `extensions`, `tables`
+   (including foreign tables), `views` (including recursive and
+   materialized views), `functions`, `procedures`, `aggregates`, `types`
+   (enums, composites, ranges, domains and base types), `sequences`,
+   `collations`, `operators`, `operator_classes`, `operator_families`,
+   `casts` (named `source->target`), `statistics`,
+   `foreign_data_wrappers`, `servers`, `user_mappings` (named
+   `user@server`), `publications`, `subscriptions`, `event_triggers`,
+   `text_search_configurations`, `text_search_dictionaries`,
+   `text_search_parsers`, `text_search_templates`.  Any other key is
+   error DPG-E001; a malformed pattern is a configuration error.
+
+   An ignored object is removed from the live catalog and from the
+   snapshot before every comparison (`dpg plan`, `dpg apply`,
+   `dpg verify`), and `dpg dump` does not write it.  Declaring an object
+   that matches a pattern is error DPG-E045.  Predefined roles (`pg_*`)
+   and the bootstrap superuser are never read from the catalog (Section
+   20.1) and need no pattern.
 
 ## 4. Language Fundamentals
 
@@ -3309,7 +3367,16 @@ ROLE app_admin
    -   **Password changes** are detected offline: the snapshot stores a
        hash of the declared text (placeholder or literal, never the
        resolved value).  [PG] Passwords are never read back from the
-       catalog, since PostgreSQL shows them only to superusers.
+       catalog, since PostgreSQL shows them only to superusers, so a
+       comparison with the live catalog (`dpg plan --live`) does not
+       compare passwords.
+   -   **Undeclared roles.**  Roles are shared by every database on the
+       cluster.  In a comparison with the live catalog (`dpg plan
+       --live`, `dpg verify`), a role that is neither declared nor
+       ignored (Section 3.9) is reported as a warning and otherwise
+       left alone; it is never dropped and is not drift.  `DROP ROLE`
+       is emitted only for a role removed from the source since the
+       snapshot was written.
    -   **Memberships** are synced like any other role property:
        removing one emits `REVOKE`, unlike the additive model for object
        grants (Section 11.2).
@@ -5218,9 +5285,15 @@ Options:
        but not declared in DPG source (additive model, Section 11.2).
 
    -   **Does NOT report:** objects present in the live catalog but
-       absent from DPG source (unmanaged objects).
+       absent from DPG source (unmanaged objects).  A role is the one
+       exception: a live role that is neither in the snapshot nor
+       ignored is reported as a warning, which does not affect the exit
+       code (Section 11.1).
 
-   Exit codes: 0 = no drift; non-zero = drift was detected in at least
+   -   **Does NOT compare:** objects matching an `[ignore]` pattern
+       (Section 3.9).
+
+   Exit codes: 0 = no drift (warnings included); non-zero = drift was detected in at least
    one targeted cluster/database, OR an error occurred (a connection
    failure is reported the same way as drift — both produce a non-zero
    exit; the two are distinguished only by the printed message, not by
@@ -5649,7 +5722,7 @@ serial-sequence-declared      = "off"
    | `pg_ts_parser` | Text search parsers |
    | `pg_ts_template` | Text search templates |
    | `information_schema.column_privileges` | Column-level grants |
-   | `pg_roles` (or `pg_authid`) | Roles and role memberships |
+   | `pg_roles` (or `pg_authid`) | Roles and role memberships, except `pg_*` roles and the bootstrap superuser (OID 10) |
    | `pg_tablespace` | Tablespaces |
 
 ### 20.2. Drift Detection
@@ -6227,6 +6300,7 @@ serial-sequence-declared      = "off"
    | Name Maps | DPG | Declared, No SQL | Naming rules for downstream tools (Appendix D.2) |
    | Macro preprocessor | DPG | Declared, No SQL | Compile-time text expansion |
    | Cross-file macro sharing | DPG | Declared, No SQL | Macros defined in any file in the compilation scope are available to all others |
+   | Ignored objects (`[ignore]`) | DPG | Configuration | Objects a database has that DPG does not manage; excluded from every comparison and from `dpg dump` (Section 3.9) |
    | Rules (REWRITE) | PG | Out of scope | Legacy |
    | `IMPORT FOREIGN SCHEMA` | PG | Out of scope | Runtime discovery |
    | `REFRESH MATERIALIZED VIEW` | PG | Out of scope | Runtime DML |
@@ -6626,6 +6700,7 @@ WITH NO DATA {
    | DPG-E042 | `unresolved_database_cluster` | A database is not inside a cluster directory and sets no `parent`, or its `parent` does not resolve to a cluster directory inside the project, or contradicts the cluster directory it is inside (Sections 3.1, 3.4). |
    | DPG-E043 | `nested_scope_directory` | A cluster directory is inside another cluster or database directory, or a database directory is inside another database directory (Section 3.1). |
    | DPG-E044 | `virtual_type_name_conflict` | A `VIRTUAL TYPE` is named after a PostgreSQL built-in type, or its qualified name is already used by a declared type or relation (Section 5.6). |
+   | DPG-E045 | `ignored_object_declared` | A declared object matches an `[ignore]` pattern (Section 3.9). |
 
 ---
 

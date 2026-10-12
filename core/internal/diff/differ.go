@@ -252,6 +252,12 @@ func (d *Differ) Diff(desired []pipeline.IRObject, snap *pipeline.Snapshot) ([]p
 		if so.Kind == "schema" && so.Schema != nil && so.Schema.Name == "public" {
 			continue
 		}
+		// Roles are shared by every database and application on the
+		// cluster, so a live role DPG doesn't declare is left alone; only a
+		// role removed from the stored snapshot is dropped.
+		if snap.Live && so.Kind == "role" {
+			continue
+		}
 		ops = append(ops, dropObject(&so)...)
 	}
 
@@ -4968,7 +4974,7 @@ func diffObject(desired pipeline.IRObject, snap *snapshot.SnapObject, fullSnap *
 		if snap.Role == nil {
 			return nil, nil
 		}
-		return diffRole(o, snap.Role), nil
+		return diffRole(o, snap.Role, fullSnap.Live), nil
 	case *ir.Schema:
 		if snap.Schema == nil {
 			return nil, nil
@@ -6338,7 +6344,7 @@ func diffRoleMembership(o *ir.Role, snap *snapshot.SnapRole, pos pipeline.Source
 	return ops
 }
 
-func diffRole(o *ir.Role, snap *snapshot.SnapRole) []pipeline.DiffOp {
+func diffRole(o *ir.Role, snap *snapshot.SnapRole, live bool) []pipeline.DiffOp {
 	var ops []pipeline.DiffOp
 	pos := o.SrcPos
 	ident := quoteIdent(o.Name)
@@ -6377,8 +6383,9 @@ func diffRole(o *ir.Role, snap *snapshot.SnapRole) []pipeline.DiffOp {
 	// PASSWORD is never compared as raw text — only its hash (of the
 	// declared text, never the resolved value) is ever stored, so this is
 	// the only way to detect a change offline (RFC Section 11.1's "Password drift
-	// detection").
-	if o.Password != nil && hashText(*o.Password) != snap.PasswordHash {
+	// detection"). A live snapshot has no hash to compare against (the
+	// catalog never shows passwords), so a password is not diffed there.
+	if !live && o.Password != nil && hashText(*o.Password) != snap.PasswordHash {
 		ops = append(ops, &roleAlterPasswordOp{
 			op:       cautionOp(fmt.Sprintf("ALTER ROLE %s PASSWORD %s;", ident, quoteLit(*o.Password)), pos),
 			name:     o.Name,

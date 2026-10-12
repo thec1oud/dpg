@@ -14,6 +14,7 @@ import (
 
 	"github.com/thec1oud/dpg/internal/compiler"
 	"github.com/thec1oud/dpg/internal/format"
+	"github.com/thec1oud/dpg/internal/ignore"
 	"github.com/thec1oud/dpg/internal/introspect"
 	"github.com/thec1oud/dpg/internal/ir"
 	"github.com/thec1oud/dpg/internal/pipeline"
@@ -85,7 +86,8 @@ silently clobbered.`,
 
 				for _, db := range databases {
 					out := dumpDatabaseOutputDir(outputDir, db)
-					if err := runDump(cl, db, out, clusterOut, introspector, dumpStore, secretResolver, fmtOpts, yes); err != nil {
+					dbIntrospector := ignoringIntrospector{introspector, ignore.New(db.EffectiveIgnore(cl, proj.RootConfig))}
+					if err := runDump(cl, db, out, clusterOut, dbIntrospector, dumpStore, secretResolver, fmtOpts, yes); err != nil {
 						return fmt.Errorf("%s/%s: %w", cl.Name(), db.Name(), err)
 					}
 				}

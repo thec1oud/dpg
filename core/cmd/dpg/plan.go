@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,8 @@ import (
 	"github.com/thec1oud/dpg/internal/config"
 	"github.com/thec1oud/dpg/internal/emit"
 	"github.com/thec1oud/dpg/internal/executor"
+	"github.com/thec1oud/dpg/internal/ignore"
+	"github.com/thec1oud/dpg/internal/ir"
 	"github.com/thec1oud/dpg/internal/linter"
 	"github.com/thec1oud/dpg/internal/pipeline"
 	"github.com/thec1oud/dpg/internal/project"
@@ -145,7 +148,8 @@ func newPlanCmd() *cobra.Command {
 				}
 				clusterLintCfg := lintCfg
 				clusterLintCfg.MinPGVersion = cl.EffectiveMinPGVersion(proj.RootConfig)
-				m, err := buildClusterPlan(cl, clusterSnap, differ, emitter, clusterLintCfg, format)
+				m, err := buildClusterPlan(cl, clusterSnap, differ, emitter, clusterLintCfg, format,
+					ignore.New(cl.EffectiveIgnore(proj.RootConfig)))
 				if err != nil {
 					return fmt.Errorf("%s (cluster): %w", cl.Name(), err)
 				}
@@ -173,7 +177,8 @@ func newPlanCmd() *cobra.Command {
 				}
 				dbLintCfg := lintCfg
 				dbLintCfg.MinPGVersion = db.EffectiveMinPGVersion(cl, proj.RootConfig)
-				m, err := buildPlan(cl, db, snap, differ, emitter, dbLintCfg, format)
+				m, err := buildPlan(cl, db, snap, differ, emitter, dbLintCfg, format,
+					ignore.New(db.EffectiveIgnore(cl, proj.RootConfig)))
 				if err != nil {
 					return fmt.Errorf("%s/%s: %w", cl.Name(), db.Name(), err)
 				}
@@ -239,7 +244,7 @@ func introspectSnapshot(ctx context.Context, cl *project.Cluster, db *project.Da
 
 	// Exclude cluster-level objects (roles, tablespaces); the database plan
 	// compares against database-scoped source only.
-	snap := &pipeline.Snapshot{}
+	snap := &pipeline.Snapshot{Live: true}
 	if err := snapshotpkg.Populate(snap, excludeClusterScoped(liveObjects)); err != nil {
 		return nil, fmt.Errorf("build live snapshot: %w", err)
 	}
@@ -254,11 +259,18 @@ func buildPlan(
 	emitter pipeline.Emitter,
 	lintCfg pipeline.LinterConfig,
 	format string,
+	rules *ignore.Rules,
 ) (pipeline.Migration, error) {
 	errColor := ui.IsColorEnabled(os.Stderr)
 
 	desired, mergeDiags, err := compiler.CompileWith(db.SourceFiles, db.Dir, pipeline.Default, dbCompileOptions(db))
 	if err != nil {
+		return pipeline.Migration{}, err
+	}
+	if err := rules.CheckDeclared(desired); err != nil {
+		return pipeline.Migration{}, err
+	}
+	if err := rules.FilterSnapshot(snap); err != nil {
 		return pipeline.Migration{}, err
 	}
 
@@ -325,12 +337,36 @@ func buildClusterPlan(
 	emitter pipeline.Emitter,
 	lintCfg pipeline.LinterConfig,
 	format string,
+	rules *ignore.Rules,
 ) (pipeline.Migration, error) {
 	errColor := ui.IsColorEnabled(os.Stderr)
 
 	desired, mergeDiags, err := compiler.Compile(cl.SourceFiles, cl.ObjectsDir, pipeline.Default)
 	if err != nil {
 		return pipeline.Migration{}, err
+	}
+	if err := rules.CheckDeclared(desired); err != nil {
+		return pipeline.Migration{}, err
+	}
+	if err := rules.FilterSnapshot(snap); err != nil {
+		return pipeline.Migration{}, err
+	}
+	if snap.Live {
+		declared := map[string]bool{}
+		for _, o := range desired {
+			declared[o.QualifiedName()] = true
+			if r, ok := o.(*ir.Role); ok && r.RenamedFrom != nil {
+				declared[*r.RenamedFrom] = true
+			}
+		}
+		var undeclared []string
+		for key, raw := range snap.Objects {
+			var so snapshotpkg.SnapObject
+			if err := json.Unmarshal(raw, &so); err == nil && so.Role != nil && !declared[key] {
+				undeclared = append(undeclared, so.Role.Name)
+			}
+		}
+		printUndeclaredRoles(os.Stderr, cl.Name()+" (cluster)", undeclared, errColor)
 	}
 
 	diags := linter.FilterMergeDiagnostics(mergeDiags, lintCfg)
@@ -401,7 +437,7 @@ func introspectClusterSnapshot(ctx context.Context, cl *project.Cluster, secretR
 		}
 	}
 
-	snap := &pipeline.Snapshot{}
+	snap := &pipeline.Snapshot{Live: true}
 	if err := snapshotpkg.Populate(snap, clusterObjects); err != nil {
 		return nil, fmt.Errorf("build cluster snapshot: %w", err)
 	}

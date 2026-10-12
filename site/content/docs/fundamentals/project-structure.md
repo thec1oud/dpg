@@ -139,6 +139,25 @@ link = "env:CRM_DB_URL"
 
 All `.dpg` files beneath this directory are scoped to the `myapp` database on the `production` cluster.
 
+## Ignoring objects DPG doesn't manage
+
+Databases often contain objects that aren't yours to declare: a hosting platform's roles (`rdsadmin`, `rds_*`, `azure_pg_admin`), schemas an extension creates (`cron`), or monitoring extensions. List them under `[ignore]` and DPG leaves them out of everything: `plan`, `apply` and `verify` don't compare them, and `dump` doesn't write them.
+
+```toml
+# production/dpg.toml — patterns for this environment only
+[ignore]
+roles      = ["rdsadmin", "rds_*"]
+schemas    = ["cron"]                   # everything inside is ignored too
+extensions = ["pg_stat_statements"]
+functions  = ["public.pgaudit_*"]       # schema.name, or just name for any schema
+```
+
+`[ignore]` is allowed in the root, cluster and database `dpg.toml`; the lists of all three apply together. Patterns use `*` (any run of characters) and `?` (one character). There is one key per object kind: `roles`, `tablespaces`, `schemas`, `extensions`, `tables`, `views`, `functions`, `procedures`, `aggregates`, `types`, `sequences`, `collations`, `operators`, `operator_classes`, `operator_families`, `casts`, `statistics`, `foreign_data_wrappers`, `servers`, `user_mappings`, `publications`, `subscriptions`, `event_triggers`, `text_search_configurations`, `text_search_dictionaries`, `text_search_parsers` and `text_search_templates`.
+
+Declaring an object that matches an `[ignore]` pattern is an error (DPG-E045). PostgreSQL's predefined `pg_*` roles and the bootstrap superuser are never read, so they need no pattern.
+
+Roles are shared by everything on a cluster, so a live role that is neither declared nor ignored is reported as a warning by `dpg verify` and `dpg plan --live` — never as drift, and never dropped.
+
 ## Cluster-level objects
 
 Roles, tablespaces, and custom foreign data wrappers are cluster-level. They are declared in `.dpg` files inside the cluster objects directory (`cluster/` by default). See [Roles](../../access-control/roles/), [Tablespaces](../../advanced/tablespaces/), and [Foreign Data](../../advanced/foreign-data/) for syntax.

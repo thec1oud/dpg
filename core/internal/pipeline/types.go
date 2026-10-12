@@ -294,6 +294,13 @@ type Snapshot struct {
 	AppliedAt      string                     `json:"applied_at"`
 	SourceRevision string                     `json:"source_revision"`
 	Objects        map[string]json.RawMessage `json:"objects,omitempty"`
+
+	// Live marks a snapshot built by introspecting the live catalog
+	// (plan --live) rather than loaded from disk. The catalog cannot show
+	// a role's password, and roles are shared by every database in the
+	// cluster, so the differ neither compares passwords nor drops
+	// undeclared roles against a live snapshot (RFC Section 11.1).
+	Live bool `json:"-"`
 }
 
 // SetObject stores obj under key in the snapshot's Objects map.

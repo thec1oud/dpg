@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/thec1oud/dpg/internal/compiler"
+	"github.com/thec1oud/dpg/internal/ignore"
 	dpglinter "github.com/thec1oud/dpg/internal/linter"
 	"github.com/thec1oud/dpg/internal/pipeline"
 	"github.com/thec1oud/dpg/internal/ui"
@@ -43,7 +44,7 @@ Use --format json for machine-readable output.`,
 			if len(args) > 0 {
 				// Use the directory of the first file as dbDir so schema inference works.
 				dbDir := filepath.Dir(args[0])
-				errored, err := runValidate("(none)", "(standalone)", args, dbDir, compiler.Options{}, linter, pipeline.LinterConfig{}, format, strict)
+				errored, err := runValidate("(none)", "(standalone)", args, dbDir, compiler.Options{}, linter, pipeline.LinterConfig{}, format, strict, nil)
 				if err != nil {
 					return err
 				}
@@ -70,7 +71,8 @@ Use --format json for machine-readable output.`,
 				if len(cl.SourceFiles) > 0 {
 					clusterLintCfg := lintCfg
 					clusterLintCfg.MinPGVersion = cl.EffectiveMinPGVersion(proj.RootConfig)
-					errored, err := runValidate(cl.Name(), "(cluster)", cl.SourceFiles, cl.ObjectsDir, compiler.Options{}, linter, clusterLintCfg, format, strict)
+					errored, err := runValidate(cl.Name(), "(cluster)", cl.SourceFiles, cl.ObjectsDir, compiler.Options{}, linter, clusterLintCfg, format, strict,
+						ignore.New(cl.EffectiveIgnore(proj.RootConfig)))
 					if err != nil {
 						return err
 					}
@@ -86,7 +88,8 @@ Use --format json for machine-readable output.`,
 				for _, db := range databases {
 					dbLintCfg := lintCfg
 					dbLintCfg.MinPGVersion = db.EffectiveMinPGVersion(cl, proj.RootConfig)
-					errored, err := runValidate(cl.Name(), db.Name(), db.SourceFiles, db.Dir, dbCompileOptions(db), linter, dbLintCfg, format, strict)
+					errored, err := runValidate(cl.Name(), db.Name(), db.SourceFiles, db.Dir, dbCompileOptions(db), linter, dbLintCfg, format, strict,
+						ignore.New(db.EffectiveIgnore(cl, proj.RootConfig)))
 					if err != nil {
 						return err
 					}
@@ -135,10 +138,14 @@ func runValidate(
 	lintCfg pipeline.LinterConfig,
 	format string,
 	strict bool,
+	rules *ignore.Rules,
 ) (bool, error) {
 	color := ui.IsColorEnabled(os.Stderr)
 
 	desired, mergeDiags, err := compiler.CompileWith(files, dbDir, pipeline.Default, opts)
+	if err == nil {
+		err = rules.CheckDeclared(desired)
+	}
 	if err != nil {
 		if format == "json" {
 			errors := compileErrsToDiagnostics(err)

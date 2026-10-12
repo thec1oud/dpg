@@ -14892,7 +14892,7 @@ func TestCreateRoleWithComment(t *testing.T) {
 func TestDiffRoleAttrChangesBatchedIntoOneAlter(t *testing.T) {
 	o := &ir.Role{Name: "svc", CanLogin: boolp(true), ConnectionLimit: intp(5)}
 	snap := &snapshot.SnapRole{Name: "svc", CanLogin: boolp(false), ConnectionLimit: intp(1)}
-	ops := diffRole(o, snap)
+	ops := diffRole(o, snap, false)
 	if len(ops) != 1 {
 		t.Fatalf("expected 1 batched ALTER ROLE op, got %d: %v", len(ops), ops)
 	}
@@ -14911,7 +14911,7 @@ func TestDiffRoleUndeclaredFieldsNeverCompared(t *testing.T) {
 		Name: "svc", CanLogin: boolp(true), Superuser: boolp(true),
 		ConnectionLimit: intp(99), ValidUntil: strp("2020-01-01"),
 	}
-	ops := diffRole(o, snap)
+	ops := diffRole(o, snap, false)
 	if len(ops) != 0 {
 		t.Errorf("expected no ops for an undeclared-everything role, got %d: %v", len(ops), ops)
 	}
@@ -14920,7 +14920,7 @@ func TestDiffRoleUndeclaredFieldsNeverCompared(t *testing.T) {
 func TestDiffRolePasswordChangeDetectedViaHash(t *testing.T) {
 	o := &ir.Role{Name: "svc", Password: strp("{{vault:secret/svc#new}}")}
 	snap := &snapshot.SnapRole{Name: "svc", PasswordHash: hashText("{{vault:secret/svc#old}}")}
-	ops := diffRole(o, snap)
+	ops := diffRole(o, snap, false)
 	if len(ops) != 1 {
 		t.Fatalf("expected 1 op (ALTER ROLE PASSWORD), got %d: %v", len(ops), ops)
 	}
@@ -14944,10 +14944,42 @@ func TestDiffRolePasswordChangeDetectedViaHash(t *testing.T) {
 	}
 }
 
+// TestDiffRolePasswordNotComparedAgainstLiveSnapshot: a snapshot built from
+// the live catalog never carries a password hash, so comparing against it
+// would propose ALTER ROLE ... PASSWORD on every plan --live.
+func TestDiffRolePasswordNotComparedAgainstLiveSnapshot(t *testing.T) {
+	o := &ir.Role{Name: "svc", Password: strp("{{env:SVC_PW}}")}
+	ops := diffRole(o, &snapshot.SnapRole{Name: "svc"}, true)
+	if len(ops) != 0 {
+		t.Errorf("expected no ops against a live snapshot, got %d: %v", len(ops), ops)
+	}
+}
+
+// TestDiffLiveSnapshotLeavesUndeclaredRolesAlone: against a live snapshot, a
+// role DPG doesn't declare (the connecting role, another application's role)
+// is not dropped. Against a stored snapshot, a removed declaration still is.
+func TestDiffLiveSnapshotLeavesUndeclaredRolesAlone(t *testing.T) {
+	for _, live := range []bool{true, false} {
+		snap := &pipeline.Snapshot{Live: live}
+		_ = snap.SetObject("other_app", &snapshot.SnapObject{
+			Kind: "role",
+			Role: &snapshot.SnapRole{Name: "other_app"},
+		})
+		ops, err := New().Diff(nil, snap)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dropped := containsSQL(ops, `DROP ROLE IF EXISTS "other_app";`)
+		if dropped == live {
+			t.Errorf("live=%v: dropped=%v, got: %v", live, dropped, sqlList(ops))
+		}
+	}
+}
+
 func TestDiffRolePasswordUnchangedIsNoop(t *testing.T) {
 	o := &ir.Role{Name: "svc", Password: strp("{{vault:secret/svc#pw}}")}
 	snap := &snapshot.SnapRole{Name: "svc", PasswordHash: hashText("{{vault:secret/svc#pw}}")}
-	ops := diffRole(o, snap)
+	ops := diffRole(o, snap, false)
 	if len(ops) != 0 {
 		t.Errorf("expected no ops for an unchanged password, got %d: %v", len(ops), ops)
 	}
@@ -14972,7 +15004,7 @@ func TestDiffRoleMembershipAddedAndRemoved(t *testing.T) {
 			{Role: "admin_old", Direction: "ROLE", Admin: true},
 		},
 	}
-	ops := diffRole(o, snap)
+	ops := diffRole(o, snap, false)
 	var sqls []string
 	for _, op := range ops {
 		sqls = append(sqls, op.SQL())
@@ -15002,7 +15034,7 @@ func TestDiffRoleMembershipUndeclaredNeverDiffed(t *testing.T) {
 		{Role: "m", Direction: "ROLE"},
 		{Role: "a", Direction: "ROLE", Admin: true},
 	}}
-	ops := diffRole(o, snap)
+	ops := diffRole(o, snap, false)
 	if len(ops) != 0 {
 		t.Errorf("expected no membership ops when membership fields are undeclared, got %d: %v", len(ops), ops)
 	}
@@ -15020,7 +15052,7 @@ func TestDiffRoleMembershipSameNameBothDirectionsNoLongerAmbiguous(t *testing.T)
 	o := &ir.Role{Name: "svc", Memberships: []ir.RoleMembership{
 		{Role: "peer", Direction: "ROLE", Admin: true},
 	}}
-	ops := diffRole(o, &snapshot.SnapRole{Name: "svc"})
+	ops := diffRole(o, &snapshot.SnapRole{Name: "svc"}, false)
 	var sqls []string
 	for _, op := range ops {
 		sqls = append(sqls, op.SQL())
@@ -15053,7 +15085,7 @@ func TestDiffRoleMembershipInheritSetOnlyManagedWhenDeclared(t *testing.T) {
 	snap := &snapshot.SnapRole{Name: "svc", Memberships: []snapshot.SnapRoleMembership{
 		{Role: "parent1", Direction: "IN_ROLE", Inherit: &recordedInherit},
 	}}
-	ops := diffRole(o, snap)
+	ops := diffRole(o, snap, false)
 	if len(ops) != 0 {
 		t.Errorf("expected no ops (Inherit not declared on desired side), got: %v", ops)
 	}
@@ -15070,7 +15102,7 @@ func TestDiffRoleMembershipInheritChangeReGrants(t *testing.T) {
 	snap := &snapshot.SnapRole{Name: "svc", Memberships: []snapshot.SnapRoleMembership{
 		{Role: "parent1", Direction: "IN_ROLE", Inherit: &oldInherit},
 	}}
-	ops := diffRole(o, snap)
+	ops := diffRole(o, snap, false)
 	if !containsSQL(ops, `GRANT "parent1" TO "svc" WITH INHERIT FALSE;`) {
 		t.Errorf("expected a re-GRANT with WITH INHERIT FALSE, got: %v", sqlList(ops))
 	}

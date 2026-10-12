@@ -9,6 +9,8 @@ import (
 
 	"github.com/thec1oud/dpg/internal/emit"
 	"github.com/thec1oud/dpg/internal/executor"
+	"github.com/thec1oud/dpg/internal/ignore"
+	"github.com/thec1oud/dpg/internal/ir"
 	"github.com/thec1oud/dpg/internal/pipeline"
 	"github.com/thec1oud/dpg/internal/project"
 	"github.com/thec1oud/dpg/internal/snapshot"
@@ -25,11 +27,13 @@ func newVerifyCmd() *cobra.Command {
 		Use:   "verify",
 		Short: "Check the live database for drift against the snapshot",
 		Long: `Introspects the live database catalog and compares it against the committed
-snapshot. Reports objects present in the snapshot but absent from the live
-catalog, and DPG-managed grants that are missing from the live catalog.
+snapshot. Reports drift, including DPG-managed grants missing from the live
+catalog, and exits 1 when drift is found.
 
 Extra grants present in the live catalog but absent from DPG source are
-not reported (additive grant model).`,
+not reported (additive grant model). A role that exists in the cluster but
+is not in the snapshot is reported as a warning, not drift. Objects matching
+an [ignore] pattern in dpg.toml are not compared.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			proj, err := discoverProject()
 			if err != nil {
@@ -66,7 +70,8 @@ not reported (additive grant model).`,
 			driftFound := false
 			for _, cl := range clusters {
 				if len(cl.SourceFiles) > 0 {
-					hasDrift, err := runVerifyCluster(cl, store, introspector, differ, emitter, secretResolver)
+					hasDrift, err := runVerifyCluster(cl, store, introspector, differ, emitter, secretResolver,
+						ignore.New(cl.EffectiveIgnore(proj.RootConfig)))
 					if err != nil {
 						return fmt.Errorf("%s (cluster): %w", cl.Name(), err)
 					}
@@ -80,7 +85,8 @@ not reported (additive grant model).`,
 					return err
 				}
 				for _, db := range databases {
-					hasDrift, err := runVerify(cl, db, store, introspector, differ, emitter, secretResolver)
+					hasDrift, err := runVerify(cl, db, store, introspector, differ, emitter, secretResolver,
+						ignore.New(db.EffectiveIgnore(cl, proj.RootConfig)))
 					if err != nil {
 						return fmt.Errorf("%s/%s: %w", cl.Name(), db.Name(), err)
 					}
@@ -110,6 +116,7 @@ func runVerify(
 	differ pipeline.Differ,
 	emitter pipeline.Emitter,
 	secretResolver pipeline.SecretResolver,
+	rules *ignore.Rules,
 ) (bool, error) {
 	ctx := context.Background()
 	errColor := ui.IsColorEnabled(os.Stderr)
@@ -117,6 +124,9 @@ func runVerify(
 	snap, err := store.Load(cl.Name(), db.Name())
 	if err != nil {
 		return false, fmt.Errorf("load snapshot: %w", err)
+	}
+	if err := rules.FilterSnapshot(snap); err != nil {
+		return false, err
 	}
 
 	conn, err := connectDatabase(ctx, cl, db, secretResolver)
@@ -132,7 +142,7 @@ func runVerify(
 
 	// Exclude cluster-level objects (roles, tablespaces); they are verified
 	// against the cluster snapshot, not the database snapshot.
-	databaseObjects := excludeClusterScoped(liveObjects)
+	databaseObjects := rules.FilterObjects(excludeClusterScoped(liveObjects))
 
 	liveSnap := &pipeline.Snapshot{}
 	if err := snapshot.Populate(liveSnap, databaseObjects); err != nil {
@@ -174,6 +184,7 @@ func runVerifyCluster(
 	differ pipeline.Differ,
 	emitter pipeline.Emitter,
 	secretResolver pipeline.SecretResolver,
+	rules *ignore.Rules,
 ) (bool, error) {
 	ctx := context.Background()
 	errColor := ui.IsColorEnabled(os.Stderr)
@@ -181,6 +192,9 @@ func runVerifyCluster(
 	snap, err := store.Load(cl.Name(), cl.ClusterSnapshotKey())
 	if err != nil {
 		return false, fmt.Errorf("load snapshot: %w", err)
+	}
+	if err := rules.FilterSnapshot(snap); err != nil {
+		return false, err
 	}
 
 	connStr := cl.ConnectionString()
@@ -208,12 +222,23 @@ func runVerifyCluster(
 	// Retain only cluster-level objects (roles, tablespaces). This must match
 	// dump's routing (isClusterScoped): database-scoped schemaless objects like
 	// FDWs and publications belong to the database, not the cluster.
+	// A live role missing from the snapshot was created outside DPG; roles
+	// are shared by everything on the cluster, so it is a warning, not drift.
 	var clusterObjects []pipeline.IRObject
-	for _, obj := range allObjects {
-		if isClusterScoped(obj) {
-			clusterObjects = append(clusterObjects, obj)
+	var undeclared []string
+	for _, obj := range rules.FilterObjects(allObjects) {
+		if !isClusterScoped(obj) {
+			continue
 		}
+		if r, ok := obj.(*ir.Role); ok {
+			if _, inSnap := snap.Objects[r.QualifiedName()]; !inSnap {
+				undeclared = append(undeclared, r.Name)
+				continue
+			}
+		}
+		clusterObjects = append(clusterObjects, obj)
 	}
+	printUndeclaredRoles(os.Stderr, cl.Name()+" (cluster)", undeclared, errColor)
 
 	ops, err := differ.Diff(clusterObjects, snap)
 	if err != nil {

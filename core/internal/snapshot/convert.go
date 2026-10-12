@@ -1067,3 +1067,39 @@ func toSnapRole(o *ir.Role) *SnapRole {
 		NameMaps:        toSnapNameMaps(o.NameMaps),
 	}
 }
+
+// Ident returns the kind, schema ("" for objects outside a schema) and name
+// of a snapshot entry. ok is false for kinds with no name of their own
+// (default and parameter privileges, virtual types).
+func Ident(so *SnapObject) (kind, schema, name string, ok bool) {
+	switch {
+	case so.Table != nil:
+		return so.Kind, so.Table.Schema, so.Table.Name, true
+	case so.View != nil:
+		return so.Kind, so.View.Schema, so.View.Name, true
+	case so.Function != nil:
+		return so.Kind, so.Function.Schema, so.Function.Name, true
+	case so.Type != nil:
+		return so.Kind, so.Type.Schema, so.Type.Name, true
+	case so.Sequence != nil:
+		return so.Kind, so.Sequence.Schema, so.Sequence.Name, true
+	case so.Schema != nil:
+		return so.Kind, "", so.Schema.Name, true
+	case so.Extension != nil:
+		return so.Kind, "", so.Extension.Name, true
+	case so.Role != nil:
+		return so.Kind, "", so.Role.Name, true
+	case so.Opaque != nil:
+		return so.Kind, so.Opaque.Schema, so.Opaque.Name, true
+	}
+	return "", "", "", false
+}
+
+// IdentOf is Ident for an IR object.
+func IdentOf(obj pipeline.IRObject) (kind, schema, name string, ok bool) {
+	so := toSnapObject(obj)
+	if so == nil {
+		return "", "", "", false
+	}
+	return Ident(so)
+}

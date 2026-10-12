@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -78,6 +79,92 @@ type RootConfig struct {
 	Snapshots  SnapshotsConfig  `toml:"snapshots"`
 	Migrations MigrationsConfig `toml:"migrations"`
 	NameMaps   NameMapsConfig   `toml:"namemaps"`
+	Ignore     IgnoreConfig     `toml:"ignore"`
+}
+
+// IgnoreConfig is the [ignore] section (RFC Section 3.9): name patterns of
+// objects that exist in a database but are not managed by DPG. Allowed at
+// every config level; the lists of all levels apply together.
+type IgnoreConfig struct {
+	Roles                    []string `toml:"roles"`
+	Tablespaces              []string `toml:"tablespaces"`
+	Schemas                  []string `toml:"schemas"`
+	Extensions               []string `toml:"extensions"`
+	Tables                   []string `toml:"tables"`
+	Views                    []string `toml:"views"`
+	Functions                []string `toml:"functions"`
+	Procedures               []string `toml:"procedures"`
+	Aggregates               []string `toml:"aggregates"`
+	Types                    []string `toml:"types"`
+	Sequences                []string `toml:"sequences"`
+	Collations               []string `toml:"collations"`
+	Operators                []string `toml:"operators"`
+	OperatorClasses          []string `toml:"operator_classes"`
+	OperatorFamilies         []string `toml:"operator_families"`
+	Casts                    []string `toml:"casts"`
+	Statistics               []string `toml:"statistics"`
+	ForeignDataWrappers      []string `toml:"foreign_data_wrappers"`
+	Servers                  []string `toml:"servers"`
+	UserMappings             []string `toml:"user_mappings"`
+	Publications             []string `toml:"publications"`
+	Subscriptions            []string `toml:"subscriptions"`
+	EventTriggers            []string `toml:"event_triggers"`
+	TextSearchConfigurations []string `toml:"text_search_configurations"`
+	TextSearchDictionaries   []string `toml:"text_search_dictionaries"`
+	TextSearchParsers        []string `toml:"text_search_parsers"`
+	TextSearchTemplates      []string `toml:"text_search_templates"`
+}
+
+// ByKind returns the patterns keyed by snapshot object kind ("role",
+// "table", ...). Kinds with no patterns are omitted.
+func (c IgnoreConfig) ByKind() map[string][]string {
+	all := map[string][]string{
+		"role":            c.Roles,
+		"tablespace":      c.Tablespaces,
+		"schema":          c.Schemas,
+		"extension":       c.Extensions,
+		"table":           c.Tables,
+		"view":            c.Views,
+		"function":        c.Functions,
+		"procedure":       c.Procedures,
+		"aggregate":       c.Aggregates,
+		"type":            c.Types,
+		"sequence":        c.Sequences,
+		"collation":       c.Collations,
+		"operator":        c.Operators,
+		"operator_class":  c.OperatorClasses,
+		"operator_family": c.OperatorFamilies,
+		"cast":            c.Casts,
+		"statistics":      c.Statistics,
+		"fdw":             c.ForeignDataWrappers,
+		"server":          c.Servers,
+		"user_mapping":    c.UserMappings,
+		"publication":     c.Publications,
+		"subscription":    c.Subscriptions,
+		"event_trigger":   c.EventTriggers,
+		"ts_config":       c.TextSearchConfigurations,
+		"ts_dict":         c.TextSearchDictionaries,
+		"ts_parser":       c.TextSearchParsers,
+		"ts_template":     c.TextSearchTemplates,
+	}
+	for k, v := range all {
+		if len(v) == 0 {
+			delete(all, k)
+		}
+	}
+	return all
+}
+
+// validate rejects a malformed pattern.
+func (c IgnoreConfig) validate() error {
+	for _, patterns := range c.ByKind() {
+		for _, p := range patterns {
+			if _, err := path.Match(p, ""); err != nil {
+				return fmt.Errorf("invalid pattern %q", p)
+			}
+		}
+	}
+	return nil
 }
 
 // FmtConfig holds formatter settings (dpg fmt).
@@ -212,6 +299,9 @@ func LoadRoot(dir string) (RootConfig, error) {
 	if err := cfg.Compiler.validate(); err != nil {
 		return RootConfig{}, fmt.Errorf("%s: [compiler]: %w", path, err)
 	}
+	if err := cfg.Ignore.validate(); err != nil {
+		return RootConfig{}, fmt.Errorf("%s: [ignore]: %w", path, err)
+	}
 	return cfg, nil
 }
 
@@ -251,6 +341,7 @@ type ClusterConfig struct {
 	// (DPG-E001) does not flag it even though it has no effect at this
 	// level — narrower than unknown-key detection, out of scope here.
 	Compiler CompilerConfig `toml:"compiler"`
+	Ignore   IgnoreConfig   `toml:"ignore"`
 }
 
 // ClusterDef holds the cluster connection and options.
@@ -305,6 +396,9 @@ func LoadCluster(path string) (ClusterConfig, error) {
 	if err := validateMinPGVersion(cfg.Compiler.MinPGVersion); err != nil {
 		return ClusterConfig{}, fmt.Errorf("%s: [compiler]: %w", path, err)
 	}
+	if err := cfg.Ignore.validate(); err != nil {
+		return ClusterConfig{}, fmt.Errorf("%s: [ignore]: %w", path, err)
+	}
 	return cfg, nil
 }
 
@@ -331,6 +425,7 @@ type DatabaseConfig struct {
 	// Compiler holds this database's compiler overrides — see
 	// ClusterConfig.Compiler's identical doc comment.
 	Compiler CompilerConfig `toml:"compiler"`
+	Ignore   IgnoreConfig   `toml:"ignore"`
 }
 
 // DatabaseDef holds per-database settings.
@@ -380,6 +475,9 @@ func LoadDatabase(path string) (DatabaseConfig, error) {
 	}
 	if err := validateMinPGVersion(cfg.Compiler.MinPGVersion); err != nil {
 		return DatabaseConfig{}, fmt.Errorf("%s: [compiler]: %w", path, err)
+	}
+	if err := cfg.Ignore.validate(); err != nil {
+		return DatabaseConfig{}, fmt.Errorf("%s: [ignore]: %w", path, err)
 	}
 	return cfg, nil
 }
