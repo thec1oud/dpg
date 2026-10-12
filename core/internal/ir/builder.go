@@ -375,13 +375,17 @@ func (b *Builder) buildTable(cs *pg_query.CreateStmt, block pipeline.BlockAST, p
 	// *only* via a table-level named constraint would build with
 	// Column.NotNull left false, contradicting both the constraint that
 	// was just built for it and real PostgreSQL's own behavior.
+	// A table-level PRIMARY KEY makes every one of its columns NOT NULL,
+	// the same as an inline one (RFC Section 7.2).
 	for _, cst := range tbl.Constraints {
-		if cst.Type != "NOT NULL" || len(cst.Columns) != 1 {
+		if !(cst.Type == "NOT NULL" && len(cst.Columns) == 1) && cst.Type != "PRIMARY KEY" {
 			continue
 		}
-		for _, col := range tbl.Columns {
-			if col.Name == cst.Columns[0] {
-				col.NotNull = true
+		for _, name := range cst.Columns {
+			for _, col := range tbl.Columns {
+				if col.Name == name {
+					col.NotNull = true
+				}
 			}
 		}
 	}
