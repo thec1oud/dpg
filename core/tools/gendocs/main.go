@@ -77,6 +77,7 @@ Source: https://github.com/thec1oud/dpg`,
 		applyCmd(),
 		verifyCmd(),
 		resolveCmd(),
+		logCmd(),
 		dumpCmd(),
 		diffCmd(),
 		fmtCmd(),
@@ -100,14 +101,28 @@ func planCmd() *cobra.Command {
 database with --live) and print the minimal SQL required to reach the
 desired state. No database connection is required unless --live is set.
 
+Caution and Destructive operations, and instruction-only steps DPG does not
+perform itself, are labelled in the output.
+
 Use --format json for machine-readable output suitable for CI or tooling.
-Use --watch to re-run automatically whenever source files change.`,
+Use --watch to re-run automatically whenever source files change.
+
+--record writes the migration to the migration log and the snapshot
+without running it, and without a database: each database runs it when
+dpg apply settles, or another runner runs its file. --amend replaces the
+log's last migration instead of following it. --check exits 1 when the
+source has changes the log doesn't record (for CI).`,
 	}
 	cmd.Flags().String("cluster", "", "cluster to plan (required when multiple clusters exist)")
 	cmd.Flags().String("database", "", "database to plan (required when multiple databases exist)")
 	cmd.Flags().Bool("live", false, "diff against the live database instead of the stored snapshot")
 	cmd.Flags().String("format", "text", "output format: text or json")
 	cmd.Flags().Bool("watch", false, "re-run whenever source files change (polls every 500ms)")
+	cmd.Flags().Bool("record", false, "record the migration in the migration log and snapshot without running it")
+	cmd.Flags().Bool("amend", false, "with --record: make the log's last migration again from the source instead of following it")
+	cmd.Flags().Bool("check", false, "exit 1 when the source has changes the migration log doesn't record")
+	cmd.Flags().Bool("allow-destructive", false, "with --record: allow destructive operations")
+	cmd.Flags().Bool("approve-partition-rebuild", false, "with --record: acknowledge an instruction-only partition strategy rebuild step")
 	return cmd
 }
 
@@ -359,5 +374,46 @@ never overwritten.`,
 	cmd.Flags().String("database", "myapp", "database directory name")
 	cmd.Flags().String("schema", "public", "default schema name")
 	cmd.Flags().String("url", "", "PostgreSQL connection URL (can be set later)")
+	return cmd
+}
+
+func logCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "log",
+		Short: "Repair and rebase the migration log",
+		Long: `The migration log records every migration of each database (RFC
+Section 16.8). These commands repair it after a merge.`,
+	}
+	var clusterName, databaseName, keep string
+	var allowDestructive, rebuild bool
+	repair := &cobra.Command{
+		Use:   "repair",
+		Short: "Rewrite the snapshot from the migration log",
+		Long: `Rewrites each snapshot as the replay of its migration log: the snapshot
+is derived from the log, so a merge conflict in it is resolved by keeping
+the log's entries and running this.`,
+		RunE: noop,
+	}
+	rebase := &cobra.Command{
+		Use:   "rebase --keep <migration>",
+		Short: "Resolve two migrations after the same one (a merge of two branches)",
+		Long: `When two branches each recorded a migration, the merged log has two
+migrations after the same one (DPG-E047). rebase keeps the chain ending
+at --keep (the target branch's last migration), removes the other
+branch's migrations, rewrites the snapshot from the kept chain, and
+records the source's change again on top of it.
+
+A database that ran a removed migration has no point in the log any more
+and must be rebuilt.`,
+		RunE: noop,
+	}
+	for _, c := range []*cobra.Command{repair, rebase} {
+		c.Flags().StringVar(&clusterName, "cluster", "", "cluster (required when multiple clusters exist)")
+		c.Flags().StringVar(&databaseName, "database", "", "database (required when multiple databases exist)")
+	}
+	rebase.Flags().StringVar(&keep, "keep", "", "the last migration of the chain to keep")
+	rebase.Flags().BoolVar(&allowDestructive, "allow-destructive", false, "allow the re-recorded migration to have destructive operations")
+	rebase.Flags().BoolVar(&rebuild, "approve-partition-rebuild", false, "allow the re-recorded migration a manual partition strategy rebuild")
+	cmd.AddCommand(repair, rebase)
 	return cmd
 }

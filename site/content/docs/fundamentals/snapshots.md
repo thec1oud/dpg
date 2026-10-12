@@ -43,6 +43,28 @@ There is one snapshot and one log per database, whatever the environment: dev an
 - **Adoptions are migrations too.** `dpg resolve --adopt` records the adopted change as a migration, so other databases get it; the database it came from already has it.
 - **Starting the log.** A project whose snapshot predates the log runs `dpg apply --baseline` once (DPG-E048 until then). It records the snapshot as the first migration, with the SQL that builds it in an empty database. `dpg dump` starts the log the same way.
 
+## Recording without a database
+
+`dpg plan --record` writes the planned migration to the migration log and updates the snapshot without connecting to anything. Commit them with your source change: the pull request carries the change, the exact SQL that will run, and the new snapshot. After merging, each environment's `dpg apply` runs it (or run its `.sql` file with any tool).
+
+```bash
+dpg plan                      # look at it
+dpg plan --record             # record it (no database needed)
+dpg plan --record --amend     # changed your mind before committing: redo the last one
+dpg plan --check              # CI: exit 1 when a source change isn't recorded
+```
+
+Recording a destructive change needs `--allow-destructive`, as applying it does. A migration that turns out to fail somewhere is fixed with a new migration, as in any migration tool.
+
+**Merging branches.** Two branches that each recorded a migration merge into a log with two migrations after the same one (DPG-E047), and usually a conflict in the snapshot. The snapshot is just the log replayed, so you never merge it by hand:
+
+```bash
+dpg log rebase --keep <the target branch's last migration>   # drop yours, re-record your change on top
+dpg log repair                                               # rewrite a snapshot from its log
+```
+
+A development database that ran a migration `rebase` removed must be rebuilt.
+
 ## Catching up: the ledger
 
 Each database records the migrations it has run in a ledger table, `dpg.migrations`. `dpg apply` reads it and first runs, in order, the log's migrations that database hasn't run, then your source's change. So a staging or production database that's a few releases behind runs exactly the migrations dev ran, one by one, each recorded as it goes.

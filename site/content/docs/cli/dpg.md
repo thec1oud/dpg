@@ -32,6 +32,7 @@ Source: https://github.com/thec1oud/dpg
 * [dpg dump](/docs/cli/dpg_dump/)	 - Introspect a live database and produce initial .dpg source files
 * [dpg fmt](/docs/cli/dpg_fmt/)	 - Format .dpg source files in place
 * [dpg init](/docs/cli/dpg_init/)	 - Scaffold a new DPG project
+* [dpg log](/docs/cli/dpg_log/)	 - Repair and rebase the migration log
 * [dpg plan](/docs/cli/dpg_plan/)	 - Diff desired state vs snapshot and print the SQL migration
 * [dpg portability](/docs/cli/dpg_portability/)	 - Report PostgreSQL-specific constructs in use
 * [dpg resolve](/docs/cli/dpg_resolve/)	 - Resolve drift: adopt, revert, ignore or acknowledge items

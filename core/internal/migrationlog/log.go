@@ -29,6 +29,7 @@ const (
 	OriginApply    = "apply"    // dpg apply
 	OriginAdopt    = "adopt"    // dpg resolve --adopt: the database it was adopted from already has it
 	OriginBaseline = "baseline" // the first entry of a project that had a snapshot before its log
+	OriginRecord   = "record"   // dpg plan --record: recorded without running
 )
 
 // Stages of a step.
@@ -175,7 +176,10 @@ func New(parent string, steps []Step, origin string, before, after map[string]js
 		return nil, err
 	}
 	e.Snapshot = h
-	e.ID = now.UTC().Format("20060102T150405Z") + "-" + strings.TrimPrefix(e.StepsChecksum, "sha256:")[:12]
+	// The ID depends on the migration's place in the log too: the same
+	// statements after another migration are another migration.
+	id := sha256.Sum256([]byte(parent + "\x00" + e.StepsChecksum))
+	e.ID = now.UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(id[:])[:12]
 	return e, nil
 }
 
@@ -225,13 +229,21 @@ func errorf(code, format string, args ...any) error {
 // parent (divergent heads), a parent that isn't in the log, or an entry
 // without its SQL file or with a different checksum.
 func Load(dir string) (*Log, error) {
-	l := &Log{Dir: dir}
+	entries, err := LoadEntries(dir)
+	if err != nil {
+		return nil, err
+	}
+	return order(dir, entries)
+}
+
+// LoadEntries reads every entry in dir, checking each one's files but not
+// how they chain (dpg log rebase reads a divergent log with it).
+func LoadEntries(dir string) ([]*Entry, error) {
 	files, err := filepath.Glob(filepath.Join(dir, "*.json"))
 	if err != nil {
 		return nil, err
 	}
-	byParent := map[string][]*Entry{}
-	byID := map[string]*Entry{}
+	var out []*Entry
 	for _, f := range files {
 		data, err := os.ReadFile(f)
 		if err != nil {
@@ -258,8 +270,19 @@ func Load(dir string) (*Log, error) {
 			return nil, errorf("DPG-E046", "%s: its steps were changed after it was written (checksum mismatch)", f)
 		}
 		ep := e
-		byID[e.ID] = &ep
-		byParent[e.Parent] = append(byParent[e.Parent], &ep)
+		out = append(out, &ep)
+	}
+	return out, nil
+}
+
+// order orders entries by parent, refusing anything but one chain.
+func order(dir string, entries []*Entry) (*Log, error) {
+	l := &Log{Dir: dir}
+	byParent := map[string][]*Entry{}
+	byID := map[string]*Entry{}
+	for _, e := range entries {
+		byID[e.ID] = e
+		byParent[e.Parent] = append(byParent[e.Parent], e)
 	}
 	for parent, children := range byParent {
 		if len(children) > 1 {
@@ -467,4 +490,36 @@ func (l *Log) Find(id string) *Entry {
 		return l.Entries[i]
 	}
 	return nil
+}
+
+// Remove deletes an entry's files.
+func Remove(dir, id string) error {
+	for _, ext := range []string{".json", ".sql"} {
+		if err := os.Remove(filepath.Join(dir, id+ext)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+// Chain returns the entries from the first to id, following parents, or
+// an error when id or one of its ancestors is missing.
+func Chain(entries []*Entry, id string) ([]*Entry, error) {
+	byID := map[string]*Entry{}
+	for _, e := range entries {
+		byID[e.ID] = e
+	}
+	var out []*Entry
+	for cur := id; cur != ""; {
+		e := byID[cur]
+		if e == nil {
+			return nil, errorf("DPG-E046", "migration %s is not in the log", cur)
+		}
+		out = append([]*Entry{e}, out...)
+		if len(out) > len(entries) {
+			return nil, errorf("DPG-E046", "the migrations form a cycle")
+		}
+		cur = e.Parent
+	}
+	return out, nil
 }

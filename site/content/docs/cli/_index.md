@@ -19,6 +19,7 @@ The `dpg` CLI is the primary interface to the DPG compiler and migration engine.
 | [dpg apply](dpg_apply/) | Execute the planned migration and update the snapshot |
 | [dpg verify](dpg_verify/) | Check the live database for drift against the snapshot |
 | [dpg resolve](dpg_resolve/) | Adopt, revert, ignore or acknowledge drift items |
+| [dpg log](dpg_log/) | Repair and rebase the migration log |
 | [dpg dump](dpg_dump/) | Introspect a live database and produce initial `.dpg` source files |
 | [dpg diff](dpg_diff/) | Diff two DPG source directories and print the SQL migration |
 | [dpg fmt](dpg_fmt/) | Format `.dpg` source files in place |

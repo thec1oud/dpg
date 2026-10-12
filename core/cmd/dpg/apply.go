@@ -208,28 +208,47 @@ func runApply(
 	secretResolver pipeline.SecretResolver,
 	opts applyOptions,
 ) error {
+	t, err := prepareDBTarget(cl, db, store, differ, emitter, applyExec, secretResolver, opts)
+	if err != nil {
+		return err
+	}
+	return runTarget(t, opts)
+}
+
+// prepareDBTarget compiles and lints a database's source, loads its
+// snapshot and migration log, and plans the source's change.
+func prepareDBTarget(
+	cl *project.Cluster,
+	db *project.Database,
+	store pipeline.SnapshotStore,
+	differ pipeline.Differ,
+	emitter pipeline.Emitter,
+	applyExec pipeline.ApplyExecutor,
+	secretResolver pipeline.SecretResolver,
+	opts applyOptions,
+) (*applyTarget, error) {
 	errColor := ui.IsColorEnabled(os.Stderr)
 
 	desired, mergeDiags, err := compiler.CompileWith(db.SourceFiles, db.Dir, pipeline.Default, dbCompileOptions(db))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := opts.ignore.CheckDeclared(desired); err != nil {
-		return err
+		return nil, err
 	}
 
 	snap, err := store.Load(cl.Name(), db.Name())
 	if err != nil {
-		return fmt.Errorf("snapshot load: %w", err)
+		return nil, fmt.Errorf("snapshot load: %w", err)
 	}
 	stored := *snap
 	stored.Objects = copyObjects(snap.Objects)
 	log, logErr := openLog(opts.migrationsDir, cl.Name(), db.Name(), &stored)
 	if logErr != nil && !(opts.baseline && errors.Is(logErr, migrationlog.ErrNoBaseline)) {
-		return noBaselineHint(logErr)
+		return nil, noBaselineHint(logErr)
 	}
 	if err := opts.ignore.FilterSnapshot(snap); err != nil {
-		return err
+		return nil, err
 	}
 
 	lintCfg := opts.lintCfg
@@ -238,7 +257,7 @@ func runApply(
 	if l, ok := pipeline.Resolve[pipeline.Linter](pipeline.Default, pipeline.KeyLinter); ok {
 		lintDiags, lintErr := l.Lint(desired, lintCfg)
 		if lintErr != nil {
-			return lintErr
+			return nil, lintErr
 		}
 		diags = append(diags, lintDiags...)
 	}
@@ -248,15 +267,15 @@ func runApply(
 		}
 	}
 	if ui.PrintLintDiagnostics(os.Stderr, diags, errColor) {
-		return ui.ErrSilent
+		return nil, ui.ErrSilent
 	}
 
 	ops, err := differ.Diff(desired, snap)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	rev, _ := gitRevision()
-	return runTarget(&applyTarget{
+	return &applyTarget{
 		label: cl.Name() + "/" + db.Name(), cluster: cl.Name(), key: db.Name(),
 		store: store, differ: differ, emitter: emitter, exec: applyExec,
 		connect: func(ctx context.Context) (*executor.PgxConn, error) {
@@ -267,7 +286,7 @@ func runApply(
 		ackFile: ackFileFor(opts.dpgDir, cl.Name(), db.Name()),
 		desired: desired, stored: &stored, log: log, logErr: logErr, ops: ops,
 		meta: pipeline.MigrationMeta{GeneratedAt: time.Now().UTC(), SourceRevision: rev, Cluster: cl.Name(), SourceRoot: cl.ProjectRoot, Database: db.Name()},
-	}, opts)
+	}, nil
 }
 
 // ackFileFor is a target's acknowledgement file, or "" without a project.
@@ -327,21 +346,39 @@ func runClusterApply(
 	secretResolver pipeline.SecretResolver,
 	opts applyOptions,
 ) error {
+	t, err := prepareClusterTarget(cl, store, differ, emitter, applyExec, secretResolver, opts)
+	if err != nil {
+		return err
+	}
+	return runTarget(t, opts)
+}
+
+// prepareClusterTarget is prepareDBTarget for a cluster's cluster-level
+// objects.
+func prepareClusterTarget(
+	cl *project.Cluster,
+	store pipeline.SnapshotStore,
+	differ pipeline.Differ,
+	emitter pipeline.Emitter,
+	applyExec pipeline.ApplyExecutor,
+	secretResolver pipeline.SecretResolver,
+	opts applyOptions,
+) (*applyTarget, error) {
 	errColor := ui.IsColorEnabled(os.Stderr)
 
 	desired, mergeDiags, err := compiler.Compile(cl.SourceFiles, cl.ObjectsDir, pipeline.Default)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := opts.ignore.CheckDeclared(desired); err != nil {
-		return err
+		return nil, err
 	}
 
 	diags := linter.FilterMergeDiagnostics(mergeDiags, opts.lintCfg)
 	if l, ok := pipeline.Resolve[pipeline.Linter](pipeline.Default, pipeline.KeyLinter); ok {
 		lintDiags, lintErr := l.Lint(desired, opts.lintCfg)
 		if lintErr != nil {
-			return lintErr
+			return nil, lintErr
 		}
 		diags = append(diags, lintDiags...)
 	}
@@ -351,29 +388,29 @@ func runClusterApply(
 		}
 	}
 	if ui.PrintLintDiagnostics(os.Stderr, diags, errColor) {
-		return ui.ErrSilent
+		return nil, ui.ErrSilent
 	}
 
 	snap, err := store.Load(cl.Name(), cl.ClusterSnapshotKey())
 	if err != nil {
-		return fmt.Errorf("snapshot load: %w", err)
+		return nil, fmt.Errorf("snapshot load: %w", err)
 	}
 	stored := *snap
 	stored.Objects = copyObjects(snap.Objects)
 	log, logErr := openLog(opts.migrationsDir, cl.Name(), cl.ClusterSnapshotKey(), &stored)
 	if logErr != nil && !(opts.baseline && errors.Is(logErr, migrationlog.ErrNoBaseline)) {
-		return noBaselineHint(logErr)
+		return nil, noBaselineHint(logErr)
 	}
 	if err := opts.ignore.FilterSnapshot(snap); err != nil {
-		return err
+		return nil, err
 	}
 
 	ops, err := differ.Diff(desired, snap)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	rev, _ := gitRevision()
-	return runTarget(&applyTarget{
+	return &applyTarget{
 		label: cl.Name() + " (cluster)", cluster: cl.Name(), key: cl.ClusterSnapshotKey(),
 		store: store, differ: differ, emitter: emitter, exec: applyExec,
 		connect: func(ctx context.Context) (*executor.PgxConn, error) {
@@ -384,7 +421,7 @@ func runClusterApply(
 		ackFile: ackFileFor(opts.dpgDir, cl.Name(), cl.ClusterSnapshotKey()),
 		desired: desired, stored: &stored, log: log, logErr: logErr, ops: ops,
 		meta: pipeline.MigrationMeta{GeneratedAt: time.Now().UTC(), SourceRevision: rev, Cluster: cl.Name(), SourceRoot: cl.ProjectRoot, Database: cl.ClusterSnapshotKey()},
-	}, opts)
+	}, nil
 }
 
 // warnMissingPK writes a bold warning for every table that is being newly

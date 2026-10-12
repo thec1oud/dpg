@@ -69,6 +69,12 @@ func TestEntryDiff(t *testing.T) {
 	if !strings.HasPrefix(e.ID, "20261012T120000Z-") || len(e.ID) != len("20261012T120000Z-")+12 {
 		t.Errorf("id: %s", e.ID)
 	}
+	// The same statements after another migration are another migration.
+	steps := []Step{{SQL: "SELECT 1;", Safety: "SAFE", Stage: StageTransaction}}
+	e2, _ := New("q", steps, OriginApply, before, after, t0)
+	if e2.ID == e.ID || e2.StepsChecksum != e.StepsChecksum {
+		t.Errorf("same steps, other parent: %s %s", e.ID, e2.ID)
+	}
 	got := objs("a", `{"x":1}`, "b", `{"x":2}`, "c", `{"x":3}`)
 	e.Apply(got)
 	if h1, _ := Hash(got); h1 != e.Snapshot {
@@ -191,5 +197,35 @@ func TestLoadRejects(t *testing.T) {
 	}
 	if l, err := Load(filepath.Join(t.TempDir(), "absent")); err != nil || len(l.Entries) != 0 {
 		t.Errorf("absent dir: %v", err)
+	}
+}
+
+func TestChainAndRemove(t *testing.T) {
+	s1, s2 := objs("a", `1`), objs("a", `2`)
+	dir, es := chain(t, s1, s2)
+	other, _ := New(es[0].ID, []Step{{SQL: "SELECT 9;", Safety: "SAFE", Stage: StageTransaction}}, OriginRecord, s1, objs("a", `9`), t0.Add(time.Hour))
+	if err := (&Log{Dir: dir}).Write(other, "-- other\n"); err != nil {
+		t.Fatal(err)
+	}
+	all, err := LoadEntries(dir)
+	if err != nil || len(all) != 3 {
+		t.Fatalf("entries: %d %v", len(all), err)
+	}
+	c, err := Chain(all, other.ID)
+	if err != nil || len(c) != 2 || c[0].ID != es[0].ID || c[1].ID != other.ID {
+		t.Fatalf("chain: %v %v", c, err)
+	}
+	if _, err := Chain(all, "nope"); err == nil {
+		t.Error("an unknown id must fail")
+	}
+	if err := Remove(dir, es[1].ID); err != nil {
+		t.Fatal(err)
+	}
+	l, err := Load(dir)
+	if err != nil || l.Head() != other.ID {
+		t.Errorf("after removing the other branch: %v %v", l, err)
+	}
+	if err := Remove(dir, "absent"); err != nil {
+		t.Errorf("removing an absent entry: %v", err)
 	}
 }

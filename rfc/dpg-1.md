@@ -191,7 +191,8 @@ Copyright Notice
     18.10. dpg init
     18.11. dpg completion
     18.12. dpg docs
-    18.13. Target Selection
+    18.13. dpg log
+    18.14. Target Selection
 19. The Linter
     19.1.  Built-in Rules
     19.2.  Configuration
@@ -783,7 +784,7 @@ default_schema = "public"
    6.  Validate names: cluster names non-empty and unique project-wide
        (DPG-E032, DPG-E034); database names non-empty and unique within
        their cluster (DPG-E033, DPG-E035).  Reason: `--cluster` and
-       `--database` selection (Section 18.13), snapshot files, the
+       `--database` selection (Section 18.14), snapshot files, the
        migrations archive, and `dpg dump`'s output path are all keyed by
        name, so an empty or repeated name would make one target
        unreachable or make two targets share files.
@@ -4878,11 +4879,11 @@ Phase 10: Emission
    | Field | Description |
    |-------|-------------|
    | `format` | The entry format version. |
-   | `id` | The UTC time the migration was made, and the first 12 hexadecimal digits of its checksum. |
+   | `id` | The UTC time the migration was made, and the first 12 hexadecimal digits of the SHA-256 of its parent's ID and its `steps_checksum`: the same statements after another migration are another migration. |
    | `parent` | The ID of the migration it follows; empty for the first. |
    | `checksum` | SHA-256 of the `.sql` file. |
    | `snapshot` | SHA-256 of the snapshot objects after the migration: each object key followed by its value as JSON with sorted keys and no insignificant whitespace, in key order. |
-   | `origin` | `apply` (`dpg apply`), `adopt` (`dpg resolve --adopt`, Section 18.4) or `baseline`. |
+   | `origin` | `apply` (`dpg apply`), `record` (`dpg plan --record`, Section 18.1), `adopt` (`dpg resolve --adopt`, Section 18.4) or `baseline`. |
    | `set`, `remove` | The snapshot objects the migration sets (whole) and removes. |
 
    **Rules:**
@@ -4912,9 +4913,9 @@ Phase 10: Emission
 
    Each entry also holds `steps`, the migration's statements in the
    order they run, with `{{...}}` secret references unresolved (each
-   with its `sql`, `safety`, and `stage`: `before`, `transaction`,
-   `after` or `instruction`), and `steps_checksum`, from which the `id`
-   takes its hexadecimal digits.  `dpg apply` runs a migration from its
+   with its `sql`, `safety`, `stage` (`before`, `transaction`,
+   `after`, `instruction`, or `check` for a guard, Section 16.10) and
+   the `target` object it changes), and `steps_checksum`.  `dpg apply` runs a migration from its
    steps (Section 16.9); the `.sql` file is the same migration for any
    other runner.  A step whose secret reference sits inside a
    single-quoted literal gets the secret with its quotes doubled.
@@ -5381,7 +5382,41 @@ Options:
   --watch                Re-run whenever source files change (polls every 500ms).
   --cluster <name>       Target a specific cluster (default: all clusters).
   --database <name>      Target a specific database (default: all databases).
+  --record               Record the migration in the migration log and the
+                         snapshot without running it.
+  --amend                With --record: make the log's last migration again
+                         from the source instead of following it.
+  --check                Exit 1 when the source has changes the migration
+                         log doesn't record.
+  --allow-destructive    With --record: allow DESTRUCTIVE operations.
+  --approve-partition-rebuild
+                         With --record: acknowledge a manual partition
+                         rebuild step.
 ```
+
+   [DPG] **Recording without a database.**  `--record` writes the
+   migration to the migration log (Section 16.8), origin `record`, and
+   updates the snapshot, with no database connection.  Nothing runs:
+   each database runs it when `dpg apply` settles its log
+   (Section 16.9), and any other runner runs its `.sql` file, guards
+   and ledger statements included.  It passes the same
+   `--allow-destructive` and `--approve-partition-rebuild` checks as
+   `dpg apply`, which each database's `dpg apply` makes again.  It
+   needs the ledger: without one `dpg apply` doesn't settle recorded
+   migrations.  The preflight (Section 16.10) can't run without a
+   database; each database's `dpg apply` runs it, and every runner
+   runs the guards.
+
+   `--amend` makes the log's last migration again: the source is
+   planned against the log without it, and the new migration replaces
+   it (removing it when the source matches the log without it).  A
+   database that ran the replaced migration has no point in the log any
+   more (DPG-E050).
+
+   `--check` is for continuous integration: it exits 1 (DPG-E056) when
+   the source has changes the log doesn't record, so every change
+   arrives with its recorded migration.  It needs no database.  The
+   log's integrity is checked as for every `dpg plan`.
 
    [DPG] With `--live`, an object in the live catalog that the source
    doesn't declare is left alone: `dpg plan --live` never proposes
@@ -6053,7 +6088,32 @@ Options:
    A development build (plain `make build`) does not embed the
    documentation; running `dpg docs` from such a build prints an error.
 
-### 18.13. Target Selection
+### 18.13. dpg log
+
+   [DPG] Repairs the migration log (Section 16.8) after a merge.
+
+```
+dpg log repair [--cluster <name>] [--database <name>]
+dpg log rebase --keep <migration> [--cluster <name>] [--database <name>]
+               [--allow-destructive] [--approve-partition-rebuild]
+```
+
+   **repair** rewrites each snapshot as the replay of its log, keeping
+   its other fields when it can be read.  The snapshot is derived from
+   the log, so a merge conflict in a snapshot is resolved by keeping
+   both branches' log entries and running `dpg log repair`; a snapshot
+   with merge conflict markers names this.
+
+   **rebase** resolves two migrations after the same one (DPG-E047),
+   which two branches that each recorded a migration produce when
+   merged.  It keeps the chain ending at `--keep` (the target branch's
+   last migration; one no migration follows), removes the log's other
+   migrations, rewrites the snapshot from the kept chain, and records
+   the source's change again on top of it, as `dpg plan --record`
+   does.  A database that ran a removed migration has no point in the
+   log any more (DPG-E050) and must be rebuilt.
+
+### 18.14. Target Selection
 
    When `--cluster` or `--database` are not specified, the compiler
    applies the following auto-selection algorithm:
@@ -7225,6 +7285,7 @@ WITH NO DATA {
    | DPG-E053 | `preflight_refused` | The database isn't as the migrations about to run expect (Section 16.10). |
    | DPG-E054 | `fingerprint_missing` | A migration changes an object DPG has no fingerprint of in the database, or one taken on another PostgreSQL major version (Section 16.10). |
    | DPG-E055 | `fingerprint_changed` | A migration changes an object that changed since DPG last saw it (Section 16.10). |
+   | DPG-E056 | `unrecorded_changes` | The source has changes the migration log doesn't record (`dpg plan --check`, Section 18.1). |
 
 ---
 

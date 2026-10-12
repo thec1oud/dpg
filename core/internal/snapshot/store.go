@@ -65,6 +65,9 @@ func (s *FileStore) Load(cluster, database string) (*pipeline.Snapshot, error) {
 
 	var snap pipeline.Snapshot
 	if err := json.Unmarshal(data, &snap); err != nil {
+		if strings.Contains(string(data), "\n<<<<<<< ") || strings.HasPrefix(string(data), "<<<<<<< ") {
+			return nil, fmt.Errorf("snapshot: %s has merge conflict markers; the snapshot is rebuilt from the migration log by dpg log repair (dpg log rebase when the log has two branches)", path)
+		}
 		return nil, fmt.Errorf("snapshot: parsing %s: %w", path, err)
 	}
 	if msg := versionMismatch(snap.DPGVersion); msg != "" {

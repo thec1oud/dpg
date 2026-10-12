@@ -82,6 +82,7 @@ func newPlanCmd() *cobra.Command {
 		live         bool
 		format       string
 		watch        bool
+		ro           recordOptions
 	)
 
 	runOnce := func(cmd *cobra.Command) error {
@@ -214,8 +215,27 @@ Caution and Destructive operations, and instruction-only steps DPG does not
 perform itself, are labelled in the output.
 
 Use --format json for machine-readable output suitable for CI or tooling.
-Use --watch to re-run automatically whenever source files change.`,
+Use --watch to re-run automatically whenever source files change.
+
+--record writes the migration to the migration log and the snapshot
+without running it, and without a database: each database runs it when
+dpg apply settles, or another runner runs its file. --amend replaces the
+log's last migration instead of following it. --check exits 1 when the
+source has changes the log doesn't record (for CI).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if ro.record || ro.check || ro.amend {
+				if live || watch {
+					return fmt.Errorf("--record, --amend and --check work on the snapshot; they can't be combined with --live or --watch")
+				}
+				if ro.amend {
+					ro.record = true
+				}
+				if ro.record && ro.check {
+					return fmt.Errorf("--record and --check can't be combined")
+				}
+				ro.cluster, ro.database = clusterName, databaseName
+				return runRecord(ro)
+			}
 			if watch {
 				return runWatch(cmd, func() error { return runOnce(cmd) })
 			}
@@ -228,6 +248,11 @@ Use --watch to re-run automatically whenever source files change.`,
 	cmd.Flags().BoolVar(&live, "live", false, "diff against the live database instead of the stored snapshot")
 	cmd.Flags().StringVar(&format, "format", "text", "output format: text or json")
 	cmd.Flags().BoolVar(&watch, "watch", false, "re-run whenever source files change (polls every 500ms)")
+	cmd.Flags().BoolVar(&ro.record, "record", false, "record the migration in the migration log and snapshot without running it")
+	cmd.Flags().BoolVar(&ro.amend, "amend", false, "with --record: make the log's last migration again from the source instead of following it")
+	cmd.Flags().BoolVar(&ro.check, "check", false, "exit 1 when the source has changes the migration log doesn't record")
+	cmd.Flags().BoolVar(&ro.allowDestructive, "allow-destructive", false, "with --record: allow destructive operations")
+	cmd.Flags().BoolVar(&ro.rebuild, "approve-partition-rebuild", false, "with --record: acknowledge an instruction-only partition strategy rebuild step")
 
 	return cmd
 }

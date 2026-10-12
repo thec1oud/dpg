@@ -13,8 +13,17 @@ Compare .dpg source files against the committed snapshot (or the live
 database with --live) and print the minimal SQL required to reach the
 desired state. No database connection is required unless --live is set.
 
+Caution and Destructive operations, and instruction-only steps DPG does not
+perform itself, are labelled in the output.
+
 Use --format json for machine-readable output suitable for CI or tooling.
 Use --watch to re-run automatically whenever source files change.
+
+--record writes the migration to the migration log and the snapshot
+without running it, and without a database: each database runs it when
+dpg apply settles, or another runner runs its file. --amend replaces the
+log's last migration instead of following it. --check exits 1 when the
+source has changes the log doesn't record (for CI).
 
 ```
 dpg plan [flags]
@@ -23,12 +32,17 @@ dpg plan [flags]
 ### Options
 
 ```
-      --cluster string    cluster to plan (required when multiple clusters exist)
-      --database string   database to plan (required when multiple databases exist)
-      --format string     output format: text or json (default "text")
-  -h, --help              help for plan
-      --live              diff against the live database instead of the stored snapshot
-      --watch             re-run whenever source files change (polls every 500ms)
+      --allow-destructive           with --record: allow destructive operations
+      --amend                       with --record: make the log's last migration again from the source instead of following it
+      --approve-partition-rebuild   with --record: acknowledge an instruction-only partition strategy rebuild step
+      --check                       exit 1 when the source has changes the migration log doesn't record
+      --cluster string              cluster to plan (required when multiple clusters exist)
+      --database string             database to plan (required when multiple databases exist)
+      --format string               output format: text or json (default "text")
+  -h, --help                        help for plan
+      --live                        diff against the live database instead of the stored snapshot
+      --record                      record the migration in the migration log and snapshot without running it
+      --watch                       re-run whenever source files change (polls every 500ms)
 ```
 
 ### Options inherited from parent commands
