@@ -53,7 +53,7 @@ TABLE service_accounts (
 error [hardcoded-password] column public.service_accounts.password default may contain a hardcoded password
 ```
 
-Use a parameter or runtime value instead. For role passwords, use `env:VAR_NAME`. See [Roles](../../access-control/roles/).
+Use a parameter or runtime value instead. For role passwords, use a `{{secret-uri}}` placeholder such as `{{env:VAR_NAME}}`. See [Roles](../../access-control/roles/).
 
 ---
 
