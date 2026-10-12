@@ -258,9 +258,13 @@ type Constraint struct {
 	// build time; exists so consumers like the deprecated-reference lint
 	// rule don't need to re-parse Expr's rendered SQL text to recover the FK
 	// target.
-	RefSchema         string
-	RefTable          string
-	RefColumns        []string
+	RefSchema  string
+	RefTable   string
+	RefColumns []string
+	// DeleteSetColumns is ON DELETE SET NULL/SET DEFAULT's column list
+	// (PostgreSQL 15+, RFC Section 7.2): only these referencing columns
+	// are set. Empty means all of them. Also rendered into Expr.
+	DeleteSetColumns  []string
 	NotValid          bool
 	Deferrable        bool
 	InitiallyDeferred bool

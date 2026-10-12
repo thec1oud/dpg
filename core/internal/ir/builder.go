@@ -663,6 +663,7 @@ func (b *Builder) buildColumn(cd *pg_query.ColumnDef, pos pipeline.SourcePos) (*
 			if action := fkAction(cst.FkDelAction); action != "" {
 				fkBuf.WriteString(" ON DELETE ")
 				fkBuf.WriteString(action)
+				fkBuf.WriteString(fkDeleteSetColumns(cst.FkDelSetCols))
 			}
 			if cst.Deferrable {
 				fkBuf.WriteString(" DEFERRABLE")
@@ -679,6 +680,7 @@ func (b *Builder) buildColumn(cd *pg_query.ColumnDef, pos pipeline.SourcePos) (*
 				NotEnforced:       !cst.IsEnforced,
 				Expr:              fkBuf.String(),
 				RefColumns:        refCols,
+				DeleteSetColumns:  nodeListToNames(cst.FkDelSetCols),
 				Pos:               pos,
 			}
 			if cst.Pktable != nil {
@@ -851,7 +853,9 @@ func buildConstraint(c *pg_query.Constraint, pos pipeline.SourcePos) *Constraint
 		if action := fkAction(c.FkDelAction); action != "" {
 			b.WriteString(" ON DELETE ")
 			b.WriteString(action)
+			b.WriteString(fkDeleteSetColumns(c.FkDelSetCols))
 		}
+		cst.DeleteSetColumns = nodeListToNames(c.FkDelSetCols)
 		if c.Deferrable {
 			b.WriteString(" DEFERRABLE")
 			if c.Initdeferred {
@@ -1136,6 +1140,17 @@ func colListWithTrailingPrefix(cols []string, apply bool, prefix string) string 
 
 // fkAction converts a pg_query FK action char to its SQL keyword.
 // Returns "" for NO ACTION (the PostgreSQL default) to keep DDL concise.
+// fkDeleteSetColumns renders ON DELETE SET NULL/SET DEFAULT's optional
+// column list (PostgreSQL 15+, RFC Section 7.2), with its leading space;
+// "" when there is none.
+func fkDeleteSetColumns(cols []*pg_query.Node) string {
+	names := nodeListToNames(cols)
+	if len(names) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(quoteIdents(names), ", ") + ")"
+}
+
 func fkAction(action string) string {
 	switch action {
 	case "a", "": // NO ACTION is the default; omit it
