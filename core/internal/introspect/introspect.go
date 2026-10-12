@@ -2715,7 +2715,7 @@ func introspectDomainConstraints(ctx context.Context, conn pipeline.Querier, idx
 		return nil
 	}
 	const q = `
-SELECT n.nspname, t.typname, con.conname, pg_get_constraintdef(con.oid)
+SELECT n.nspname, t.typname, con.conname, pg_get_constraintdef(con.oid), con.convalidated
 FROM   pg_constraint con
 JOIN   pg_type t      ON t.oid = con.contypid
 JOIN   pg_namespace n ON n.oid = t.typnamespace
@@ -2731,17 +2731,25 @@ ORDER  BY n.nspname, t.typname, con.conname`
 
 	for rs.Next() {
 		var schema, name, conname, condef string
-		if err := rs.Scan(&schema, &name, &conname, &condef); err != nil {
+		var validated bool
+		if err := rs.Scan(&schema, &name, &conname, &condef, &validated); err != nil {
 			return err
 		}
 		t, ok := idx[schema+"."+name]
 		if !ok {
 			continue
 		}
+		// pg_get_constraintdef appends NOT VALID to an unvalidated
+		// constraint's definition; it is carried as NotValid instead, as
+		// for table constraints.
+		if !validated {
+			condef = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(condef), "NOT VALID"))
+		}
 		t.DomainConstraints = append(t.DomainConstraints, &ir.Constraint{
-			Name: conname,
-			Type: "CHECK",
-			Expr: condef,
+			Name:     conname,
+			Type:     "CHECK",
+			Expr:     condef,
+			NotValid: !validated,
 		})
 	}
 	return rs.Err()

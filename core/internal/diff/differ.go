@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
 	"regexp"
 	"slices"
 	"sort"
@@ -6041,10 +6042,12 @@ func diffSequence(o *ir.Sequence, snap *snapshot.SnapSequence) []pipeline.DiffOp
 
 	// Check if any explicitly-specified sequence params differ from the snapshot.
 	// Only compare params that the user set (non-nil in desired IR).
-	ownedByChanged := o.OwnedBy != nil && !ptrEq(o.OwnedBy, snap.OwnedBy)
+	ownedByChanged := o.OwnedBy != nil && (snap.OwnedBy == nil ||
+		qualifyOwnedBy(o.Schema, *o.OwnedBy) != qualifyOwnedBy(snap.Schema, *snap.OwnedBy))
+	defMin, defMax := seqDefaultBounds(o, snap)
 	paramsChanged := (o.IncrementBy != nil && !int64PtrEq(o.IncrementBy, snap.IncrementBy)) ||
-		seqBoundChanged(o.MinValue, o.NoMinValue, snap.MinValue, snap.NoMinValue) ||
-		seqBoundChanged(o.MaxValue, o.NoMaxValue, snap.MaxValue, snap.NoMaxValue) ||
+		seqBoundChanged(o.MinValue, o.NoMinValue, snap.MinValue, snap.NoMinValue, defMin) ||
+		seqBoundChanged(o.MaxValue, o.NoMaxValue, snap.MaxValue, snap.NoMaxValue, defMax) ||
 		(o.StartValue != nil && !int64PtrEq(o.StartValue, snap.StartValue)) ||
 		(o.Cache != nil && !int64PtrEq(o.Cache, snap.Cache)) ||
 		(o.Cycle != nil && *o.Cycle != snap.Cycle) ||
@@ -6096,14 +6099,86 @@ func diffSequence(o *ir.Sequence, snap *snapshot.SnapSequence) []pipeline.DiffOp
 // explicit NO MINVALUE/NO MAXVALUE side changed if the snapshot wasn't
 // already recorded that way (regardless of what numeric bound it held,
 // since PostgreSQL doesn't expose one under NO MINVALUE/NO MAXVALUE either).
-func seqBoundChanged(desiredVal *int64, desiredNo bool, snapVal *int64, snapNo bool) bool {
+// seqBoundChanged compares one sequence bound. A declared NO MINVALUE / NO
+// MAXVALUE is satisfied by the snapshot's flag or by a value equal to the
+// default bound def: the catalog stores the bound itself, never the flag.
+func seqBoundChanged(desiredVal *int64, desiredNo bool, snapVal *int64, snapNo bool, def int64) bool {
 	if !desiredNo && desiredVal == nil {
 		return false
 	}
 	if desiredNo {
-		return !snapNo
+		return !snapNo && (snapVal == nil || *snapVal != def)
 	}
 	return snapNo || !int64PtrEq(desiredVal, snapVal)
+}
+
+// seqDefaultBounds returns the bounds NO MINVALUE / NO MAXVALUE stand for
+// on a sequence.
+func seqDefaultBounds(o *ir.Sequence, snap *snapshot.SnapSequence) (minV, maxV int64) {
+	typ := snap.AsType
+	if o.AsType != nil {
+		typ = o.AsType.String()
+	}
+	inc := int64(1)
+	if o.IncrementBy != nil {
+		inc = *o.IncrementBy
+	} else if snap.IncrementBy != nil {
+		inc = *snap.IncrementBy
+	}
+	return defaultSeqBounds(typ, inc)
+}
+
+// defaultSeqBounds returns the bounds NO MINVALUE / NO MAXVALUE stand for,
+// from the sequence's data type and the sign of its increment.
+func defaultSeqBounds(typ string, inc int64) (minV, maxV int64) {
+	var typMin, typMax int64 = math.MinInt64, math.MaxInt64
+	switch strings.ToLower(typ) {
+	case "smallint", "int2":
+		typMin, typMax = math.MinInt16, math.MaxInt16
+	case "integer", "int", "int4":
+		typMin, typMax = math.MinInt32, math.MaxInt32
+	}
+	if inc < 0 {
+		return typMin, -1
+	}
+	return 1, typMax
+}
+
+// qualifyOwnedBy writes an OWNED BY target as schema.table.column, adding
+// the sequence's own schema to the source's table.column form.
+func qualifyOwnedBy(schema, ownedBy string) string {
+	if strings.EqualFold(ownedBy, "NONE") {
+		return "NONE"
+	}
+	parts := splitQualified(ownedBy)
+	if len(parts) == 2 {
+		parts = append([]string{schema}, parts...)
+	}
+	return strings.Join(parts, ".")
+}
+
+// splitQualified splits a dotted name on dots outside double quotes and
+// unquotes each part.
+func splitQualified(s string) []string {
+	var parts []string
+	var cur strings.Builder
+	quoted := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '"' && quoted && i+1 < len(s) && s[i+1] == '"':
+			cur.WriteByte('"')
+			i++
+		case c == '"':
+			quoted = !quoted
+		case c == '.' && !quoted:
+			parts = append(parts, cur.String())
+			cur.Reset()
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	return append(parts, cur.String())
 }
 
 func int64PtrEq(a, b *int64) bool {
@@ -6402,7 +6477,7 @@ func diffRole(o *ir.Role, snap *snapshot.SnapRole, live bool) []pipeline.DiffOp 
 	}
 
 	ops = append(ops, diffRoleMembership(o, snap, pos)...)
-	ops = append(ops, diffRoleConfigs(o, snap, pos)...)
+	ops = append(ops, diffRoleConfigs(o, snap, live, pos)...)
 	ops = append(ops, diffSecurityLabelSet(snap.SecurityLabels, o.SecurityLabels, "ROLE "+ident, pos)...)
 	return ops
 }
@@ -6489,17 +6564,26 @@ func roleConfigEqual(c ir.RoleConfig, s snapshot.SnapRoleConfig) bool {
 // nothing (RESET is itself an explicit, available directive — the same
 // "declared, so managed" convention already used throughout, not an
 // oversight).
-func diffRoleConfigs(o *ir.Role, snap *snapshot.SnapRole, pos pipeline.SourcePos) []pipeline.DiffOp {
+// diffRoleConfigs diffs a role's SET/RESET entries. live says snap was
+// read from the catalog, where a RESET setting simply has no entry: a
+// declared RESET is then satisfied by the setting's absence.
+func diffRoleConfigs(o *ir.Role, snap *snapshot.SnapRole, live bool, pos pipeline.SourcePos) []pipeline.DiffOp {
 	var ops []pipeline.DiffOp
 	ident := quoteIdent(o.Name)
 
 	snapByKey := make(map[string]snapshot.SnapRoleConfig, len(snap.Configs))
+	inDB := map[string]bool{} // databases with any live setting
 	for _, s := range snap.Configs {
 		snapByKey[roleConfigKey(s.Param, s.ResetAll, s.InDatabase)] = s
+		inDB[ptrStr(s.InDatabase)] = true
 	}
 	for _, c := range o.Configs {
 		k := roleConfigKey(c.Param, c.ResetAll, c.InDatabase)
-		if s, ok := snapByKey[k]; ok && roleConfigEqual(c, s) {
+		s, ok := snapByKey[k]
+		if ok && roleConfigEqual(c, s) {
+			continue
+		}
+		if live && !ok && ((c.Reset && !c.ResetAll) || (c.ResetAll && !inDB[ptrStr(c.InDatabase)])) {
 			continue
 		}
 		ops = append(ops, safeOp(roleConfigSQL(ident, c), pos))
@@ -6565,6 +6649,11 @@ func viewQueryChanged(o *ir.View, snap *snapshot.SnapView) bool {
 	if normalizeWS(o.Query) == normalizeWS(snap.Query) {
 		return false
 	}
+	if a, ok := recursiveQueryCanon(o.Query); ok {
+		if b, ok := recursiveQueryCanon(snap.Query); ok && a == b {
+			return false
+		}
+	}
 	if o.Reconstructed == snap.Reconstructed {
 		return true
 	}
@@ -6578,6 +6667,108 @@ func viewQueryChanged(o *ir.View, snap *snapshot.SnapView) bool {
 	a, ok1 := withoutSelectLists(o.Query)
 	b, ok2 := withoutSelectLists(snap.Query)
 	return !ok1 || !ok2 || a != b
+}
+
+// recursiveQueryCanon returns a comparable form of a WITH RECURSIVE query.
+// PostgreSQL's deparser gives a CTE's self-reference an alias
+// ("FROM countdown countdown_1", "countdown_1.n") that the source never
+// writes. In a SELECT whose only FROM item is a reference to a CTE, the
+// alias and column qualifiers naming that alias or the CTE are dropped;
+// source positions are ignored. ok is false for any other query.
+func recursiveQueryCanon(query string) (string, bool) {
+	if !strings.Contains(strings.ToUpper(query), "RECURSIVE") {
+		return "", false
+	}
+	js, err := pg_query.ParseToJSON(query)
+	if err != nil {
+		return "", false
+	}
+	var tree any
+	if err := json.Unmarshal([]byte(js), &tree); err != nil {
+		return "", false
+	}
+	ctes := map[string]bool{}
+	walkJSON(tree, func(m map[string]any) {
+		if c, ok := m["CommonTableExpr"].(map[string]any); ok {
+			if n, ok := c["ctename"].(string); ok {
+				ctes[n] = true
+			}
+		}
+	})
+	walkJSON(tree, func(m map[string]any) {
+		// A SelectStmt node, wrapped or (as a set operation's larg/rarg)
+		// inline.
+		sel, ok := m["SelectStmt"].(map[string]any)
+		if !ok {
+			if _, isSel := m["limitOption"]; !isSel {
+				return
+			}
+			sel = m
+		}
+		from, _ := sel["fromClause"].([]any)
+		if len(from) != 1 {
+			return
+		}
+		item, _ := from[0].(map[string]any)
+		rv, _ := item["RangeVar"].(map[string]any)
+		if rv == nil || rv["schemaname"] != nil || !ctes[fmt.Sprint(rv["relname"])] {
+			return
+		}
+		names := map[string]bool{fmt.Sprint(rv["relname"]): true}
+		if a, ok := rv["alias"].(map[string]any); ok {
+			names[fmt.Sprint(a["aliasname"])] = true
+			delete(rv, "alias")
+		}
+		for k, v := range sel {
+			if k == "fromClause" || k == "withClause" || k == "larg" || k == "rarg" {
+				continue
+			}
+			walkJSONStop(v, "SelectStmt", func(m map[string]any) {
+				cr, ok := m["ColumnRef"].(map[string]any)
+				if !ok {
+					return
+				}
+				fields, _ := cr["fields"].([]any)
+				if len(fields) != 2 {
+					return
+				}
+				first, _ := fields[0].(map[string]any)
+				str, _ := first["String"].(map[string]any)
+				if str != nil && names[fmt.Sprint(str["sval"])] {
+					cr["fields"] = fields[1:]
+				}
+			})
+		}
+	})
+	walkJSON(tree, func(m map[string]any) { delete(m, "location") })
+	out, err := json.Marshal(tree)
+	if err != nil {
+		return "", false
+	}
+	return string(out), true
+}
+
+// walkJSON calls fn on every object in a decoded JSON tree, parents first.
+func walkJSON(v any, fn func(map[string]any)) {
+	walkJSONStop(v, "", fn)
+}
+
+// walkJSONStop is walkJSON that doesn't descend into objects under key stop.
+func walkJSONStop(v any, stop string, fn func(map[string]any)) {
+	switch t := v.(type) {
+	case map[string]any:
+		fn(t)
+		for k, c := range t {
+			if stop != "" && k == stop {
+				continue
+			}
+			walkJSONStop(c, stop, fn)
+		}
+	case []any:
+		for _, c := range t {
+			walkJSONStop(c, stop, fn)
+		}
+	}
 }
 
 // querySelectsStar reports whether a SELECT's output list, or that of any
@@ -7122,7 +7313,7 @@ func diffType(o *ir.Type, snap *snapshot.SnapType, fullSnap *pipeline.Snapshot) 
 					sc, existed = oldSc, true
 				}
 			}
-			if !existed || sc.Expr != c.Expr {
+			if !existed || normalizeCheckExpr(sc.Expr) != normalizeCheckExpr(c.Expr) {
 				if existed {
 					// Same identity, different expression: PG has no ALTER
 					// DOMAIN ... ALTER CONSTRAINT for the check expression
@@ -8780,20 +8971,27 @@ func diffIdentityColumn(tbl string, col *ir.Column, sc *snapshot.SnapColumn) []p
 		))
 	}
 	id := col.Identity
+	idInc := int64(1)
+	if id.IncrementBy != nil {
+		idInc = *id.IncrementBy
+	} else if sc.IdentityIncrementBy != nil {
+		idInc = *sc.IdentityIncrementBy
+	}
+	idMin, idMax := defaultSeqBounds(col.Type.String(), idInc)
 	if id.IncrementBy != nil && !int64PtrEq(id.IncrementBy, sc.IdentityIncrementBy) {
 		setOp(fmt.Sprintf("INCREMENT BY %d", *id.IncrementBy))
 	}
 	if id.StartValue != nil && !int64PtrEq(id.StartValue, sc.IdentityStartValue) {
 		setOp(fmt.Sprintf("START WITH %d", *id.StartValue))
 	}
-	if seqBoundChanged(id.MinValue, id.NoMinValue, sc.IdentityMinValue, sc.IdentityNoMinValue) {
+	if seqBoundChanged(id.MinValue, id.NoMinValue, sc.IdentityMinValue, sc.IdentityNoMinValue, idMin) {
 		if id.NoMinValue {
 			setOp("NO MINVALUE")
 		} else {
 			setOp(fmt.Sprintf("MINVALUE %d", *id.MinValue))
 		}
 	}
-	if seqBoundChanged(id.MaxValue, id.NoMaxValue, sc.IdentityMaxValue, sc.IdentityNoMaxValue) {
+	if seqBoundChanged(id.MaxValue, id.NoMaxValue, sc.IdentityMaxValue, sc.IdentityNoMaxValue, idMax) {
 		if id.NoMaxValue {
 			setOp("NO MAXVALUE")
 		} else {
@@ -10124,6 +10322,23 @@ func stripOuterParens(s string) string {
 // originally did) still leaves the cast difference as a false positive for
 // any string-literal comparison — the single most common shape of a real
 // WHEN/USING/WHERE clause — so both normalizations always travel together.
+// normalizeCheckExpr reduces a CHECK constraint's text to its bare
+// condition: pg_get_constraintdef's "CHECK ((VALUE > 0))" and the source's
+// "CHECK (VALUE > 0)" both become "VALUE > 0".
+func normalizeCheckExpr(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 5 && strings.EqualFold(s[:5], "CHECK") {
+		s = s[5:]
+	}
+	for {
+		next := stripOuterParens(s)
+		if next == s {
+			return normalizeWS(s)
+		}
+		s = next
+	}
+}
+
 func normalizeExprForCompare(s string) string {
 	return stripStringLiteralCasts(stripOuterParens(s))
 }

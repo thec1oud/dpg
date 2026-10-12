@@ -1167,7 +1167,11 @@ func renderObjectDPGWithRoleInheritDefaults(b *strings.Builder, obj pipeline.IRO
 					fmt.Fprintf(b, "%s%s %s;\n", ind, kw("NOT"), kw("NULL"))
 				}
 				for _, cst := range o.DomainConstraints {
-					fmt.Fprintf(b, "%s%s %s %s;\n", ind, kw("CONSTRAINT"), quoteIdentIfNeeded(cst.Name), cst.Expr)
+					notValid := ""
+					if cst.NotValid {
+						notValid = " " + kw("NOT") + " " + kw("VALID")
+					}
+					fmt.Fprintf(b, "%s%s %s %s%s;\n", ind, kw("CONSTRAINT"), quoteIdentIfNeeded(cst.Name), cst.Expr, notValid)
 				}
 				if o.Comment != nil {
 					fmt.Fprintf(b, "%s%s %s;\n", ind, kw("COMMENT"), sqlStringLit(*o.Comment))

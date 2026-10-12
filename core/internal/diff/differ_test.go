@@ -3,6 +3,7 @@ package diff
 import (
 	"crypto/sha256"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -22977,5 +22978,98 @@ func TestViewStarComparedWithCatalog(t *testing.T) {
 				t.Errorf("ops = %v, want ops: %v", sqlList(ops), c.wantOps)
 			}
 		})
+	}
+}
+
+// TestNormalizeCheckExpr: the source's CHECK text and pg_get_constraintdef's
+// deparsed form compare equal.
+func TestNormalizeCheckExpr(t *testing.T) {
+	for _, c := range [][2]string{
+		{"CHECK (VALUE > 0)", "CHECK ((VALUE > 0))"},
+		{"check (value > 0 AND value < 9)", "check ((value > 0 AND value < 9))"},
+	} {
+		if a, b := normalizeCheckExpr(c[0]), normalizeCheckExpr(c[1]); a != b {
+			t.Errorf("%q → %q, %q → %q", c[0], a, c[1], b)
+		}
+	}
+	if normalizeCheckExpr("CHECK (VALUE > 0)") == normalizeCheckExpr("CHECK (VALUE > 1)") {
+		t.Error("different conditions must not compare equal")
+	}
+}
+
+// TestDiffRoleConfigResetAgainstLive: against the live catalog, a declared
+// RESET is satisfied when the setting has no entry; against a stored
+// snapshot without it, RESET is still emitted.
+func TestDiffRoleConfigResetAgainstLive(t *testing.T) {
+	o := &ir.Role{Name: "r", Configs: []ir.RoleConfig{{Param: "statement_timeout", Reset: true}}}
+	if ops := diffRoleConfigs(o, &snapshot.SnapRole{Name: "r"}, true, pipeline.SourcePos{}); len(ops) != 0 {
+		t.Errorf("live: expected no ops, got %v", sqlList(ops))
+	}
+	if ops := diffRoleConfigs(o, &snapshot.SnapRole{Name: "r"}, false, pipeline.SourcePos{}); len(ops) != 1 {
+		t.Errorf("stored: expected RESET, got %v", sqlList(ops))
+	}
+	live := &snapshot.SnapRole{Name: "r", Configs: []snapshot.SnapRoleConfig{{Param: "statement_timeout", Value: strp("5s")}}}
+	if ops := diffRoleConfigs(o, live, true, pipeline.SourcePos{}); len(ops) != 1 {
+		t.Errorf("live with the setting present: expected RESET, got %v", sqlList(ops))
+	}
+}
+
+// TestRecursiveQueryCanon: a recursive view's source text and PostgreSQL's
+// deparsed form (alias on the CTE self-reference) compare equal; a real
+// change doesn't.
+func TestRecursiveQueryCanon(t *testing.T) {
+	src := `WITH RECURSIVE countdown(n) AS (VALUES (10) UNION ALL SELECT n - 1 FROM countdown WHERE n > 1) SELECT n FROM countdown`
+	live := `WITH RECURSIVE countdown(n) AS (VALUES (10) UNION ALL SELECT countdown_1.n - 1 FROM countdown countdown_1 WHERE countdown_1.n > 1) SELECT n FROM countdown`
+	a, ok1 := recursiveQueryCanon(src)
+	b, ok2 := recursiveQueryCanon(live)
+	if !ok1 || !ok2 || a != b {
+		t.Fatalf("expected equal canonical forms:\n%s\n%s", a, b)
+	}
+	changed := strings.Replace(src, "n > 1", "n > 2", 1)
+	if c, _ := recursiveQueryCanon(changed); c == a {
+		t.Error("a changed literal must not compare equal")
+	}
+	if _, ok := recursiveQueryCanon("SELECT 1"); ok {
+		t.Error("a non-recursive query has no canonical form here")
+	}
+}
+
+func TestQualifyOwnedBy(t *testing.T) {
+	cases := [][3]string{
+		{"public", "orders.order_number", "public.orders.order_number"},
+		{"public", "public.orders.order_number", "public.orders.order_number"},
+		{"app", `"Odd.Table".id`, "app.Odd.Table.id"},
+		{"public", "NONE", "NONE"},
+	}
+	for _, c := range cases {
+		if got := qualifyOwnedBy(c[0], c[1]); got != c[2] {
+			t.Errorf("qualifyOwnedBy(%q, %q) = %q, want %q", c[0], c[1], got, c[2])
+		}
+	}
+}
+
+// TestSeqBoundDefaults: the catalog stores NO MINVALUE / NO MAXVALUE as the
+// default bound itself.
+func TestSeqBoundDefaults(t *testing.T) {
+	for _, c := range []struct {
+		typ          string
+		inc          int64
+		wantMin, max int64
+	}{
+		{"bigint", 1, 1, math.MaxInt64},
+		{"integer", 1, 1, math.MaxInt32},
+		{"smallint", -1, math.MinInt16, -1},
+		{"", 5, 1, math.MaxInt64},
+	} {
+		if mn, mx := defaultSeqBounds(c.typ, c.inc); mn != c.wantMin || mx != c.max {
+			t.Errorf("%s inc %d: got %d..%d", c.typ, c.inc, mn, mx)
+		}
+	}
+	one, other := int64(1), int64(5)
+	if seqBoundChanged(nil, true, &one, false, 1) {
+		t.Error("NO MINVALUE must match a live bound equal to the default")
+	}
+	if !seqBoundChanged(nil, true, &other, false, 1) {
+		t.Error("NO MINVALUE must not match a non-default bound")
 	}
 }
