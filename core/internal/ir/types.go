@@ -755,6 +755,9 @@ type View struct {
 	// when it can't be written into Query as target-list aliases (a query
 	// with `*`); otherwise the builder folds it into Query and this is nil.
 	Columns []string
+	// Reconstructed is set when the view was read from the live catalog:
+	// Query is then PostgreSQL's stored form, with any `*` expanded.
+	Reconstructed bool
 	// Indexes is only meaningful when Materialized is true — real PostgreSQL
 	// does not support indexes on a plain or recursive view, only on a
 	// materialized view (or a table). RFC Section 8.2's matview-block grammar is

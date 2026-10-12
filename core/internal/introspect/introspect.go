@@ -1962,14 +1962,15 @@ ORDER  BY n.nspname, c.relname`
 		}
 		q := normalizeViewQuery(query)
 		v := &ir.View{
-			Schema:       schema,
-			Name:         name,
-			Owner:        &owner,
-			Query:        q,
-			Comment:      comment,
-			Materialized: materialized,
-			Recursive:    strings.HasPrefix(q, "WITH RECURSIVE"),
-			WithNoData:   materialized && withNoData,
+			Schema:        schema,
+			Name:          name,
+			Owner:         &owner,
+			Query:         q,
+			Comment:       comment,
+			Materialized:  materialized,
+			Recursive:     strings.HasPrefix(q, "WITH RECURSIVE"),
+			WithNoData:    materialized && withNoData,
+			Reconstructed: true,
 		}
 		// reloptions holds a materialized view's storage parameters
 		// (Section 8.2) or a plain view's options, check_option included

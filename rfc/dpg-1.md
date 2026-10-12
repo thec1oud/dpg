@@ -3485,6 +3485,14 @@ SCHEMA public {
    change is never silently applied) rather than DPG proactively
    detecting it.
 
+   **Comparison with the live catalog.** [PG] PostgreSQL stores a view's
+   query with every `*` expanded into its columns and keeps no separate
+   column-name list.  When a declared view is compared with one read from
+   the live catalog (`dpg verify`, `dpg plan --live`), a declared query
+   whose select list contains `*` is compared without its select list,
+   and a column-name list is not compared.  A change made outside DPG to
+   the select list of such a view is therefore not detected.
+
 ### 8.2. Materialized Views
 
    Materialized views use the same syntax as regular views, prefixed

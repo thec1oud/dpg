@@ -22904,3 +22904,46 @@ func TestAddColumnTableRewriteIsCaution(t *testing.T) {
 		})
 	}
 }
+
+// TestViewStarComparedWithCatalog guards RFC Section 8.1: PostgreSQL
+// stores a view's `*` expanded, so against a view read from the catalog a
+// declared `*` query is compared without its select list. Between two
+// declared queries the comparison stays exact.
+func TestViewStarComparedWithCatalog(t *testing.T) {
+	view := func(q string, recon bool, cols ...string) *ir.View {
+		return &ir.View{Schema: "public", Name: "v", Query: q, Reconstructed: recon, Columns: cols}
+	}
+	snapOf := func(v *ir.View) *pipeline.Snapshot {
+		s := &pipeline.Snapshot{}
+		if err := snapshot.Populate(s, []pipeline.IRObject{v}); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	cases := []struct {
+		name          string
+		desired, base *ir.View
+		wantOps       bool
+	}{
+		{"live expansion of *", view("SELECT id, email FROM users", true), view("SELECT * FROM users", false), false},
+		{"live expansion of t.* in a join",
+			view("SELECT u.id, u.email, o.total FROM users u JOIN orders o ON o.user_id = u.id", true),
+			view("SELECT u.*, o.total FROM users u JOIN orders o ON o.user_id = u.id", false), false},
+		{"declared * against a live snapshot", view("SELECT * FROM users", false), view("SELECT id, email FROM users", true), false},
+		{"column list not visible in the catalog", view("SELECT id AS a, email AS b FROM users", true), view("SELECT * FROM users", false, "a", "b"), false},
+		{"live WHERE differs", view("SELECT id, email FROM users WHERE id > 1", true), view("SELECT * FROM users", false), true},
+		{"declared * replaced by a list", view("SELECT id FROM users", false), view("SELECT * FROM users", false), true},
+		{"live query differs, no *", view("SELECT id FROM users", true), view("SELECT id, email FROM users", false), true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ops, err := New().Diff([]pipeline.IRObject{c.desired}, snapOf(c.base))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := len(ops) > 0; got != c.wantOps {
+				t.Errorf("ops = %v, want ops: %v", sqlList(ops), c.wantOps)
+			}
+		})
+	}
+}

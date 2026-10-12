@@ -6492,6 +6492,81 @@ func diffSchema(o *ir.Schema, snap *snapshot.SnapSchema) []pipeline.DiffOp {
 // access) — callers should treat that the same as "unchanged," preserving
 // the prior (non-regressive) CREATE OR REPLACE behavior for those cases
 // rather than risk a false DESTRUCTIVE reclassification.
+// viewQueryChanged reports whether a view's query differs from the
+// snapshot's. When exactly one side was read from the live catalog and
+// the declared side selects `*`, the catalog side holds PostgreSQL's
+// expansion of it, so the two are compared without their select lists
+// (RFC Section 8.1).
+func viewQueryChanged(o *ir.View, snap *snapshot.SnapView) bool {
+	if normalizeWS(o.Query) == normalizeWS(snap.Query) {
+		return false
+	}
+	if o.Reconstructed == snap.Reconstructed {
+		return true
+	}
+	declared := o.Query
+	if o.Reconstructed {
+		declared = snap.Query
+	}
+	if !querySelectsStar(declared) {
+		return true
+	}
+	a, ok1 := withoutSelectLists(o.Query)
+	b, ok2 := withoutSelectLists(snap.Query)
+	return !ok1 || !ok2 || a != b
+}
+
+// querySelectsStar reports whether a SELECT's output list, or that of any
+// branch of a set operation, contains `*` or `t.*`.
+func querySelectsStar(query string) bool {
+	res, err := pg_query.Parse(query)
+	if err != nil || len(res.Stmts) == 0 {
+		return false
+	}
+	found := false
+	forEachOutputSelect(res.Stmts[0].GetStmt().GetSelectStmt(), func(sel *pg_query.SelectStmt) {
+		for _, t := range sel.TargetList {
+			if rt := t.GetResTarget(); rt != nil && viewTargetIsStar(rt.Val) {
+				found = true
+			}
+		}
+	})
+	return found
+}
+
+// withoutSelectLists returns query deparsed with the output lists of its
+// SELECT (every branch of a set operation) removed.
+func withoutSelectLists(query string) (string, bool) {
+	res, err := pg_query.Parse(query)
+	if err != nil || len(res.Stmts) != 1 {
+		return "", false
+	}
+	sel := res.Stmts[0].GetStmt().GetSelectStmt()
+	if sel == nil {
+		return "", false
+	}
+	forEachOutputSelect(sel, func(s *pg_query.SelectStmt) { s.TargetList = nil })
+	out, err := pg_query.Deparse(res)
+	if err != nil {
+		return "", false
+	}
+	return normalizeWS(out), true
+}
+
+// forEachOutputSelect calls fn for sel, or for each leaf SELECT of a set
+// operation.
+func forEachOutputSelect(sel *pg_query.SelectStmt, fn func(*pg_query.SelectStmt)) {
+	if sel == nil {
+		return
+	}
+	if sel.Op != pg_query.SetOperation_SETOP_NONE {
+		forEachOutputSelect(sel.Larg, fn)
+		forEachOutputSelect(sel.Rarg, fn)
+		return
+	}
+	fn(sel)
+}
+
 func viewOutputColumnsChanged(desiredQuery, snapQuery string) (changed bool, ok bool) {
 	desiredNames, ok1 := viewOutputColumnNames(desiredQuery)
 	if !ok1 {
@@ -6612,18 +6687,18 @@ func diffView(o *ir.View, snap *snapshot.SnapView) ([]pipeline.DiffOp, error) {
 	// Recursive flag change or a materialized view query change requires DROP + CREATE
 	// because PG has no in-place ALTER for these.
 	// A column list is only kept for a query with `*` (ir.View.Columns).
-	// The live catalog can't show one, so a snapshot read from it has
-	// none; only a list the snapshot does record is compared.
-	columnsChanged := snap.Columns != nil && !slices.Equal(o.Columns, snap.Columns)
-	if snap.Recursive != o.Recursive || columnsChanged ||
-		(o.Materialized && normalizeWS(o.Query) != normalizeWS(snap.Query)) {
+	// The live catalog can't show one, so it is only compared when
+	// neither side was read from the catalog.
+	columnsChanged := !o.Reconstructed && !snap.Reconstructed && !slices.Equal(o.Columns, snap.Columns)
+	queryChanged := viewQueryChanged(o, snap)
+	if snap.Recursive != o.Recursive || columnsChanged || (o.Materialized && queryChanged) {
 		ops = append(ops, destructiveOp(fmt.Sprintf("DROP %s IF EXISTS %s;", viewKind, tbl), pos))
 		ops = append(ops, createView(o)...)
 		// createView emits comments and grants; nothing more to do.
 		return ops, nil
 	}
 
-	if normalizeWS(o.Query) != normalizeWS(snap.Query) {
+	if queryChanged {
 		// RFC Section 8.1: "Output column list changed (any way) → DROP VIEW
 		// CASCADE; CREATE VIEW → DESTRUCTIVE." Real PostgreSQL enforces this
 		// itself — CREATE OR REPLACE VIEW rejects a query whose replacement

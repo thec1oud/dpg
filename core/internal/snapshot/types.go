@@ -585,6 +585,9 @@ type SnapView struct {
 	// Columns is the view's column-name list when the query can't carry
 	// it as aliases (ir.View.Columns).
 	Columns []string `json:"columns,omitempty"`
+	// Reconstructed marks a view read from the live catalog
+	// (ir.View.Reconstructed).
+	Reconstructed bool `json:"reconstructed,omitempty"`
 }
 
 type SnapFunction struct {

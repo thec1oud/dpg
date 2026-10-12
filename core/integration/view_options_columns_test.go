@@ -19,9 +19,8 @@ import (
 // WITH (...) options, its WITH [LOCAL|CASCADED] CHECK OPTION, and its
 // column-name list all reach the database; re-planning and comparing with
 // the live catalog find nothing; an option change is an ALTER VIEW, and a
-// query change keeps the options. A view over `*` keeps its column list
-// as a separate clause; PostgreSQL stores `*` expanded, so that view is
-// checked against its snapshot only.
+// query change keeps the options. Views over `*` keep a column list as a
+// separate clause and match the catalog's expanded form.
 func TestRoundtripViewOptionsAndColumns(t *testing.T) {
 	connStr := testpg.Start(t)
 	ctx := context.Background()
@@ -67,15 +66,22 @@ func TestRoundtripViewOptionsAndColumns(t *testing.T) {
 	}
 
 	const base = `TABLE users (id int, email text, tenant int);
+TABLE orders (id int, user_id int, total numeric);
+VIEW plain_star AS SELECT * FROM users WHERE tenant > 0;
+VIEW join_star AS SELECT u.*, o.total FROM users u JOIN orders o ON o.user_id = u.id;
 `
 	write(base + `VIEW user_summary (user_id, mail) AS SELECT id, email FROM users;
 VIEW secure_view WITH (security_barrier, security_invoker = true) AS SELECT id FROM users WHERE tenant = 1;
 VIEW active AS SELECT id, tenant FROM users WHERE tenant > 0 WITH LOCAL CHECK OPTION;
+VIEW starred (a, b) AS SELECT * FROM users;
 `)
 	applyFixture(t, ctx, conn, []string{f}, dir, differ, emitter, applyExec, store)
 
 	if got := columns("user_summary"); got != "user_id,mail" {
 		t.Errorf("user_summary columns = %q", got)
+	}
+	if got := columns("starred"); got != "a,b,tenant" {
+		t.Errorf("starred columns = %q", got)
 	}
 	if got := reloptions("secure_view"); got != "security_barrier=true,security_invoker=true" {
 		t.Errorf("secure_view reloptions = %q", got)
@@ -85,17 +91,6 @@ VIEW active AS SELECT id, tenant FROM users WHERE tenant > 0 WITH LOCAL CHECK OP
 	}
 	assertNoReplan(t, []string{f}, dir, differ, store)
 	assertNoLiveDrift(t, ctx, conn, []string{f}, dir, differ, store)
-
-	write(base + `VIEW user_summary (user_id, mail) AS SELECT id, email FROM users;
-VIEW secure_view WITH (security_barrier, security_invoker = true) AS SELECT id FROM users WHERE tenant = 1;
-VIEW active AS SELECT id, tenant FROM users WHERE tenant > 0 WITH LOCAL CHECK OPTION;
-VIEW starred (a, b) AS SELECT * FROM users;
-`)
-	applyFixture(t, ctx, conn, []string{f}, dir, differ, emitter, applyExec, store)
-	if got := columns("starred"); got != "a,b,tenant" {
-		t.Errorf("starred columns = %q", got)
-	}
-	assertNoReplan(t, []string{f}, dir, differ, store)
 
 	// Options change only: targeted ALTER VIEW SET/RESET.
 	write(base + `VIEW user_summary (user_id, mail) AS SELECT id, email FROM users;
