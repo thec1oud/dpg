@@ -50,10 +50,36 @@ type blockDirective struct {
 }
 
 // blockDirectives lists the directives a parsed block declares.
+// directiveWords are the leading keywords each directive can be written
+// with, to find its position in BlockAST.DirectivePos.
+var directiveWords = map[string][]string{
+	dirComment: {"COMMENT"}, dirOwner: {"OWNER"}, dirRenamedFrom: {"RENAMED"},
+	dirProtected: {"PROTECTED"}, dirDeprecated: {"DEPRECATED"}, dirDropCascade: {"DROP"},
+	dirIndexes: {"INDEXES", "INDEX", "UNIQUE"}, dirPolicies: {"POLICIES", "POLICY"},
+	dirTriggers: {"TRIGGERS", "TRIGGER"}, dirGrants: {"GRANTS", "GRANT"},
+	dirRevokes: {"REVOKES", "REVOKE"}, dirSecurityLabel: {"SECURITY"},
+	dirColumn: {"COLUMN", "COLUMNS"}, dirAttribute: {"ATTRIBUTE", "ATTRIBUTES"},
+	dirConstraint: {"CONSTRAINT", "CONSTRAINTS"}, dirEnableRLS: {"ENABLE"}, dirForceRLS: {"FORCE"},
+	dirPartitions: {"PARTITIONS", "PARTITION"}, dirMigrateRemove: {"MIGRATE"},
+	dirDefaultPrivs: {"DEFAULT"}, dirMapping: {"MAPPING"}, dirFamilyMembers: {"OPERATOR", "FUNCTION"},
+	dirPreferredJSON: {"PREFERRED"}, dirNameMap: {"NAME"}, dirDomainDefault: {"DEFAULT"},
+	dirDomainNotNull: {"NOT"}, dirDependsOnExt: {"DEPENDS", "NO"}, dirReplicaIdentity: {"REPLICA"},
+	dirClusterOn: {"CLUSTER"}, dirRefreshVersion: {"REFRESH"}, dirDetachedFrom: {"DETACHED"},
+	dirValueRenamedFrom: {"VALUE"}, dirEnableState: {"ENABLE", "DISABLED", "DISABLE"},
+	dirRoleConfig: {"SET", "RESET"}, dirMembership: {"IN", "ROLE", "ADMIN"}, dirStatistics: {"STATISTICS"},
+}
+
 func blockDirectives(b pipeline.BlockAST) []blockDirective {
 	var out []blockDirective
 	add := func(present bool, name string, pos pipeline.SourcePos) {
 		if present {
+			if pos.Line == 0 {
+				for _, w := range directiveWords[name] {
+					if p, ok := b.DirectivePos[w]; ok && (pos.Line == 0 || p.Line < pos.Line || p.Line == pos.Line && p.Col < pos.Col) {
+						pos = p
+					}
+				}
+			}
 			if pos.Line == 0 {
 				pos = b.Pos
 			}

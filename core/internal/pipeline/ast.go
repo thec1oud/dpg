@@ -470,7 +470,11 @@ var ValidNameMapRules = map[string]bool{
 // Populated by the BlockParser (Phase 4b). Fields absent from a given block
 // remain at their zero value.
 type BlockAST struct {
-	Pos            SourcePos
+	Pos SourcePos
+	// DirectivePos is the position of the first directive starting with
+	// each leading keyword ("COMMENT", "INDEXES", "SET", ...), for errors
+	// about a directive.
+	DirectivePos   map[string]SourcePos
 	Comment        *StringLit
 	Owner          *Identifier
 	RenamedFrom    *Identifier

@@ -3,6 +3,7 @@ package compiler_test
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -701,3 +702,32 @@ func TestCompile_LikeUnresolvedSourceErrors(t *testing.T) {
 		t.Fatal("expected an error for a LIKE source table absent from the compile unit")
 	}
 }
+
+// TestCompile_BlockDirectiveErrorPositions: an error about a block
+// directive points at the directive, not at the declaration (DPG-E024).
+func TestCompile_BlockDirectiveErrorPositions(t *testing.T) {
+	cases := []struct {
+		name, src string
+		line, col int
+	}{
+		{"directive not allowed for the kind", "ROLE r NOLOGIN {\n    COMMENT 'x';\n    INDEXES { i (a); }\n}\n", 3, 5},
+		{"unknown directive", "TABLE t (id int) {\n    COMMENT 'x';\n      BOGUS;\n}\n", 3, 7},
+	}
+	for _, c := range cases {
+		dbDir := t.TempDir()
+		f := filepath.Join(dbDir, "x.dpg")
+		writeDPG(t, f, c.src)
+		_, _, err := compiler.Compile([]string{f}, dbDir, pipeline.Default)
+		if err == nil {
+			t.Errorf("%s: expected an error", c.name)
+			continue
+		}
+		want := filepath.Base(f)
+		msg := err.Error()
+		if !strings.Contains(msg, want+":"+itoa(c.line)+":"+itoa(c.col)) {
+			t.Errorf("%s: expected position %d:%d, got %q", c.name, c.line, c.col, msg)
+		}
+	}
+}
+
+func itoa(i int) string { return strconv.Itoa(i) }

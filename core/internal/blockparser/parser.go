@@ -38,6 +38,25 @@ func (p *Parser) Parse(kind pipeline.ObjectKind, part2 string, pos pipeline.Sour
 	return bp.parseBlock(pos)
 }
 
+// ParseAt is Parse with the position of the block's body (the first
+// character after '{'), so each directive is reported at its own line and
+// column; pos stays the declaration's position, used for the block itself.
+func (p *Parser) ParseAt(kind pipeline.ObjectKind, part2 string, pos, bodyPos pipeline.SourcePos) (pipeline.BlockAST, error) {
+	if strings.TrimSpace(part2) == "" {
+		return pipeline.BlockAST{Pos: pos}, nil
+	}
+	if bodyPos.Line == 0 {
+		bodyPos = pos
+	}
+	bp := &blockParser{
+		src:  []byte(part2),
+		file: pos.File,
+		line: bodyPos.Line,
+		col:  bodyPos.Col,
+	}
+	return bp.parseBlock(pos)
+}
+
 // ParseDefaultPrivileges implements pipeline.BlockParser.
 func (p *Parser) ParseDefaultPrivileges(header, body string, pos pipeline.SourcePos) (pipeline.DefaultPrivilegesBlock, error) {
 	return ParseDefaultPrivileges(header, body, pos)
@@ -485,6 +504,12 @@ func (b *blockParser) parseBlock(pos pipeline.SourcePos) (pipeline.BlockAST, err
 		word := strings.ToUpper(b.readWord())
 		if word == "" {
 			return ast, b.errorf("unexpected character %q in block", b.peek())
+		}
+		if _, seen := ast.DirectivePos[word]; !seen {
+			if ast.DirectivePos == nil {
+				ast.DirectivePos = map[string]pipeline.SourcePos{}
+			}
+			ast.DirectivePos[word] = dirPos
 		}
 
 		var err error

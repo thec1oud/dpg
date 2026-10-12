@@ -254,7 +254,16 @@ func CompileWith(files []string, dbDir string, reg *pipeline.Registry, opts Opti
 			return nil, nil, pgErr
 		}
 
-		blockAST, blockErr := blockParser.Parse(raw.Kind, raw.Part2, raw.Pos)
+		var blockAST pipeline.BlockAST
+		var blockErr error
+		if at, ok := blockParser.(interface {
+			ParseAt(pipeline.ObjectKind, string, pipeline.SourcePos, pipeline.SourcePos) (pipeline.BlockAST, error)
+		}); ok && raw.Part2Span.Valid() {
+			bodyPos := pipeline.SourcePos{File: raw.Pos.File, Line: raw.Part2Span.Line, Col: raw.Part2Span.Col}
+			blockAST, blockErr = at.ParseAt(raw.Kind, raw.Part2, raw.Pos, bodyPos)
+		} else {
+			blockAST, blockErr = blockParser.Parse(raw.Kind, raw.Part2, raw.Pos)
+		}
 		if blockErr != nil {
 			if ce, ok := blockErr.(*pipeline.CompilerError); ok {
 				diags = append(diags, ce)
