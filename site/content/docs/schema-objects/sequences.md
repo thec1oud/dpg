@@ -66,6 +66,20 @@ SEQUENCE order_number_seq
 ALTER SEQUENCE "public"."order_number_seq" CACHE 100;
 ```
 
+## Renaming or moving a sequence
+
+```sql
+SEQUENCE archive.invoice_no { RENAMED FROM public.order_no; }
+```
+
+```sql
+-- emits
+ALTER SEQUENCE "public"."order_no" SET SCHEMA "archive";
+ALTER SEQUENCE "archive"."order_no" RENAME TO "invoice_no";
+```
+
+The sequence keeps its current value.
+
 ## Removing a sequence
 
 Removing a sequence from source emits `DROP SEQUENCE` — always `DESTRUCTIVE`.

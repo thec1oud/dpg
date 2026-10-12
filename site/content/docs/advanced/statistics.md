@@ -38,7 +38,7 @@ SCHEMA public {
     STATISTICS orders_stats (dependencies, ndistinct, mcv)
         ON customer_id, created_at
         FROM orders {
-        STATISTICS_TARGET 200;
+        STATISTICS 200;
     }
 }
 ```
@@ -47,6 +47,8 @@ SCHEMA public {
 -- emits
 ALTER STATISTICS "public"."orders_stats" SET STATISTICS 200;
 ```
+
+`STATISTICS DEFAULT` resets the target (emitted as `SET STATISTICS -1`).
 
 ## Diffing behaviour
 

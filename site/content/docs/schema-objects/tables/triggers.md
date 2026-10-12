@@ -80,7 +80,7 @@ TRIGGERS {
 ```sql
 CREATE CONSTRAINT TRIGGER "check_ref"
     AFTER INSERT OR UPDATE ON "public"."users"
-    FROM "public"."orders"
+    FROM "orders"
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW
     EXECUTE FUNCTION check_ref_integrity();
