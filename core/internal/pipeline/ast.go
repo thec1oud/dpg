@@ -538,6 +538,11 @@ type BlockAST struct {
 	// ALTER COLLATION ... REFRESH VERSION on every plan/apply for as long
 	// as it remains declared.
 	RefreshVersion bool
+	// StatisticsTarget is an extended statistics object's STATISTICS n
+	// (RFC Section 14.6); nil for STATISTICS DEFAULT. StatisticsTargetSet
+	// reports that the directive was written.
+	StatisticsTarget    *int
+	StatisticsTargetSet bool
 	// DetachedFrom is Section 7.13's `DETACHED FROM parent_table
 	// [CONCURRENTLY]` block directive — the symmetric counterpart to a
 	// PARTITIONS { } entry's `ATTACHED FROM` — nil when not declared.

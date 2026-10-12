@@ -25,6 +25,7 @@ func TestUnknownBlockDirective(t *testing.T) {
 		{`EXTENSION pgcrypto { OWNER app; }`, "OWNER is not accepted in a { } block of EXTENSION"},
 		{`TYPE mood AS ENUM ('a') { ENABLE ROW LEVEL SECURITY; }`, "ENABLE ROW LEVEL SECURITY is not accepted"},
 		{`COLLATION c (provider = icu, locale = 'und') { GRANTS { USAGE TO app; } }`, "GRANTS is not accepted in a { } block of COLLATION"},
+		{`TABLE t (a int) { STATISTICS 100; }`, "STATISTICS is not accepted in a { } block of TABLE"},
 	}
 	for _, c := range rejected {
 		err := compile(c.src)
@@ -53,6 +54,7 @@ func TestUnknownBlockDirective(t *testing.T) {
 		`TYPE mood AS ENUM ('a', 'b') { OWNER app; DEPRECATED 'x'; VALUE 'b' RENAMED FROM 'c'; }`,
 		`TEXT SEARCH CONFIGURATION cfg (PARSER = default) { OWNER app; RENAMED FROM cfg0; }`,
 		`EXTENSION pgcrypto { COMMENT 'crypto'; }`,
+		`TABLE st (a int, b int); STATISTICS st_ab (ndistinct) ON a, b FROM st { STATISTICS 100; COMMENT 's'; }`,
 	}
 	for _, src := range accepted {
 		if err := compile(src); err != nil {

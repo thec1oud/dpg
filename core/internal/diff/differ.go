@@ -1526,6 +1526,11 @@ func createObject(obj pipeline.IRObject) ([]pipeline.DiffOp, error) {
 		return appendCommentOp(ops, err, "cast", "", o.QualifiedName(), "", "", o.Comment, o.SrcPos)
 	case *ir.StatisticsObject:
 		ops, err := createOpaque(o.QualifiedName(), o.Body, "STATISTICS", o.Schema, o.SrcPos)
+		// CREATE STATISTICS has no target clause (RFC Section 14.6).
+		if err == nil && o.StatisticsTarget != nil {
+			ops = append(ops, safeOp(fmt.Sprintf("ALTER STATISTICS %s SET STATISTICS %d;",
+				qualIdent(o.Schema, o.Name), *o.StatisticsTarget), o.SrcPos))
+		}
 		return appendCommentOp(ops, err, "statistics", o.Schema, o.Name, "", "", o.Comment, o.SrcPos)
 	case *ir.TSConfig:
 		ops, err := createOpaque(o.QualifiedName(), o.Body, "TEXT SEARCH CONFIGURATION", o.Schema, o.SrcPos)
@@ -2421,6 +2426,9 @@ func diffStatisticsObject(o *ir.StatisticsObject, snap *snapshot.SnapOpaque) ([]
 			return nil, err
 		}
 		ops = append(ops, createOps...)
+		if o.StatisticsTarget != nil {
+			ops = append(ops, safeOp(fmt.Sprintf("ALTER STATISTICS %s SET STATISTICS %d;", ident, *o.StatisticsTarget), pos))
+		}
 		return appendCommentOp(ops, nil, "statistics", o.Schema, o.Name, "", "", o.Comment, pos)
 	}
 	ops := renameOps

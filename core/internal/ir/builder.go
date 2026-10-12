@@ -2904,6 +2904,7 @@ func (b *Builder) buildStatistics(cs *pg_query.CreateStatsStmt, block pipeline.B
 			s.Table = qualName(rv.Schemaname, rv.Relname)
 		}
 	}
+	s.StatisticsTarget = block.StatisticsTarget
 	if block.Comment != nil {
 		s.Comment = &block.Comment.Value
 	}

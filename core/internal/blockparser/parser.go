@@ -756,14 +756,12 @@ func (b *blockParser) parseBlock(pos pipeline.SourcePos) (pipeline.BlockAST, err
 			m, err = b.parseOpFamilyMember(dirPos, word == "FUNCTION")
 			ast.OpFamilyMembers = append(ast.OpFamilyMembers, m)
 		case "STATISTICS":
-			// STATISTICS can appear at column level; at object level it's unusual
-			// but parse it for error resilience.
-			n, e2 := b.parseStatisticsValue(dirPos)
-			if e2 != nil {
-				err = e2
-			} else {
-				_ = n // statistics at object level is ignored; only meaningful in COLUMN
-			}
+			// An extended statistics object's target (RFC Section 14.6);
+			// DEFAULT parses to nil.
+			var n *int
+			n, err = b.parseStatisticsValue(dirPos)
+			ast.StatisticsTarget = n
+			ast.StatisticsTargetSet = err == nil
 		case "PREFERRED":
 			ast.PreferredJsonFormat, err = b.parsePreferredJsonFormat(dirPos)
 		case "NAME":

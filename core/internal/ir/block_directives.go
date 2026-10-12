@@ -41,6 +41,7 @@ const (
 	dirEnableState      = "ENABLE/DISABLE"
 	dirRoleConfig       = "SET/RESET"
 	dirMembership       = "IN ROLE/ROLE/ADMIN"
+	dirStatistics       = "STATISTICS"
 )
 
 type blockDirective struct {
@@ -95,6 +96,7 @@ func blockDirectives(b pipeline.BlockAST) []blockDirective {
 	add(b.TriggerEnableState != "", dirEnableState, pipeline.SourcePos{})
 	add(first(len(b.RoleConfigs)), dirRoleConfig, pipeline.SourcePos{})
 	add(first(len(b.Memberships)), dirMembership, pipeline.SourcePos{})
+	add(b.StatisticsTargetSet, dirStatistics, pipeline.SourcePos{})
 	return out
 }
 
@@ -171,7 +173,7 @@ func allowedDirectives(obj pipeline.IRObject) (allowed map[string]bool, kind str
 	case *UserMapping:
 		return directiveSet(dirComment), "USER MAPPING", true
 	case *StatisticsObject:
-		return directiveSet(dirComment, dirRenamedFrom), "STATISTICS", true
+		return directiveSet(dirComment, dirRenamedFrom, dirStatistics), "STATISTICS", true
 	case *Operator:
 		return directiveSet(dirComment), "OPERATOR", true
 	case *Collation:
