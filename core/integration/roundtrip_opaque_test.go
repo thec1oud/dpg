@@ -1042,7 +1042,7 @@ STATISTICS gl_stats (ndistinct) ON id, val FROM gl_stats_t;`
 	if driftOps[0].Safety() != pipeline.Safe {
 		t.Errorf("expected ALTER STATISTICS SET STATISTICS to be Safe, got %v: %s", driftOps[0].Safety(), sql)
 	}
-	if !strings.Contains(sql, "SET STATISTICS DEFAULT") {
+	if !strings.Contains(sql, "SET STATISTICS -1") {
 		t.Errorf("expected recreate to restore the declared (unset/default) target, got: %s", sql)
 	}
 

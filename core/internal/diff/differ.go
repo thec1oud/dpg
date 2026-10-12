@@ -2420,7 +2420,9 @@ func diffStatisticsObject(o *ir.StatisticsObject, snap *snapshot.SnapOpaque) ([]
 		if o.StatisticsTarget != nil {
 			ops = append(ops, safeOp(fmt.Sprintf("ALTER STATISTICS %s SET STATISTICS %d;", ident, *o.StatisticsTarget), pos))
 		} else {
-			ops = append(ops, safeOp(fmt.Sprintf("ALTER STATISTICS %s SET STATISTICS DEFAULT;", ident), pos))
+			// -1 resets to the default on every supported version; the
+			// DEFAULT keyword needs PostgreSQL 17.
+			ops = append(ops, safeOp(fmt.Sprintf("ALTER STATISTICS %s SET STATISTICS -1;", ident), pos))
 		}
 	}
 	if !ptrEq(o.Comment, snap.Comment) {

@@ -21019,8 +21019,8 @@ func TestDiffStatisticsObjectTargetResetToDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ops) != 1 || !strings.Contains(ops[0].SQL(), "SET STATISTICS DEFAULT") {
-		t.Errorf("expected ALTER STATISTICS ... SET STATISTICS DEFAULT, got: %v", sqlList(ops))
+	if len(ops) != 1 || !strings.Contains(ops[0].SQL(), "SET STATISTICS -1") {
+		t.Errorf("expected ALTER STATISTICS ... SET STATISTICS -1, got: %v", sqlList(ops))
 	}
 }
 
