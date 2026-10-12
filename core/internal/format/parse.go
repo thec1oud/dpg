@@ -93,6 +93,9 @@ func kindKeyword(k pipeline.ObjectKind) string {
 // This is used to exclude intra-object comments from inter-object comment
 // collection.
 func objectEndLine(raw pipeline.RawObject) int {
+	if raw.End.Line > 0 {
+		return raw.End.Line
+	}
 	line := raw.Pos.Line + strings.Count(raw.Part1, "\n")
 	if raw.Part2 != "" {
 		line += strings.Count(raw.Part2, "\n")
@@ -103,7 +106,7 @@ func objectEndLine(raw pipeline.RawObject) int {
 // Parse builds a FormatAST from the source file at path with content src.
 // The FormatAST preserves comments for re-injection by the renderer.
 func Parse(path string, src []byte) (*File, error) {
-	sc := scanner.New()
+	sc := scanner.NewKeepSpreads()
 	raws, err := sc.Scan(path, src)
 	if err != nil {
 		return nil, err
@@ -117,7 +120,7 @@ func Parse(path string, src []byte) (*File, error) {
 	var allComments []commentEntry
 	for _, tok := range tokens {
 		if tok.Type == TokLineComment || tok.Type == TokBlockComment {
-			allComments = append(allComments, commentEntry{tok.Line, tok.Text})
+			allComments = append(allComments, commentEntry{tok.Line, tok.Col, tok.Text})
 		}
 	}
 
@@ -157,12 +160,17 @@ func Parse(path string, src []byte) (*File, error) {
 		tokens:   tokens,
 		comments: allComments,
 	}
-	f.Objects = p.buildAll(raws, macros, fileLeadingEndLine)
+	var lastEndLine int
+	f.Objects, lastEndLine = p.buildAll(raws, macros, fileLeadingEndLine)
+	if firstLine > 0 {
+		f.TrailingComments = p.commentsInRange(lastEndLine, int(^uint(0)>>1))
+	}
 	return f, nil
 }
 
 type commentEntry struct {
 	line int
+	col  int
 	text string
 }
 
@@ -185,11 +193,58 @@ func (p *parser) commentsInRange(prevEndLine, targetLine int) []string {
 	return out
 }
 
+// commentsAfterEnd returns the comments on the line of raw's terminating ';'
+// or '}' that follow it, stopping before next when next starts on that same
+// line.
+func (p *parser) commentsAfterEnd(raw pipeline.RawObject, next pipeline.SourcePos) string {
+	if raw.End.Line == 0 {
+		return ""
+	}
+	var out []string
+	for _, c := range p.comments {
+		if c.line != raw.End.Line || c.col < raw.End.Col {
+			continue
+		}
+		if next.Line == c.line && c.col >= next.Col {
+			continue
+		}
+		out = append(out, c.text)
+	}
+	return strings.Join(out, " ")
+}
+
+// splitTrailingComments separates the comments that end text (after its last
+// code token) from the code before them. The renderer writes ' {' or ';'
+// right after Part 1, which would land inside a trailing line comment, so
+// these comments are moved before the declaration instead.
+func splitTrailingComments(text string) (code string, comments []string) {
+	toks := Lex("", []byte(text))
+	last := -1
+	for i, t := range toks {
+		switch t.Type {
+		case TokWhitespace, TokNewline, TokLineComment, TokBlockComment, TokEOF:
+		default:
+			last = i
+		}
+	}
+	var b strings.Builder
+	for i := 0; i <= last; i++ {
+		b.WriteString(toks[i].Text)
+	}
+	for i := last + 1; i < len(toks); i++ {
+		if toks[i].Type == TokLineComment || toks[i].Type == TokBlockComment {
+			comments = append(comments, toks[i].Text)
+		}
+	}
+	return b.String(), comments
+}
+
 // buildAll constructs the top-level ObjectNode slice from scanned raw objects and
 // extracted MACRO declarations, interleaved in source order.
 // Schema blocks are reconstructed: nested raw objects (raw.Schema != "") are
 // grouped under their enclosing SchemaBlockNode instead of appearing at the top level.
-func (p *parser) buildAll(raws []pipeline.RawObject, macros []macroDecl, fileLeadingEndLine int) []ObjectNode {
+// It also returns the last line occupied by the final item.
+func (p *parser) buildAll(raws []pipeline.RawObject, macros []macroDecl, fileLeadingEndLine int) ([]ObjectNode, int) {
 	// Unified item list — one entry per top-level unit (macros + non-nested objects).
 	type item struct {
 		line    int
@@ -214,8 +269,15 @@ func (p *parser) buildAll(raws []pipeline.RawObject, macros []macroDecl, fileLea
 	var nodes []ObjectNode
 	prevEndLine := fileLeadingEndLine
 
-	for _, it := range items {
+	for i, it := range items {
 		leading := p.commentsInRange(prevEndLine, it.line)
+		var next pipeline.SourcePos
+		if i+1 < len(items) {
+			next = pipeline.SourcePos{Line: items[i+1].line, Col: 1}
+			if !items[i+1].isMacro {
+				next = items[i+1].raw.Pos
+			}
+		}
 
 		if it.isMacro {
 			nodes = append(nodes, &MacroNode{
@@ -235,144 +297,161 @@ func (p *parser) buildAll(raws []pipeline.RawObject, macros []macroDecl, fileLea
 				}
 			}
 			node := p.buildSchemaNode(it.raw, nested, leading)
+			node.TrailingComment = p.commentsAfterEnd(it.raw, next)
 			nodes = append(nodes, node)
-			if len(nested) > 0 {
+			prevEndLine = objectEndLine(it.raw)
+			if len(nested) > 0 && it.raw.End.Line == 0 {
 				prevEndLine = objectEndLine(nested[len(nested)-1])
-			} else {
-				prevEndLine = objectEndLine(it.raw)
 			}
 			continue
 		}
 
-		node := p.buildNode(it.raw, leading)
+		node := p.buildNode(it.raw, leading, p.commentsAfterEnd(it.raw, next))
 		nodes = append(nodes, node)
 		prevEndLine = objectEndLine(it.raw)
 	}
 
-	return nodes
+	return nodes, prevEndLine
 }
 
 // buildSchemaNode creates a SchemaBlockNode from the schema's RawObject and its
 // nested children. raw.Pos.Line is used as the baseline for child comment collection.
-func (p *parser) buildSchemaNode(raw pipeline.RawObject, nested []pipeline.RawObject, leading []string) ObjectNode {
-	childNodes := p.buildNodes(nested, raw.Pos.Line)
-	return &SchemaBlockNode{
+func (p *parser) buildSchemaNode(raw pipeline.RawObject, nested []pipeline.RawObject, leading []string) *SchemaBlockNode {
+	childNodes, lastEndLine := p.buildNodes(nested, raw.Pos.Line)
+	n := &SchemaBlockNode{
 		baseNode: baseNode{LeadingComments: leading},
 		Name:     raw.Part1,
 		Objects:  childNodes,
 		RawAttrs: raw.Part2,
 	}
+	// Comments after the last nested object (or, with none, anywhere among
+	// the schema's own directives, which the scanner drops), up to the
+	// closing '}'.
+	if raw.End.Line > 0 {
+		for _, c := range p.comments {
+			if c.line > lastEndLine && (c.line < raw.End.Line || c.line == raw.End.Line && c.col < raw.End.Col-1) {
+				n.InnerTrailingComments = append(n.InnerTrailingComments, c.text)
+			}
+		}
+	}
+	return n
 }
 
 // buildNodes converts a slice of pipeline.RawObject into ObjectNodes, attaching
 // inter-object comments. Used for schema-nested objects (no macros, no sub-schemas).
-func (p *parser) buildNodes(raws []pipeline.RawObject, prevEndLine int) []ObjectNode {
+// It also returns the last line occupied by the final object.
+func (p *parser) buildNodes(raws []pipeline.RawObject, prevEndLine int) ([]ObjectNode, int) {
 	var nodes []ObjectNode
-	for _, raw := range raws {
+	for i, raw := range raws {
 		leading := p.commentsInRange(prevEndLine, raw.Pos.Line)
-		node := p.buildNode(raw, leading)
+		var next pipeline.SourcePos
+		if i+1 < len(raws) {
+			next = raws[i+1].Pos
+		}
+		node := p.buildNode(raw, leading, p.commentsAfterEnd(raw, next))
 		nodes = append(nodes, node)
 		prevEndLine = objectEndLine(raw)
 	}
-	return nodes
+	return nodes, prevEndLine
 }
 
 // buildNode converts one RawObject into an ObjectNode.
-func (p *parser) buildNode(raw pipeline.RawObject, leading []string) ObjectNode {
+func (p *parser) buildNode(raw pipeline.RawObject, leading []string, trailing string) ObjectNode {
 	switch raw.Kind {
 	case pipeline.KindTable, pipeline.KindUnloggedTable:
-		return p.buildTableNode(raw, leading)
-	default:
-		return &OpaqueNode{
-			baseNode:    baseNode{LeadingComments: leading},
-			KindKeyword: kindKeyword(raw.Kind),
-			RawPart1:    raw.Part1,
-			RawPart2:    raw.Part2,
-			HasPart2:    raw.HasPart2,
+		if n := p.buildTableNode(raw, leading, trailing); n != nil {
+			return n
 		}
+	}
+	part1, hoisted := splitTrailingComments(raw.Part1)
+	return &OpaqueNode{
+		baseNode:    baseNode{LeadingComments: append(leading, hoisted...), TrailingComment: trailing},
+		KindKeyword: kindKeyword(raw.Kind),
+		RawPart1:    part1,
+		RawPart2:    raw.Part2,
+		HasPart2:    raw.HasPart2,
 	}
 }
 
-// buildTableNode parses a TABLE declaration's column list from Part1.
-func (p *parser) buildTableNode(raw pipeline.RawObject, leading []string) ObjectNode {
-	columns := parseColumns(raw.Part1)
-	if len(columns) == 0 {
-		return &OpaqueNode{
-			baseNode:    baseNode{LeadingComments: leading},
-			KindKeyword: kindKeyword(raw.Kind),
-			RawPart1:    raw.Part1,
-			RawPart2:    raw.Part2,
-			HasPart2:    raw.HasPart2,
-		}
+// buildTableNode parses a TABLE declaration of the form `name (columns)
+// [clauses]` into a TableNode. Any other form (PARTITION OF, OF type, an
+// empty column list) returns nil and is formatted as an OpaqueNode, whose
+// Part 1 is kept as written.
+func (p *parser) buildTableNode(raw pipeline.RawObject, leading []string, trailing string) *TableNode {
+	open, close, ok := columnListBounds(raw.Part1)
+	if !ok {
+		return nil
 	}
-
+	name := strings.TrimSpace(raw.Part1[:open])
+	if !isTableName(name) {
+		return nil
+	}
+	columns := splitColumnDefs(raw.Part1[open+1 : close])
+	if len(columns) == 0 {
+		return nil
+	}
+	suffix, hoisted := splitTrailingComments(raw.Part1[close+1:])
 	return &TableNode{
-		baseNode: baseNode{LeadingComments: leading},
+		baseNode: baseNode{LeadingComments: append(leading, hoisted...), TrailingComment: trailing},
 		Unlogged: raw.Kind == pipeline.KindUnloggedTable,
-		Name:     extractTableName(raw.Part1),
+		Name:     name,
 		Columns:  columns,
+		Suffix:   strings.TrimSpace(suffix),
 		RawPart2: raw.Part2,
 		HasPart2: raw.HasPart2,
 	}
 }
 
-// extractTableName returns the table name (and schema qualifier if present)
-// from the Part1 text. Part1 looks like `schema.name (col1 type, ...)`.
-func extractTableName(part1 string) string {
-	part1 = strings.TrimSpace(part1)
-	if cut, _, ok := strings.Cut(part1, "("); ok {
-		return strings.TrimSpace(cut)
-	}
-	return part1
-}
-
-// parseColumns splits Part1 of a TABLE declaration into ColumnNodes.
-// It uses the format lexer so that comments and blank lines within the column
-// list are detected and attached correctly.
-func parseColumns(part1 string) []*ColumnNode {
-	// Find the outer paren that holds the column list.
-	open := strings.IndexByte(part1, '(')
-	if open < 0 {
-		return nil
-	}
-	close := findMatchingParen(part1, open)
-	if close < 0 {
-		return nil
-	}
-	inner := part1[open+1 : close]
-	return splitColumnDefs(inner)
-}
-
-// findMatchingParen returns the index of the ')' matching '(' at openIdx,
-// accounting for single-quoted strings.
-func findMatchingParen(s string, openIdx int) int {
-	depth := 0
-	inSQ := false
-	for i := openIdx; i < len(s); i++ {
-		c := s[i]
-		if inSQ {
-			if c == '\'' {
-				if i+1 < len(s) && s[i+1] == '\'' {
-					i++
-				} else {
-					inSQ = false
-				}
+// columnListBounds returns the byte offsets of the first '(' in part1 and its
+// matching ')'. Parentheses inside strings, quoted identifiers and comments
+// are ignored.
+func columnListBounds(part1 string) (open, close int, ok bool) {
+	depth, off := 0, 0
+	open = -1
+	for _, t := range Lex("", []byte(part1)) {
+		switch t.Type {
+		case TokLParen:
+			if open < 0 {
+				open = off
 			}
-			continue
-		}
-		switch c {
-		case '\'':
-			inSQ = true
-		case '(':
 			depth++
-		case ')':
+		case TokRParen:
 			depth--
-			if depth == 0 {
-				return i
+			if depth == 0 && open >= 0 {
+				return open, off, true
 			}
 		}
+		off += len(t.Text)
 	}
-	return -1
+	return 0, 0, false
+}
+
+// isTableName reports whether s is a single, optionally schema-qualified,
+// table name: identifiers or quoted identifiers joined by dots, with no
+// other words.
+func isTableName(s string) bool {
+	if s == "" {
+		return false
+	}
+	wantName := true
+	for _, t := range Lex("", []byte(s)) {
+		switch t.Type {
+		case TokEOF:
+		case TokIdent, TokKeyword, TokQuotedIdent:
+			if !wantName {
+				return false
+			}
+			wantName = false
+		case TokDot:
+			if wantName {
+				return false
+			}
+			wantName = true
+		default:
+			return false
+		}
+	}
+	return !wantName
 }
 
 // splitColumnDefs splits the inner column-list text into ColumnNodes.
@@ -395,14 +474,21 @@ func splitColumnDefs(inner string) []*ColumnNode {
 		colText         strings.Builder
 		hasText         bool // non-WS/comment content written to colText
 		depth           int
+		// afterComma is true between a column's ',' and the end of that
+		// line: a comment there trails the column before the comma.
+		afterComma bool
 	)
 
 	flush := func() {
-		text := strings.TrimSpace(colText.String())
+		// A comment ending a column's text is kept apart from it, so the
+		// renderer can write the ',' before it (columns are reordered).
+		code, trailing := splitTrailingComments(colText.String())
+		text := strings.TrimSpace(code)
 		if text != "" || len(pendingComments) > 0 {
 			cols = append(cols, &ColumnNode{
 				BlankLineBefore: blankBefore,
 				LeadingComments: pendingComments,
+				TrailingComment: strings.Join(trailing, " "),
 				RawText:         text,
 			})
 		}
@@ -420,6 +506,7 @@ func splitColumnDefs(inner string) []*ColumnNode {
 			flush()
 
 		case TokNewline:
+			afterComma = false
 			if prevNewline {
 				blankPending = true
 			}
@@ -435,6 +522,14 @@ func splitColumnDefs(inner string) []*ColumnNode {
 			// Don't update prevNewline — whitespace doesn't break newline tracking.
 
 		case TokLineComment, TokBlockComment:
+			if afterComma && !hasText && len(pendingComments) == 0 && len(cols) > 0 {
+				prev := cols[len(cols)-1]
+				if prev.TrailingComment != "" {
+					prev.TrailingComment += " "
+				}
+				prev.TrailingComment += tok.Text
+				continue
+			}
 			if !hasText {
 				// Leading comment for the upcoming column.
 				if blankPending {
@@ -450,6 +545,7 @@ func splitColumnDefs(inner string) []*ColumnNode {
 		case TokComma:
 			if depth == 0 {
 				flush()
+				afterComma = true
 			} else {
 				colText.WriteString(tok.Text)
 				hasText = true

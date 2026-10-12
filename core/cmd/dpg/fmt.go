@@ -28,6 +28,9 @@ func newFmtCmd() *cobra.Command {
 
 With no arguments, all .dpg files under the project root are formatted.
 Pass specific files or directories to restrict formatting to those paths.
+Formatting changes layout only: every clause, comment and macro spread is
+kept. A file that cannot be parsed is reported, left unchanged, and makes
+the command exit 1.
 
   --check   Exit 1 if any file would change; no files are written (CI gate).
   --diff    Print a unified diff of what would change; no files are written.
@@ -139,6 +142,7 @@ func walkDpgFiles(dir string) ([]string, error) {
 // Otherwise it writes formatted content back to disk.
 func runFmt(files []string, opts format.Options, check, showDiff bool) error {
 	anyChanged := false
+	failed := 0
 
 	for _, path := range files {
 		src, err := os.ReadFile(path)
@@ -148,8 +152,10 @@ func runFmt(files []string, opts format.Options, check, showDiff bool) error {
 
 		formatted, err := format.Format(path, src, opts)
 		if err != nil {
-			// Non-fatal: print warning and skip the file.
-			fmt.Fprintf(os.Stderr, "dpg fmt: warning: could not format %s: %v\n", path, err)
+			// Skip the file and keep going, but fail the run: a file
+			// that doesn't parse must not pass --check.
+			fmt.Fprintf(os.Stderr, "dpg fmt: could not format %s: %v\n", path, err)
+			failed++
 			continue
 		}
 
@@ -174,6 +180,9 @@ func runFmt(files []string, opts format.Options, check, showDiff bool) error {
 		}
 	}
 
+	if failed > 0 {
+		return fmt.Errorf("dpg fmt: %d file(s) could not be formatted", failed)
+	}
 	if check && anyChanged {
 		return fmt.Errorf("dpg fmt --check: %d file(s) would be reformatted", countChanged(files, opts))
 	}

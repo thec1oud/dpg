@@ -22,7 +22,10 @@ type macroStore map[string]MacroDef
 //
 // MACRO declarations are removed from the output. The result is valid DPG
 // source with all spreads inlined.
-func preprocessMacrosWithGlobal(src []byte, global macroStore) ([]byte, error) {
+func preprocessMacrosWithGlobal(src []byte, global macroStore, keepSpreads bool) ([]byte, error) {
+	if keepSpreads {
+		return expandMacros(src, nil, true)
+	}
 	local, err := collectMacros(src)
 	if err != nil {
 		return nil, err
@@ -43,7 +46,7 @@ func preprocessMacrosWithGlobal(src []byte, global macroStore) ([]byte, error) {
 	if err := resolveStoreBodies(store); err != nil {
 		return nil, err
 	}
-	return expandMacros(src, store)
+	return expandMacros(src, store, false)
 }
 
 // collectMacros scans src for MACRO declarations and returns the store.
@@ -148,8 +151,9 @@ func collectMacros(src []byte) (macroStore, error) {
 }
 
 // expandMacros replaces ...name occurrences in src with the corresponding macro body.
-// MACRO declarations are removed from the output.
-func expandMacros(src []byte, store macroStore) ([]byte, error) {
+// MACRO declarations are removed from the output. With keepSpreads, spreads
+// are written as they are instead.
+func expandMacros(src []byte, store macroStore, keepSpreads bool) ([]byte, error) {
 	var out strings.Builder
 	p := &macroParser{src: src}
 	// brackets tracks the stack of currently-open '(' / '{' delimiters in
@@ -245,13 +249,22 @@ func expandMacros(src []byte, store macroStore) ([]byte, error) {
 
 		// Detect spread: ...name
 		if p.peek() == '.' && p.peekAt(1) == '.' && p.peekAt(2) == '.' {
+			spreadStart := p.pos
 			p.advance()
 			p.advance()
 			p.advance()
+			afterDots := p.pos
 			p.skipWS()
 			name := p.readWord()
 			if name == "" {
+				// Not a spread: keep the text skipped above, so line numbers
+				// after it don't shift.
 				out.WriteString("...")
+				out.Write(src[afterDots:p.pos])
+				continue
+			}
+			if keepSpreads {
+				out.Write(src[spreadStart:p.pos])
 				continue
 			}
 			def, ok := store[name]

@@ -12,6 +12,9 @@ Format .dpg source files in place
 Reformat .dpg source files to the canonical DPG style.
 
 Without arguments, all .dpg files in the current project are formatted.
+Formatting changes layout only: every clause, comment and macro spread is
+kept. A file that cannot be parsed is reported, left unchanged, and makes
+the command exit 1.
 With --check, exits 1 if any file would change (no files are written).
 With --diff, prints a unified diff of proposed changes (no files are written).
 With --stdin, reads source from stdin and writes formatted output to stdout

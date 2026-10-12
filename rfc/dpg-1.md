@@ -5398,6 +5398,15 @@ Options:
    -   Blank lines: one blank line between top-level declarations.
    -   Comment style: `--` for single-line, `/* */` for multi-line.
 
+   Formatting changes layout only, never meaning: every clause of Part 1
+   and Part 2, every comment, and every macro spread (`...name`) is kept
+   as written.  A comment that ends Part 1 (just before the `{` or `;`)
+   is moved to the line before the declaration; a comment after the
+   terminating `;` or `}` stays on that line.  A file that cannot be
+   parsed is reported and left unchanged, and the command exits with
+   code 1, with or without `--check`.  `--stdin` instead writes such
+   input back unchanged.
+
    `dpg fmt` deliberately does NOT touch identifier casing — unlike
    keyword casing, identifiers are never rewritten, in either
    direction.  This is intentional, not a gap: DPG's macro

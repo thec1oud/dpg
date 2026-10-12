@@ -178,6 +178,10 @@ type RawObject struct {
 	// a SCHEMA { } block. Empty for top-level declarations.
 	Schema string
 	Pos    SourcePos
+	// End is the position just past the declaration's terminating ';' or
+	// closing '}'. dpg fmt uses it to tell comments inside a declaration
+	// from comments after it on the same line.
+	End SourcePos
 }
 
 // Safety classifies the risk of a migration operation (RFC Section 17.2).

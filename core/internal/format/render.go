@@ -33,6 +33,14 @@ func render(f *File, opts Options) string {
 		b.WriteByte('\n')
 	}
 
+	if len(f.TrailingComments) > 0 {
+		b.WriteByte('\n')
+		for _, c := range f.TrailingComments {
+			b.WriteString(c)
+			b.WriteByte('\n')
+		}
+	}
+
 	return b.String()
 }
 
@@ -56,6 +64,25 @@ func renderObject(b *strings.Builder, obj ObjectNode, opts Options, depth int) {
 	case *MacroNode:
 		renderMacro(b, n, opts, ind)
 	}
+
+	if c := trailingComment(obj); c != "" {
+		b.WriteByte(' ')
+		b.WriteString(c)
+	}
+}
+
+// trailingComment returns the comment that follows obj's terminator on the
+// same line.
+func trailingComment(obj ObjectNode) string {
+	switch n := obj.(type) {
+	case *OpaqueNode:
+		return n.TrailingComment
+	case *TableNode:
+		return n.TrailingComment
+	case *SchemaBlockNode:
+		return n.TrailingComment
+	}
+	return ""
 }
 
 func renderOpaque(b *strings.Builder, n *OpaqueNode, opts Options, ind string) {
@@ -164,6 +191,10 @@ func renderTable(b *strings.Builder, n *TableNode, opts Options, ind string) {
 	b.WriteByte('\n')
 	b.WriteString(ind)
 	b.WriteByte(')')
+	if n.Suffix != "" {
+		b.WriteByte(' ')
+		b.WriteString(rekeyword(n.Suffix, opts))
+	}
 	if n.HasPart2 {
 		b.WriteString(" {")
 		b.WriteString(sortBlock(n.RawPart2))
@@ -211,6 +242,14 @@ func renderSchemaBlock(b *strings.Builder, n *SchemaBlockNode, opts Options, dep
 		}
 		b.WriteByte('\n')
 		renderObject(b, child, opts, depth+1)
+		b.WriteByte('\n')
+	}
+	if len(n.Objects) == 0 && (n.RawAttrs != "" || len(n.InnerTrailingComments) > 0) {
+		b.WriteByte('\n')
+	}
+	for _, c := range n.InnerTrailingComments {
+		b.WriteString(innerInd)
+		b.WriteString(c)
 		b.WriteByte('\n')
 	}
 	b.WriteString(ind)

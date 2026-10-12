@@ -28,10 +28,18 @@ func init() {
 // Scanner implements pipeline.Tokenizer and pipeline.GlobalMacroSeeder.
 type Scanner struct {
 	global macroStore // macros collected from all files during the pre-pass
+	// keepSpreads leaves ...name spreads in place instead of expanding them.
+	keepSpreads bool
 }
 
 // New returns a Scanner ready to use.
 func New() *Scanner { return &Scanner{} }
+
+// NewKeepSpreads returns a Scanner that leaves ...name macro spreads in
+// Part 1 and Part 2 as written instead of expanding them, for dpg fmt, which
+// must reproduce the source rather than its expansion. MACRO declarations
+// are still removed. Spreads are not checked (DPG-E008 to DPG-E010).
+func NewKeepSpreads() *Scanner { return &Scanner{keepSpreads: true} }
 
 // AddGlobalMacros implements pipeline.GlobalMacroSeeder. It collects MACRO
 // definitions from src and adds them to the shared store. Definitions from
@@ -56,7 +64,7 @@ func (sc *Scanner) AddGlobalMacros(src []byte) error {
 // macros seeded via AddGlobalMacros are available to all files; file-local
 // definitions take precedence over global ones.
 func (sc *Scanner) Scan(path string, src []byte) ([]pipeline.RawObject, error) {
-	expanded, err := preprocessMacrosWithGlobal(src, sc.global)
+	expanded, err := preprocessMacrosWithGlobal(src, sc.global, sc.keepSpreads)
 	if err != nil {
 		return nil, fmt.Errorf("%s: macro preprocessing: %w", path, err)
 	}
@@ -901,9 +909,11 @@ func (s *state) scanBody(schemaName string, stopAtBrace bool) ([]pipeline.RawObj
 		// unenforced gap for that kind specifically).
 		s.skipWS()
 		sawSemi := false
+		var end pipeline.SourcePos
 		if s.peek() == ';' {
 			sawSemi = true
 			s.advance()
+			end = s.srcPos()
 			s.skipWS()
 		}
 		blockFollows := s.peek() == '{'
@@ -919,6 +929,9 @@ func (s *state) scanBody(schemaName string, stopAtBrace bool) ([]pipeline.RawObj
 		if err != nil {
 			return nil, "", err
 		}
+		if hasPart2 {
+			end = s.srcPos()
+		}
 		// Consume an optional trailing ';' after a '{ }' block.
 		s.skipWS()
 		if s.peek() == ';' {
@@ -932,6 +945,7 @@ func (s *state) scanBody(schemaName string, stopAtBrace bool) ([]pipeline.RawObj
 			HasPart2: hasPart2,
 			Schema:   schemaName,
 			Pos:      declPos,
+			End:      end,
 		})
 	}
 
@@ -993,6 +1007,7 @@ func (s *state) readSchemaDecl(pos pipeline.SourcePos) (nested []pipeline.RawObj
 		Part1: part1,
 		Part2: schemaAttrs,
 		Pos:   pos,
+		End:   s.srcPos(),
 	}
 	return nestedObjs, obj, nil
 }

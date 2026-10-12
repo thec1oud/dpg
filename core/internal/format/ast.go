@@ -5,6 +5,8 @@ type File struct {
 	Path            string
 	LeadingComments []string
 	Objects         []ObjectNode
+	// TrailingComments are the comments after the last declaration.
+	TrailingComments []string
 }
 
 // ObjectNode is the common interface for all top-level and schema-nested nodes.
@@ -57,6 +59,10 @@ type SchemaBlockNode struct {
 	// RawAttrs is the raw schema attribute text collected from inside the block
 	// (OWNER, COMMENT, GRANTS, etc.) that belongs to the schema itself.
 	RawAttrs string
+	// InnerTrailingComments are the comments after the last nested object
+	// (or among the schema's own directives when it has none), before the
+	// closing '}'.
+	InnerTrailingComments []string
 }
 
 func (n *SchemaBlockNode) objectNode() {}
@@ -67,6 +73,9 @@ type TableNode struct {
 	Unlogged bool
 	Name     string
 	Columns  []*ColumnNode
+	// Suffix is the Part 1 text after the column list's ')' (PARTITION BY,
+	// INHERITS, WITH, TABLESPACE, ...), kept as written.
+	Suffix string
 	// RawPart2 is the unparsed { } block's inner content; preserved verbatim
 	// pending a full directive parser (planned for a future pass). Same ""
 	// ambiguity as OpaqueNode.RawPart2 — see HasPart2.
