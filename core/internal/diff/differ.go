@@ -125,6 +125,8 @@ func (d *Differ) Diff(desired []pipeline.IRObject, snap *pipeline.Snapshot) ([]p
 		markAttachedFromTargets(tbl.Schema, tbl.Partitions, consumed)
 	}
 
+	env := newDiffEnv(desired)
+
 	// Pass 0: create brand-new schemas before anything else. Pass 1's
 	// cross-schema SET SCHEMA (RFC Section 7.6) can target a schema that is
 	// declared in this same apply but doesn't exist in the live database
@@ -208,7 +210,7 @@ func (d *Differ) Diff(desired []pipeline.IRObject, snap *pipeline.Snapshot) ([]p
 		// an unhandled combination, the same class of narrow edge case the
 		// RFC itself declines to support for RENAMED FROM combined with
 		// ATTACHED FROM/DETACHED FROM on one entry.
-		alterOps, err := diffObject(obj, &oldSnap, snap, nil)
+		alterOps, err := diffObject(obj, &oldSnap, snap, env, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -360,7 +362,7 @@ func (d *Differ) Diff(desired []pipeline.IRObject, snap *pipeline.Snapshot) ([]p
 			}
 			ops = append(ops, createOps...)
 		} else {
-			alterOps, err := diffObject(obj, &so, snap, skipDetachedByParent[key])
+			alterOps, err := diffObject(obj, &so, snap, env, skipDetachedByParent[key])
 			if err != nil {
 				return nil, err
 			}
@@ -4887,7 +4889,7 @@ func createRole(o *ir.Role) []pipeline.DiffOp {
 // skipDetachedChildren, only meaningful for the *ir.Table case, is Pass
 // 2.5's per-parent set of child partition names being detached this run
 // (see Diff's own doc comment) — nil everywhere else.
-func diffObject(desired pipeline.IRObject, snap *snapshot.SnapObject, fullSnap *pipeline.Snapshot, skipDetachedChildren map[string]bool) ([]pipeline.DiffOp, error) {
+func diffObject(desired pipeline.IRObject, snap *snapshot.SnapObject, fullSnap *pipeline.Snapshot, env *diffEnv, skipDetachedChildren map[string]bool) ([]pipeline.DiffOp, error) {
 	switch o := desired.(type) {
 	case *ir.Extension:
 		if snap.Extension == nil {
@@ -4913,7 +4915,7 @@ func diffObject(desired pipeline.IRObject, snap *snapshot.SnapObject, fullSnap *
 		if snap.Table == nil {
 			return nil, nil
 		}
-		return diffTable(o, snap.Table, fullSnap, skipDetachedChildren)
+		return diffTable(o, snap.Table, fullSnap, env, skipDetachedChildren)
 	case *ir.View:
 		if snap.View == nil {
 			return nil, nil
@@ -7387,7 +7389,7 @@ func replicaIdentityClause(ri ir.ReplicaIdentity) string {
 	return mode
 }
 
-func diffTable(o *ir.Table, snap *snapshot.SnapTable, fullSnap *pipeline.Snapshot, skipDetachedChildren map[string]bool) ([]pipeline.DiffOp, error) {
+func diffTable(o *ir.Table, snap *snapshot.SnapTable, fullSnap *pipeline.Snapshot, env *diffEnv, skipDetachedChildren map[string]bool) ([]pipeline.DiffOp, error) {
 	var ops []pipeline.DiffOp
 	pos := o.SrcPos
 	tbl := qualIdent(o.Schema, o.Name)
@@ -7523,7 +7525,7 @@ func diffTable(o *ir.Table, snap *snapshot.SnapTable, fullSnap *pipeline.Snapsho
 		ops = append(ops, diffTableStorageParams(tbl, o.StorageParams, snap.StorageParams, pos)...)
 	}
 
-	colOps, renamedCols, droppedCols, err := diffColumns(tbl, o, snap)
+	colOps, renamedCols, droppedCols, err := diffColumns(tbl, o, snap, env)
 	if err != nil {
 		return nil, err
 	}
@@ -8097,7 +8099,7 @@ func checkNoStaleColumnRefs(o *ir.Table, renamedCols map[string]string) error {
 	return nil
 }
 
-func diffColumns(tbl string, o *ir.Table, snap *snapshot.SnapTable) ([]pipeline.DiffOp, map[string]string, map[string]bool, error) {
+func diffColumns(tbl string, o *ir.Table, snap *snapshot.SnapTable, env *diffEnv) ([]pipeline.DiffOp, map[string]string, map[string]bool, error) {
 	// A typed table (Section 7.1's OF type_name) never has its own
 	// independently-diffed Columns in this codebase — the desired side is
 	// always empty (buildTable rejects any WITH OPTIONS narrowing column,
@@ -8259,16 +8261,16 @@ func diffColumns(tbl string, o *ir.Table, snap *snapshot.SnapTable) ([]pipeline.
 				}
 			}
 			b.WriteString(";")
-			// NOT NULL without a volatile default risks failing on existing
-			// rows. SERIAL is exempt — PostgreSQL auto-populates it via the
-			// sequence default, same exemption Identity/Generated already
-			// get. A notNullConstrainedCols column is also exempt here:
-			// this statement no longer carries NOT NULL text at all (see
-			// above), so the risk — and the CAUTION classification for it
-			// — belongs entirely to diffConstraints' own separate ADD
-			// CONSTRAINT statement instead.
+			// CAUTION when existing rows make it fail (NOT NULL with nothing
+			// to fill it) or make PostgreSQL rewrite the table (RFC Section
+			// 17.2). SERIAL, identity and generated columns fill
+			// themselves. A notNullConstrainedCols column's NOT NULL is a
+			// separate ADD CONSTRAINT, classified by diffConstraints.
 			safety := pipeline.Safe
 			if col.NotNull && col.Default == nil && col.Identity == nil && col.Generated == nil && col.Serial == nil && !notNullConstrainedCols[col.Name] {
+				safety = pipeline.Caution
+			}
+			if env.addColumnRewritesTable(col) {
 				safety = pipeline.Caution
 			}
 			ops = append(ops, &op{sql: b.String(), safety: safety, pos: col.SrcPos, mode: pipeline.ModeTransactional})

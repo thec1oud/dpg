@@ -6529,11 +6529,11 @@ func TestCreateTableSerialEmitsLiteralKeyword(t *testing.T) {
 	}
 }
 
-// TestDiffColumnsAddSerialColumnSafe proves a new SERIAL column added to an
-// existing table classifies SAFE (PostgreSQL auto-populates it via the
-// sequence default), the same exemption Identity/Generated already get, and
-// emits the literal SERIAL keyword rather than "integer ... NOT NULL".
-func TestDiffColumnsAddSerialColumnSafe(t *testing.T) {
+// TestDiffColumnsAddSerialColumnCaution proves a new SERIAL column added
+// to an existing table is CAUTION (filling it from the sequence rewrites
+// every row, RFC Section 17.2) and emits the literal SERIAL keyword rather
+// than "integer ... NOT NULL".
+func TestDiffColumnsAddSerialColumnCaution(t *testing.T) {
 	d := New()
 	snap := &pipeline.Snapshot{}
 	_ = snap.SetObject("public.widgets", &snapshot.SnapObject{
@@ -6574,8 +6574,8 @@ func TestDiffColumnsAddSerialColumnSafe(t *testing.T) {
 	if strings.Contains(addOp.SQL(), "NOT NULL") {
 		t.Errorf("expected NOT NULL suppressed, got: %s", addOp.SQL())
 	}
-	if addOp.Safety() != pipeline.Safe {
-		t.Errorf("expected SAFE, got %v", addOp.Safety())
+	if addOp.Safety() != pipeline.Caution {
+		t.Errorf("expected CAUTION, got %v", addOp.Safety())
 	}
 }
 
@@ -22830,5 +22830,61 @@ func TestVirtualTypeColumnSnapshotRoundTrip(t *testing.T) {
 	}
 	if len(ops) != 0 {
 		t.Errorf("expected no ops against a legacy unresolved snapshot, got %v", sqlList(ops))
+	}
+}
+
+// TestAddColumnTableRewriteIsCaution guards RFC Section 17.2: ADD COLUMN
+// is CAUTION exactly when PostgreSQL rewrites every existing row.
+func TestAddColumnTableRewriteIsCaution(t *testing.T) {
+	str := func(s string) *string { return &s }
+	cases := []struct {
+		name string
+		col  *ir.Column
+		want pipeline.Safety
+	}{
+		{"constant default", &ir.Column{Type: ir.TypeRef{Name: "integer"}, Default: str("5")}, pipeline.Safe},
+		{"stable default", &ir.Column{Type: ir.TypeRef{Name: "timestamptz"}, Default: str("now()")}, pipeline.Safe},
+		{"sql value function", &ir.Column{Type: ir.TypeRef{Name: "timestamptz"}, Default: str("CURRENT_TIMESTAMP")}, pipeline.Safe},
+		{"immutable builtin", &ir.Column{Type: ir.TypeRef{Name: "text"}, Default: str("lower('X')")}, pipeline.Safe},
+		{"volatile builtin", &ir.Column{Type: ir.TypeRef{Name: "uuid"}, Default: str("gen_random_uuid()")}, pipeline.Caution},
+		{"nested volatile", &ir.Column{Type: ir.TypeRef{Name: "text"}, Default: str("coalesce(NULL, md5(random()::text))")}, pipeline.Caution},
+		{"qualified volatile", &ir.Column{Type: ir.TypeRef{Name: "timestamptz"}, Default: str("pg_catalog.clock_timestamp()")}, pipeline.Caution},
+		{"unknown function", &ir.Column{Type: ir.TypeRef{Name: "uuid"}, Default: str("uuid_generate_v4()")}, pipeline.Caution},
+		{"declared immutable", &ir.Column{Type: ir.TypeRef{Name: "integer"}, Default: str("app.one()")}, pipeline.Safe},
+		{"declared without volatility", &ir.Column{Type: ir.TypeRef{Name: "integer"}, Default: str("app.next_code()")}, pipeline.Caution},
+		{"identity", &ir.Column{Type: ir.TypeRef{Name: "bigint"}, Identity: &ir.Identity{Always: true}}, pipeline.Caution},
+		{"stored generated", &ir.Column{Type: ir.TypeRef{Name: "integer"}, Generated: &ir.Generated{Expr: "1", Stored: true}}, pipeline.Caution},
+		{"virtual generated", &ir.Column{Type: ir.TypeRef{Name: "integer"}, Generated: &ir.Generated{Expr: "1"}}, pipeline.Safe},
+		{"checked domain", &ir.Column{Type: ir.TypeRef{Schema: "app", Name: "posint"}}, pipeline.Caution},
+		{"plain domain", &ir.Column{Type: ir.TypeRef{Schema: "app", Name: "label"}}, pipeline.Safe},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			snap := &pipeline.Snapshot{}
+			_ = snap.SetObject("public.t", &snapshot.SnapObject{Kind: "table", Table: &snapshot.SnapTable{
+				Schema: "public", Name: "t", Columns: []snapshot.SnapColumn{{Name: "id", Type: "integer"}},
+			}})
+			c.col.Name = "c"
+			desired := []pipeline.IRObject{
+				&ir.Function{Schema: "app", Name: "one", Attrs: ir.FuncAttrs{Volatility: "IMMUTABLE"}},
+				&ir.Function{Schema: "app", Name: "next_code"},
+				&ir.Type{Schema: "app", Name: "posint", Variant: "DOMAIN", DomainConstraints: []*ir.Constraint{{Type: "CHECK", Expr: "VALUE > 0"}}},
+				&ir.Type{Schema: "app", Name: "label", Variant: "DOMAIN"},
+				&ir.Table{Schema: "public", Name: "t", Columns: []*ir.Column{{Name: "id", Type: ir.TypeRef{Name: "integer"}}, c.col}},
+			}
+			ops, err := New().Diff(desired, snap)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, o := range ops {
+				if strings.Contains(o.SQL(), "ADD COLUMN") {
+					if o.Safety() != c.want {
+						t.Errorf("%s: got %v, want %v", o.SQL(), o.Safety(), c.want)
+					}
+					return
+				}
+			}
+			t.Fatalf("no ADD COLUMN op in %v", sqlList(ops))
+		})
 	}
 }

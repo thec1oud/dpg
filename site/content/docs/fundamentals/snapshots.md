@@ -173,6 +173,8 @@ Source file references (`[source: ...]`) appear before every statement group.
 | `CAUTION` | Locks acquired; performance impact possible | Applied with warning logged |
 | `DESTRUCTIVE` | Data loss possible | Blocked unless `--allow-destructive` |
 
+`ADD COLUMN` is `CAUTION` when PostgreSQL has to rewrite the table to fill the new column. That happens for an identity, `SERIAL` or `STORED` generated column, a `DEFAULT` that calls a volatile function such as `gen_random_uuid()` or `clock_timestamp()`, and a domain type with a `NOT NULL` or `CHECK` constraint. A constant default or one like `now()` is `SAFE`. A function DPG can't see (from an extension, for example) counts as volatile.
+
 Separately from its safety class, every operation has an execution mode:
 
 - **Transactional** (the default): runs inside the migration's transaction.
