@@ -7065,11 +7065,12 @@ func diffView(o *ir.View, snap *snapshot.SnapView) ([]pipeline.DiffOp, error) {
 	}
 
 	// TABLESPACE/WITH (...) (Section 8.2) — materialized-view-only, targeted
-	// SAFE ALTERs, confirmed live against a real PostgreSQL server, mirroring
-	// Table.Tablespace/StorageParams' identical treatment.
+	// ALTERs, mirroring Table.Tablespace/StorageParams' identical treatment.
+	// SET TABLESPACE is CAUTION: it copies the data files under an ACCESS
+	// EXCLUSIVE lock.
 	if o.Materialized {
 		if !ptrEq(o.Tablespace, snap.Tablespace) && o.Tablespace != nil {
-			ops = append(ops, safeOp(fmt.Sprintf("ALTER MATERIALIZED VIEW %s SET TABLESPACE %s;", tbl, quoteIdent(*o.Tablespace)), pos))
+			ops = append(ops, cautionOp(fmt.Sprintf("ALTER MATERIALIZED VIEW %s SET TABLESPACE %s;", tbl, quoteIdent(*o.Tablespace)), pos))
 		}
 		ops = append(ops, diffStorageParamsSetReset("ALTER MATERIALIZED VIEW", tbl, o.StorageParams, snap.StorageParams, pos)...)
 	}
@@ -7862,8 +7863,10 @@ func diffTable(o *ir.Table, snap *snapshot.SnapTable, fullSnap *pipeline.Snapsho
 	if !ptrEq(o.Owner, snap.Owner) && o.Owner != nil {
 		ops = append(ops, safeOp(fmt.Sprintf("ALTER TABLE %s OWNER TO %s;", tbl, quoteIdent(*o.Owner)), pos))
 	}
+	// SET TABLESPACE copies the table's data files under an ACCESS EXCLUSIVE
+	// lock, so it is CAUTION like the other rewriting ALTERs.
 	if !ptrEq(o.Tablespace, snap.Tablespace) && o.Tablespace != nil {
-		ops = append(ops, safeOp(fmt.Sprintf("ALTER TABLE %s SET TABLESPACE %s;", tbl, quoteIdent(*o.Tablespace)), pos))
+		ops = append(ops, cautionOp(fmt.Sprintf("ALTER TABLE %s SET TABLESPACE %s;", tbl, quoteIdent(*o.Tablespace)), pos))
 	}
 	// LOGGED/UNLOGGED toggled (Section 7.12) — a targeted CAUTION ALTER
 	// (rewrites the table's storage), not a recreate. Meaningless for a

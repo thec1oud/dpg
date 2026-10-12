@@ -2710,7 +2710,7 @@ TABLE orders ( ... )
    | `USING method` changed | `ALTER TABLE t SET ACCESS METHOD method` (`DEFAULT` when removed) | `CAUTION` |
    | `INHERITS` parent added / removed | `ALTER TABLE t INHERIT parent` / `NO INHERIT parent` | `SAFE` |
    | `WITH (...)` changed | `ALTER TABLE t SET (...)` / `RESET (...)` | `CAUTION` |
-   | `TABLESPACE` changed | `ALTER TABLE t SET TABLESPACE ts` | `SAFE` |
+   | `TABLESPACE` changed | `ALTER TABLE t SET TABLESPACE ts` | `CAUTION` |
    | `UNLOGGED` toggled | `ALTER TABLE t SET LOGGED` / `SET UNLOGGED` | `CAUTION` |
 
 ### 7.12. Unlogged and Foreign Tables
@@ -2996,7 +2996,7 @@ SCHEMA analytics {
    |--------|-------------|--------|
    | New materialized view | `CREATE MATERIALIZED VIEW ...` | `SAFE` |
    | Query changed | `DROP MATERIALIZED VIEW; CREATE MATERIALIZED VIEW` | `DESTRUCTIVE` |
-   | `TABLESPACE` changed | `ALTER MATERIALIZED VIEW name SET TABLESPACE ts` | `SAFE` |
+   | `TABLESPACE` changed | `ALTER MATERIALIZED VIEW name SET TABLESPACE ts` | `CAUTION` |
    | `WITH (...)` changed | `ALTER MATERIALIZED VIEW name SET (...)` / `RESET (...)` | `CAUTION` |
    | `WITH NO DATA` changed | Instruction-only note to refresh the view | `SAFE` |
    | Owner, comment, rename | As for a view (Section 8.1), with `ALTER MATERIALIZED VIEW` | as Section 8.1 |

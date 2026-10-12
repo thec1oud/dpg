@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/thec1oud/dpg/internal/compiler"
@@ -31,7 +32,9 @@ import (
 // against freshly introspected live state is a genuine no-op, and changing
 // either afterward runs a real, targeted ALTER MATERIALIZED VIEW ... SET
 // TABLESPACE / SET (...) with the matview's OID staying stable (a genuine
-// in-place ALTER, not a hidden drop-and-recreate).
+// in-place ALTER, not a hidden drop-and-recreate). The same stage moves the
+// underlying table with ALTER TABLE ... SET TABLESPACE; both moves copy the
+// relation's files under an ACCESS EXCLUSIVE lock and are planned as CAUTION.
 func TestRoundtripMaterializedViewTablespaceAndStorageParams(t *testing.T) {
 	connStr, container := testpg.StartWithContainer(t)
 	ctx := context.Background()
@@ -71,20 +74,20 @@ func TestRoundtripMaterializedViewTablespaceAndStorageParams(t *testing.T) {
 		tablespace string
 		fillfactor string
 	}
-	info := func() mvInfo {
+	relInfo := func(relname string) mvInfo {
 		t.Helper()
 		rows, err := conn.QueryRows(ctx, `
 			SELECT c.oid, coalesce(ts.spcname, ''), coalesce(
 			  (SELECT split_part(o, '=', 2) FROM unnest(c.reloptions) o WHERE o LIKE 'fillfactor=%'), '')
 			FROM pg_class c
 			LEFT JOIN pg_tablespace ts ON ts.oid = c.reltablespace
-			WHERE c.relname = 'product_stats'`)
+			WHERE c.relname = $1`, relname)
 		if err != nil {
-			t.Fatalf("query mv info: %v", err)
+			t.Fatalf("query %s info: %v", relname, err)
 		}
 		defer rows.Close()
 		if !rows.Next() {
-			t.Fatal("product_stats not found")
+			t.Fatalf("%s not found", relname)
 		}
 		var i mvInfo
 		if err := rows.Scan(&i.oid, &i.tablespace, &i.fillfactor); err != nil {
@@ -92,6 +95,7 @@ func TestRoundtripMaterializedViewTablespaceAndStorageParams(t *testing.T) {
 		}
 		return i
 	}
+	info := func() mvInfo { return relInfo("product_stats") }
 
 	noDrift := func() {
 		t.Helper()
@@ -163,6 +167,10 @@ WITH NO DATA;
 	applyFixture(t, ctx, conn, []string{f}, dir, differ, emitter, applyExec, store)
 
 	i1 := info()
+	t1 := relInfo("order_items")
+	if t1.tablespace != "" {
+		t.Fatalf("expected order_items in the default tablespace after create, got %q", t1.tablespace)
+	}
 	if i1.tablespace != "analytics_space" {
 		t.Fatalf("expected tablespace analytics_space after create, got %q", i1.tablespace)
 	}
@@ -171,11 +179,11 @@ WITH NO DATA;
 	}
 	noDrift()
 
-	// Stage 2: change both TABLESPACE and the fillfactor value — must be
-	// targeted ALTERs (OID stable), not a drop+recreate.
+	// Stage 2: change both TABLESPACE and the fillfactor value, and move the
+	// table — must be targeted ALTERs (OID stable), not a drop+recreate.
 	write(`TABLESPACE analytics_space LOCATION '/var/lib/postgresql/analytics_space';
 TABLESPACE analytics_space2 LOCATION '/var/lib/postgresql/analytics_space2';
-TABLE order_items (product_id BIGINT NOT NULL);
+TABLE order_items (product_id BIGINT NOT NULL) TABLESPACE analytics_space2;
 MATERIALIZED VIEW product_stats
 WITH (fillfactor = 70)
 TABLESPACE analytics_space2 AS
@@ -184,8 +192,38 @@ TABLESPACE analytics_space2 AS
     GROUP BY product_id
 WITH NO DATA;
 `)
+	{
+		desired, _, err := compiler.Compile([]string{f}, dir, pipeline.Default)
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		base, _ := store.Load("test", "dpgtest")
+		ops, err := differ.Diff(desired, base)
+		if err != nil {
+			t.Fatalf("diff: %v", err)
+		}
+		moves := 0
+		for _, op := range ops {
+			if strings.Contains(op.SQL(), " SET TABLESPACE ") {
+				moves++
+				if op.Safety() != pipeline.Caution {
+					t.Errorf("expected CAUTION for %s, got %s", op.SQL(), op.Safety())
+				}
+			}
+		}
+		if moves != 2 {
+			t.Fatalf("expected 2 SET TABLESPACE ops (table + matview), got %d: %v", moves, ops)
+		}
+	}
 	applyFixture(t, ctx, conn, []string{f}, dir, differ, emitter, applyExec, store)
 
+	t2 := relInfo("order_items")
+	if t2.oid != t1.oid {
+		t.Fatalf("expected stable order_items OID across SET TABLESPACE, got %d before and %d after", t1.oid, t2.oid)
+	}
+	if t2.tablespace != "analytics_space2" {
+		t.Fatalf("expected order_items in analytics_space2 after ALTER, got %q", t2.tablespace)
+	}
 	i2 := info()
 	if i2.oid != i1.oid {
 		t.Fatalf("expected stable OID across TABLESPACE/WITH changes (targeted ALTER, not drop+recreate), got %d before and %d after", i1.oid, i2.oid)

@@ -2139,9 +2139,9 @@ func TestCreateMaterializedViewTablespaceAndStorageParams(t *testing.T) {
 	}
 }
 
-// TestDiffMaterializedViewTablespaceChanged guards the targeted, SAFE
-// ALTER MATERIALIZED VIEW ... SET TABLESPACE path — confirmed live against
-// PostgreSQL 17 — instead of a drop+recreate.
+// TestDiffMaterializedViewTablespaceChanged guards the targeted, CAUTION
+// ALTER MATERIALIZED VIEW ... SET TABLESPACE path (it copies the data files
+// under an ACCESS EXCLUSIVE lock) instead of a drop+recreate.
 func TestDiffMaterializedViewTablespaceChanged(t *testing.T) {
 	d := New()
 	oldTS := "ts1"
@@ -2169,8 +2169,8 @@ func TestDiffMaterializedViewTablespaceChanged(t *testing.T) {
 	if len(ops) != 1 || !strings.Contains(ops[0].SQL(), `ALTER MATERIALIZED VIEW "public"."mv" SET TABLESPACE "ts2";`) {
 		t.Fatalf("expected SET TABLESPACE op, got: %v", sqlList(ops))
 	}
-	if ops[0].Safety() != pipeline.Safe {
-		t.Errorf("expected Safe, got %s", ops[0].Safety())
+	if ops[0].Safety() != pipeline.Caution {
+		t.Errorf("expected Caution, got %s", ops[0].Safety())
 	}
 }
 
@@ -17756,8 +17756,11 @@ func TestDiffTableTablespaceChanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsSQL(ops, `ALTER TABLE "public"."archive" SET TABLESPACE "archive_space";`) {
-		t.Errorf("expected ALTER TABLE SET TABLESPACE, got: %v", sqlList(ops))
+	if len(ops) != 1 || !containsSQL(ops, `ALTER TABLE "public"."archive" SET TABLESPACE "archive_space";`) {
+		t.Fatalf("expected ALTER TABLE SET TABLESPACE, got: %v", sqlList(ops))
+	}
+	if ops[0].Safety() != pipeline.Caution {
+		t.Errorf("expected Caution, got %s", ops[0].Safety())
 	}
 }
 
