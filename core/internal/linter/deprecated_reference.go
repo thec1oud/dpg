@@ -9,7 +9,7 @@ import (
 
 // checkDeprecatedReference implements RFC Section 19.1's deprecated-reference rule:
 // warn when a non-deprecated object references a deprecated object or
-// column. v1 scope, deliberately narrow (see rfc/dpg-1.md Appendix D.3 for
+// column. v1 scope, deliberately narrow (see rfc/dpg-1.md Section 19.3 for
 // the full residual list): FOREIGN KEY table/column references, and
 // column/function-parameter/function-return TYPE references to a deprecated
 // custom TYPE. NOT covered: view query-column references, function/

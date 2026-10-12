@@ -19,9 +19,7 @@ type GlobalMacroSeeder interface {
 
 // PGSQLParser parses the Part 1 PG SQL text of a declaration by prepending
 // the correct CREATE verb and feeding it to the real PostgreSQL parser.
-// Default implementation: internal/pgparser.LibPQParser (uses libpg_query via
-// github.com/pganalyze/pg_query_go/v5).
-// Alternative: internal/pgparser.NativeParser (no CGo; reduced coverage).
+// Default implementation: internal/pgparser (libpg_query via pg_query_go).
 type PGSQLParser interface {
 	Parse(kind ObjectKind, part1 string, pos SourcePos) (PGParseResult, error)
 }

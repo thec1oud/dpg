@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Asserts every DPG-Ennn code listed in Appendix C of rfc/dpg-1.md has at
-# least one occurrence in core/, except codes explicitly marked retracted
+# least one occurrence in core/, except codes explicitly marked unused
 # in the RFC (their whole point is that core/ must NOT implement them).
 #
 # Guards against the class of drift Phase 2 of the launch-readiness audit
@@ -16,9 +16,9 @@ status=0
 
 while IFS= read -r line; do
 	code=$(printf '%s' "$line" | grep -oE 'DPG-E[0-9]{3}')
-	if printf '%s' "$line" | grep -q 'retracted'; then
+	if printf '%s' "$line" | grep -qE 'retracted|unused'; then
 		if grep -rq "$code" "$CORE" --include='*.go'; then
-			echo "error: $code is marked retracted in $RFC but still appears in $CORE/" >&2
+			echo "error: $code is marked unused in $RFC but still appears in $CORE/" >&2
 			status=1
 		fi
 		continue

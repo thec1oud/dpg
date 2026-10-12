@@ -428,7 +428,7 @@ func checkCrossObjectRules(objects []pipeline.IRObject, cfg pipeline.LinterConfi
 // rule, covering both GENERATED ... AS IDENTITY columns and SERIAL/
 // BIGSERIAL/SMALLSERIAL columns (SERIAL now has a distinct IR representation
 // via ir.Column.Serial, so it's no longer out of scope the way an earlier
-// version of this rule's Appendix D.3 entry noted). Warns when a
+// version of this rule's Section 19.3 entry noted). Warns when a
 // hand-declared SEQUENCE's name collides with the name PostgreSQL
 // auto-generates for an identity or serial column in the same desired state
 // ("<table>_<column>_seq", PostgreSQL's own naming convention for a
@@ -478,7 +478,7 @@ func checkSerialSequenceDeclared(objects []pipeline.IRObject) []pipeline.LintDia
 
 // checkUnnecessaryRevocation implements RFC Section 19.1's unnecessary_revocation
 // rule, scoped to a single object's own declaration (see rfc/dpg-1.md
-// Appendix D.3): warns when revocations names a (role, privilege) pair
+// Section 19.3): warns when revocations names a (role, privilege) pair
 // with no matching entry in grants for that same object — catching a
 // revocation with no corresponding grant (a copy-paste or typo), not the
 // RFC's literal broader wording ("never granted... by DPG" — that would

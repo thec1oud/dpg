@@ -888,7 +888,7 @@ func (s *state) scanBody(schemaName string, stopAtBrace bool) ([]pipeline.RawObj
 		if err != nil {
 			return nil, "", err
 		}
-		// RFC Section 4.5 (Rules T1-T3, unified): a ';' immediately before an
+		// RFC Section 4.5: a ';' immediately before an
 		// immediately-following '{ }' block is forbidden for every kind
 		// (DPG-E037); when no block follows at all, a ';' terminator is
 		// mandatory (DPG-E038). This is the single, kind-agnostic
@@ -910,10 +910,10 @@ func (s *state) scanBody(schemaName string, stopAtBrace bool) ([]pipeline.RawObj
 		switch {
 		case sawSemi && blockFollows:
 			return nil, "", pipeline.ErrorfCode(declPos, "DPG-E037",
-				"unexpected ';' before '{ }' block (Rule T1/T2/T3, Section 4.5): remove it — a semicolon must never appear immediately before a block")
+				"unexpected ';' before '{ }' block (Section 4.5): remove it — a semicolon must never appear immediately before a block")
 		case !sawSemi && !blockFollows:
 			return nil, "", pipeline.ErrorfCode(declPos, "DPG-E038",
-				"missing ';' terminator (Rule T1/T2/T3, Section 4.5): a declaration with no { } block must end with ';'")
+				"missing ';' terminator (Section 4.5): a declaration with no { } block must end with ';'")
 		}
 		part2, hasPart2, err := s.readOptionalPart2()
 		if err != nil {
@@ -998,14 +998,14 @@ func (s *state) readSchemaDecl(pos pipeline.SourcePos) (nested []pipeline.RawObj
 }
 
 // part1EOFErr upgrades a readRawUntil("{;") EOF failure to a clean
-// DPG-E038 diagnostic (RFC Section 4.5, Rules T1/T3: a ';' terminator is
+// DPG-E038 diagnostic (RFC Section 4.5: a ';' terminator is
 // mandatory when no '{ }' block follows) — leaving any other readRawUntil
 // error (an unterminated string literal or dollar-quoted body) as-is,
 // since those are a genuinely different problem, not a missing terminator.
 func part1EOFErr(pos pipeline.SourcePos, err error) error {
 	if errors.Is(err, errUnterminatedRawText) {
 		return pipeline.ErrorfCode(pos, "DPG-E038",
-			"missing ';' terminator (Rule T1/T3, Section 4.5): a declaration with no { } block must end with ';'")
+			"missing ';' terminator (Section 4.5): a declaration with no { } block must end with ';'")
 	}
 	return pipeline.Errorf(pos, "%v", err)
 }

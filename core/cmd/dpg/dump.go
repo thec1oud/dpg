@@ -1239,10 +1239,8 @@ func renderObjectDPGWithRoleInheritDefaults(b *strings.Builder, obj pipeline.IRO
 		// case that merge would have been silently pointless.
 		fmt.Fprintf(b, "\n%s %s %s %s", kw("VIRTUAL"), kw("TYPE"), quoteIdentIfNeeded(o.Name), kw("AS"))
 		fmt.Fprintf(b, " %s", renderVtypeBody(o.Body))
-		// RFC Section 4.5 (Rules T1-T3, unified): a ';' never appears
-		// immediately before a '{ }' block, for any kind — VIRTUAL TYPE's
-		// bare-text Part 1 makes it a Rule T3 kind. Previously written
-		// unconditionally before checking whether a block follows.
+		// RFC Section 4.5: a ';' never appears immediately before a
+		// '{ }' block.
 		if o.Comment != nil || o.JsonFormat != "" {
 			b.WriteString(" {\n")
 			if o.Comment != nil {

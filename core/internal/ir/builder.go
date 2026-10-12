@@ -3955,7 +3955,7 @@ func (b *Builder) buildVirtualType(part1 string, block pipeline.BlockAST, pos pi
 	}
 
 	// Section 5.6: the { } block accepts only COMMENT and
-	// PREFERRED JSON FORMAT (plus Name Maps, Appendix D.10's
+	// PREFERRED JSON FORMAT (plus Name Maps, Appendix D.2's
 	// cross-cutting directive available on every object block). Any
 	// other directive is DPG-E015.
 	if block.Owner != nil || block.RenamedFrom != nil || block.Protected ||
