@@ -52,7 +52,7 @@ func TestWrap(t *testing.T) {
 		PreTransactional: []pipeline.DiffOp{stmt{"ALTER TYPE e ADD VALUE IF NOT EXISTS 'x';", pipeline.ModePreTransactional}},
 		Transactional:    []pipeline.DiffOp{stmt{"ALTER TABLE t ADD COLUMN c int;", pipeline.ModeTransactional}},
 	}, m)
-	if got := sqls(w.PreTransactional); got != `CREATE SCHEMA IF NOT EXISTS "dpg"; | CREATE TABLE IF NOT EXISTS "dpg".migrations ( | DO $dpg$ | ALTER TYPE e ADD VALUE IF NOT EXISTS 'x';` {
+	if got := sqls(w.PreTransactional); got != `CREATE SCHEMA IF NOT EXISTS "dpg"; | CREATE TABLE IF NOT EXISTS "dpg".migrations ( | CREATE TABLE IF NOT EXISTS "dpg".objects ( | DO $dpg$ | ALTER TYPE e ADD VALUE IF NOT EXISTS 'x';` {
 		t.Errorf("before: %s", got)
 	}
 	if got := sqls(w.Transactional); !strings.HasPrefix(got, "DO $dpg$ | ALTER TABLE t ADD COLUMN c int; | UPDATE \"dpg\".migrations SET status = 'complete'") {

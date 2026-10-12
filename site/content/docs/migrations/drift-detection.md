@@ -151,6 +151,8 @@ Drift on objects the migration doesn't touch is printed as a note and doesn't bl
 
 Every migration file also carries the checks it can make in SQL as guards at its start, so a migration run with `psql` or another tool refuses in the same situations without changing anything.
 
+For drift, each database keeps a fingerprint of the objects DPG has seen (in `dpg.objects`): a hash of their catalog definition, grants included. A migration file refuses to change an object whose fingerprint changed since (DPG-E055), or one DPG has no fingerprint of (DPG-E054; `dpg verify` records it when the object has no drift). Run `SET dpg.allow_drift = on` first to skip that check deliberately.
+
 ## Databases that are behind
 
 A database that hasn't run all of the migration log's migrations yet (production between deploys, say) is compared with the log at its own position, not with the latest snapshot: the migrations it hasn't run aren't drift. `dpg verify` shows how many it hasn't run (`pending` in the JSON), and `dpg apply` runs them.

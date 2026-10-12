@@ -11,6 +11,7 @@ import (
 
 	"github.com/thec1oud/dpg/internal/migrationlog"
 	"github.com/thec1oud/dpg/internal/pipeline"
+	"github.com/thec1oud/dpg/internal/precondition"
 )
 
 // Statuses of a ledger row.
@@ -26,6 +27,9 @@ type Migration struct {
 	ID       string
 	Parent   string
 	Checksum string // the migration's steps checksum
+	// Objects are what its steps change; their fingerprints are recorded
+	// when it has run (RFC Section 16.10).
+	Objects []pipeline.Target
 }
 
 // Ledger is where a database's ledger lives.
@@ -53,6 +57,16 @@ func (l Ledger) Bootstrap() []string {
     started_at  timestamptz NOT NULL DEFAULT now(),
     finished_at timestamptz,
     PRIMARY KEY (log, id)
+);`,
+		"CREATE TABLE IF NOT EXISTS " + quoteIdent(l.Schema) + `.objects (
+    log         text NOT NULL,
+    kind        text NOT NULL,
+    key         text NOT NULL,
+    fingerprint text NOT NULL,
+    pg_major    int NOT NULL,
+    migration   text NOT NULL,
+    recorded_at timestamptz NOT NULL,
+    PRIMARY KEY (log, kind, key)
 );`,
 	}
 }
@@ -185,11 +199,38 @@ func (l Ledger) Wrap(mg pipeline.Migration, m Migration) pipeline.Migration {
 	}
 	out := pipeline.Migration{Meta: mg.Meta}
 	out.PreTransactional = append(pre, mg.PreTransactional...)
-	out.Transactional = append(append([]pipeline.DiffOp{op{l.Claim(m), pipeline.ModeTransactional}}, mg.Transactional...),
-		op{l.Finish(m, status), pipeline.ModeTransactional})
+	out.Transactional = append([]pipeline.DiffOp{op{l.Claim(m), pipeline.ModeTransactional}}, mg.Transactional...)
+	for _, s := range l.fingerprints(m) {
+		out.Transactional = append(out.Transactional, op{s, pipeline.ModeTransactional})
+	}
+	out.Transactional = append(out.Transactional, op{l.Finish(m, status), pipeline.ModeTransactional})
 	out.NonTransactional = mg.NonTransactional
 	if after > 0 {
-		out.NonTransactional = append(append([]pipeline.DiffOp(nil), mg.NonTransactional...), op{l.Finish(m, Complete), pipeline.ModeNonTransactional})
+		out.NonTransactional = append([]pipeline.DiffOp(nil), mg.NonTransactional...)
+		for _, s := range l.fingerprints(m) {
+			out.NonTransactional = append(out.NonTransactional, op{s, pipeline.ModeNonTransactional})
+		}
+		out.NonTransactional = append(out.NonTransactional, op{l.Finish(m, Complete), pipeline.ModeNonTransactional})
+	}
+	return out
+}
+
+// fingerprints records the fingerprints of the objects a migration
+// changed, and forgets the ones it dropped or renamed away.
+func (l Ledger) fingerprints(m Migration) []string {
+	fp := precondition.Fingerprints{Schema: l.Schema, Log: m.Log}
+	var out []string
+	for _, t := range m.Objects {
+		if t.From != "" {
+			out = append(out, fp.Forget(t.Kind, t.From))
+		}
+		if t.Effect == pipeline.EffectDrop {
+			out = append(out, fp.Forget(t.Kind, t.Key))
+			continue
+		}
+		if s := fp.Record(t.Kind, t.Key, m.ID); s != "" {
+			out = append(out, s)
+		}
 	}
 	return out
 }
@@ -278,9 +319,21 @@ func (l Ledger) Read(ctx context.Context, q pipeline.Querier, log string) (*Stat
 	return st, rows.Err()
 }
 
-// Of identifies a log entry in a ledger.
+// Of identifies a log entry in a ledger, with the objects its steps change.
 func Of(log string, e *migrationlog.Entry) Migration {
-	return Migration{Log: log, ID: e.ID, Parent: e.Parent, Checksum: e.StepsChecksum}
+	m := Migration{Log: log, ID: e.ID, Parent: e.Parent, Checksum: e.StepsChecksum}
+	seen := map[string]bool{}
+	for _, s := range e.Steps {
+		if s.Target == nil || s.Target.Key == "" || s.Target.Kind == "ledger" {
+			continue
+		}
+		id := s.Target.Kind + "\x00" + s.Target.Key + "\x00" + s.Target.From
+		if !seen[id] {
+			seen[id] = true
+			m.Objects = append(m.Objects, *s.Target)
+		}
+	}
+	return m
 }
 
 // Forget removes a migration's row if it has the given status.
@@ -303,6 +356,10 @@ END
 $dpg$;`, l.table(), quoteLit(m.Log), quoteLit(m.ID), quoteLit(m.Checksum))
 	out := pipeline.Migration{Meta: mg.Meta}
 	out.PreTransactional = []pipeline.DiffOp{op{check, pipeline.ModePreTransactional}}
-	out.NonTransactional = append(append([]pipeline.DiffOp(nil), mg.NonTransactional...), op{l.Finish(m, Complete), pipeline.ModeNonTransactional})
+	out.NonTransactional = append([]pipeline.DiffOp(nil), mg.NonTransactional...)
+	for _, s := range l.fingerprints(m) {
+		out.NonTransactional = append(out.NonTransactional, op{s, pipeline.ModeNonTransactional})
+	}
+	out.NonTransactional = append(out.NonTransactional, op{l.Finish(m, Complete), pipeline.ModeNonTransactional})
 	return out
 }

@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/thec1oud/dpg/internal/drift"
 	"github.com/thec1oud/dpg/internal/emit"
 	"github.com/thec1oud/dpg/internal/executor"
 	"github.com/thec1oud/dpg/internal/ledger"
@@ -93,7 +95,7 @@ func writeBaseline(l *migrationlog.Log, store pipeline.SnapshotStore, cluster, k
 	}
 	next := *stored
 	next.Objects = copyObjects(stored.Objects)
-	e, err := migrationlog.New(l.Head(), guardedSteps(m, next.Objects), migrationlog.OriginBaseline, nil, next.Objects, time.Now())
+	e, err := migrationlog.New(l.Head(), guardedSteps(m, next.Objects, led, key), migrationlog.OriginBaseline, nil, next.Objects, time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -160,8 +162,10 @@ func recordInLedger(ctx context.Context, connect func() (*executor.PgxConn, erro
 
 // guardedSteps are a migration's steps after its guards (RFC Section
 // 16.10). after is the snapshot objects it produces: they and the objects
-// it drops are the ones DPG manages.
-func guardedSteps(m pipeline.Migration, after map[string]json.RawMessage) []migrationlog.Step {
+// it drops are the ones DPG manages. With a ledger, an object the migration
+// changes must also be as DPG last saw it (its fingerprint); log is the
+// database's log in the ledger.
+func guardedSteps(m pipeline.Migration, after map[string]json.RawMessage, led *ledger.Ledger, log string) []migrationlog.Step {
 	ops := append(append(append([]pipeline.DiffOp(nil), m.PreTransactional...), m.Transactional...), m.NonTransactional...)
 	managed := map[string]bool{}
 	for k := range after {
@@ -176,8 +180,33 @@ func guardedSteps(m pipeline.Migration, after map[string]json.RawMessage) []migr
 			runnable = append(runnable, op)
 		}
 	}
+	guards := precondition.Guards(ops, managed, executor.DistinctOwnerRoles(runnable))
+	if led != nil {
+		fp := precondition.Fingerprints{Schema: led.Schema, Log: log}
+		seen := map[string]bool{}
+		for _, op := range ops {
+			to, ok := op.(pipeline.TargetedOp)
+			if !ok {
+				continue
+			}
+			t := to.Target()
+			key := t.Key
+			switch t.Effect {
+			case pipeline.EffectCreate:
+				continue
+			case pipeline.EffectRename:
+				key = t.From
+			}
+			if id := t.Kind + "\x00" + key; !seen[id] {
+				seen[id] = true
+				if g := fp.Guard(t.Kind, key); g != "" {
+					guards = append(guards, g)
+				}
+			}
+		}
+	}
 	var steps []migrationlog.Step
-	for _, g := range precondition.Guards(ops, managed, executor.DistinctOwnerRoles(runnable)) {
+	for _, g := range guards {
 		steps = append(steps, migrationlog.Step{SQL: g, Safety: "SAFE", Stage: migrationlog.StageCheck})
 	}
 	return append(steps, migrationlog.StepsOf(m)...)
@@ -232,4 +261,57 @@ func positioned(ctx context.Context, q pipeline.Querier, lp logPosition, cluster
 	at := *snap
 	at.Objects, at.Migration = objects, head
 	return &at, len(l.Entries) - i - 1, nil
+}
+
+// objectKinds maps snapshot keys to their kinds.
+func objectKinds(objects map[string]json.RawMessage) map[string]string {
+	out := map[string]string{}
+	for k, raw := range objects {
+		var o struct {
+			Kind string `json:"kind"`
+		}
+		if json.Unmarshal(raw, &o) == nil && o.Kind != "" {
+			out[k] = o.Kind
+		}
+	}
+	return out
+}
+
+// cleanObjects keeps the objects no item of the report is about.
+func cleanObjects(kinds map[string]string, r *drift.Report) map[string]string {
+	dirty := map[string]bool{}
+	for _, it := range r.Items {
+		dirty[it.Object] = true
+	}
+	out := map[string]string{}
+	for k, kind := range kinds {
+		if !dirty[k] {
+			out[k] = kind
+		}
+	}
+	return out
+}
+
+// recordFingerprints records objects' fingerprints (key → kind) in a
+// database's ledger, creating it when missing (RFC Section 16.10): DPG has
+// seen them as they are.
+func recordFingerprints(ctx context.Context, conn pipeline.Conn, led *ledger.Ledger, log string, objects map[string]string, by string) error {
+	fp := precondition.Fingerprints{Schema: led.Schema, Log: log}
+	stmts := led.Bootstrap()
+	keys := make([]string, 0, len(objects))
+	for k := range objects {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if s := fp.Record(objects[k], k, by); s != "" {
+			stmts = append(stmts, s)
+		}
+	}
+	for _, s := range stmts {
+		if _, err := conn.Exec(ctx, s); err != nil {
+			return fmt.Errorf("record fingerprints: %w", ui.WrapDB(err))
+		}
+	}
+	return nil
 }

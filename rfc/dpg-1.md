@@ -4936,6 +4936,17 @@ CREATE TABLE IF NOT EXISTS "dpg".migrations (
     finished_at timestamptz,
     PRIMARY KEY (log, id)
 );
+
+CREATE TABLE IF NOT EXISTS "dpg".objects (     -- fingerprints (Section 16.10)
+    log         text NOT NULL,
+    kind        text NOT NULL,
+    key         text NOT NULL,
+    fingerprint text NOT NULL,
+    pg_major    int NOT NULL,
+    migration   text NOT NULL,   -- the migration, or preflight / verify / baseline / dump
+    recorded_at timestamptz NOT NULL,
+    PRIMARY KEY (log, kind, key)
+);
 ```
 
    A database's position in its log is its last migration: the
@@ -4999,8 +5010,8 @@ CREATE TABLE IF NOT EXISTS "dpg".migrations (
    | P0 | The migration follows the database's last migration | Section 16.9 | Section 16.9 |
    | P1 | An object it creates doesn't exist | yes | yes (DPG-E051) |
    | P2 | Nothing DPG doesn't manage depends on an object it drops or recreates (`pg_depend`) | yes | yes (DPG-E052) |
-   | P3 | No drift, conflict or converged item (Section 18.3) on an object it changes; an acknowledged item only on a property it doesn't change | yes | |
-   | P4 | No grant made outside DPG on an object it recreates | yes | |
+   | P3 | No drift, conflict or converged item (Section 18.3) on an object it changes; an acknowledged item only on a property it doesn't change | yes | the object's fingerprint (DPG-E054, DPG-E055) |
+   | P4 | No grant made outside DPG on an object it recreates | yes | the object's fingerprint |
    | P5 | The running role is a member of every role it makes an owner | yes | yes (DPG-E036) |
 
    The preflight compares the live catalog with the log replayed to
@@ -5018,6 +5029,42 @@ CREATE TABLE IF NOT EXISTS "dpg".migrations (
    dependent part of another object (a view's rule, an index, a
    trigger, a constraint, a default) counts as that object.  A
    dependent function is matched by its schema-qualified name.
+
+   **Fingerprints.**  An object's fingerprint is the MD5 of its
+   catalog definition: its name, the definitions PostgreSQL rebuilds
+   (`pg_get_viewdef`, `pg_get_functiondef`, `pg_get_indexdef`,
+   `pg_get_constraintdef`, `pg_get_triggerdef`, `pg_get_expr`), types,
+   defaults, options, owner, ACL and comments, and those of its parts
+   (columns, constraints, indexes, triggers, policies, enum values,
+   domain constraints, composite attributes, sequence parameters, role
+   attributes, memberships and settings).  It never includes OIDs,
+   statistics, sizes, a sequence's current value, or a role's password,
+   and it is computed with `search_path` set to `pg_catalog` alone, so
+   it doesn't depend on the session.  Tables, views, materialized
+   views, sequences, functions, procedures, types, schemas, roles and
+   extensions have fingerprints; `dpg apply` notes the objects of other
+   kinds a migration changes, which other runners can't check.
+
+   Fingerprints are recorded in the ledger's `objects` table
+   (Section 16.9), with the PostgreSQL major version:
+
+   -   by every migration, for the objects it changed, at the end of its
+       transaction and again after its `after` steps (an object it
+       dropped or renamed away is removed);
+   -   by `dpg apply`, for the objects its preflight has just checked;
+   -   by `dpg verify`, for the objects it finds with no item at all,
+       in a database with a ledger;
+   -   by `dpg apply --baseline` and `dpg dump`, for the objects they
+       record.
+
+   A migration's guard requires, for each object it alters, recreates,
+   drops or renames, that the object's fingerprint is the recorded one
+   (DPG-E055).  No record, or one taken on another major version, is
+   refused too (DPG-E054): `dpg verify` records it when the object has
+   no drift.  A grant made outside DPG changes the object's ACL, so it
+   is caught the same way.  A runner skips the guard with
+   `SET dpg.allow_drift = on`; `dpg apply --allow-drift` leaves all
+   guards out.
 
 
 ---
@@ -5493,7 +5540,8 @@ Options:
    log's migrations (Section 16.9) is compared with the log replayed to
    its position instead, and without the source, which is ahead of it;
    the number of migrations it hasn't run is shown, and is `pending`
-   in the JSON.
+   in the JSON.  In a database with a ledger, `dpg verify` records the
+   fingerprints of the objects it finds as expected (Section 16.10).
 
 ```
 dpg verify [options]
@@ -7175,6 +7223,8 @@ WITH NO DATA {
    | DPG-E051 | `precondition_exists` | A migration creates an object the database already has (Section 16.10). |
    | DPG-E052 | `precondition_dependents` | A migration drops or recreates an object something DPG doesn't manage depends on (Section 16.10). |
    | DPG-E053 | `preflight_refused` | The database isn't as the migrations about to run expect (Section 16.10). |
+   | DPG-E054 | `fingerprint_missing` | A migration changes an object DPG has no fingerprint of in the database, or one taken on another PostgreSQL major version (Section 16.10). |
+   | DPG-E055 | `fingerprint_changed` | A migration changes an object that changed since DPG last saw it (Section 16.10). |
 
 ---
 

@@ -474,7 +474,8 @@ func dumpBaseline(store pipeline.SnapshotStore, lo dumpLogOptions, cluster, key 
 			return fmt.Errorf("record the baseline in the ledger: %w", ui.WrapDB(err))
 		}
 	}
-	return nil
+	// The database is what the snapshot describes: DPG has seen it so.
+	return recordFingerprints(ctx, conn, lo.ledger, key, objectKinds(snap.Objects), "dump")
 }
 
 // mergeExistingVirtualTypes recovers any VIRTUAL TYPE declarations (RFC

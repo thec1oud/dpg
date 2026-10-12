@@ -207,7 +207,28 @@ func runVerify(
 	// Cluster-level objects (roles, tablespaces) are verified against the
 	// cluster snapshot, not the database snapshot.
 	live := rules.FilterObjects(excludeClusterScoped(liveObjects))
-	return detectAt(differ, live, snap, rules, source, pending)
+	r, err := detectAt(differ, live, snap, rules, source, pending)
+	if err == nil {
+		recordSeen(ctx, conn, lp, db.Name(), snap, r)
+	}
+	return r, err
+}
+
+// recordSeen records the fingerprints of the objects verify found as
+// expected (no item at all) in a database that keeps a ledger: the
+// migrations' guards then know DPG has seen them so (RFC Section 16.10).
+// Best effort: a role that can't write gets a note.
+func recordSeen(ctx context.Context, conn *executor.PgxConn, lp logPosition, log string, snap *pipeline.Snapshot, r *drift.Report) {
+	if lp.ledger == nil {
+		return
+	}
+	st, err := lp.ledger.Read(ctx, conn, log)
+	if err != nil || !st.Exists {
+		return
+	}
+	if err := recordFingerprints(ctx, conn, lp.ledger, log, cleanObjects(objectKinds(snap.Objects), r), "verify"); err != nil {
+		fmt.Fprintf(os.Stderr, "note: %v\n", err)
+	}
 }
 
 // detectAt detects drift against the snapshot at the database's position.
@@ -283,7 +304,11 @@ func runVerifyCluster(
 	if err != nil {
 		return nil, err
 	}
-	return detectAt(differ, live, snap, rules, source, pending)
+	r, err := detectAt(differ, live, snap, rules, source, pending)
+	if err == nil {
+		recordSeen(ctx, conn, lp, cl.ClusterSnapshotKey(), snap, r)
+	}
+	return r, err
 }
 
 // describeItem is the one-line description of an item.

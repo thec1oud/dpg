@@ -97,7 +97,7 @@ func TestMigrationLogLive(t *testing.T) {
 		t.Fatalf("after adopting: %d entries, head %+v", len(l.Entries), head)
 	}
 	sql, _ = l.Paths(head.ID)
-	if b, _ := os.ReadFile(sql); !strings.Contains(string(b), `SET DEFAULT 'b'`) || strings.Contains(string(b), "age") {
+	if b, _ := os.ReadFile(sql); !strings.Contains(string(b), `SET DEFAULT 'b'`) || strings.Contains(string(b), `"age"`) {
 		t.Errorf("the adoption's SQL must hold the adopted change only:\n%s", b)
 	}
 	// The database it was adopted from records it as run.

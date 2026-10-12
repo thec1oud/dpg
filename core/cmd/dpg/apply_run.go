@@ -142,13 +142,16 @@ func runTarget(t *applyTarget, opts applyOptions) error {
 		if err := snapshotpkg.Populate(newSnap, t.desired); err != nil {
 			return fmt.Errorf("build snapshot: %w", err)
 		}
-		if next, err = migrationlog.New(t.log.Head(), guardedSteps(full, newSnap.Objects), migrationlog.OriginApply, t.stored.Objects, newSnap.Objects, time.Now()); err != nil {
+		if next, err = migrationlog.New(t.log.Head(), guardedSteps(full, newSnap.Objects, opts.ledger, t.key), migrationlog.OriginApply, t.stored.Objects, newSnap.Objects, time.Now()); err != nil {
 			return err
 		}
 	}
 	toRun := append([]*migrationlog.Entry(nil), pending...)
 	if next != nil {
 		toRun = append(toRun, next)
+		if led != nil {
+			noteUnguarded(next, t.label)
+		}
 	}
 
 	// Gate and show everything that will run.
@@ -187,11 +190,13 @@ func runTarget(t *applyTarget, opts applyOptions) error {
 	}
 
 	// The preflight: the database is as the migrations expect.
+	var verified map[string]string
 	if opts.preflight {
 		if err := connect(); err != nil {
 			return err
 		}
-		if err := t.preflight(ctx, conn, head, toRun, opts, color); err != nil {
+		var err error
+		if verified, err = t.preflight(ctx, conn, head, toRun, opts, color); err != nil {
 			return err
 		}
 	}
@@ -215,6 +220,14 @@ func runTarget(t *applyTarget, opts applyOptions) error {
 	}
 	if err := executor.ValidateOwnerMembership(ctx, conn, all); err != nil {
 		return err
+	}
+
+	// The objects the preflight checked are recorded as seen, so the
+	// migrations' fingerprint guards pass.
+	if led != nil && !opts.allowDrift && len(verified) > 0 {
+		if err := recordFingerprints(ctx, conn, led, t.key, verified, "preflight"); err != nil {
+			return err
+		}
 	}
 
 	// Settle.
@@ -412,6 +425,7 @@ func (t *applyTarget) baseline(ctx context.Context, opts applyOptions, color boo
 		return ui.WrapDB(err)
 	}
 	at := -1
+	var clean map[string]string
 	for i := len(t.log.Entries) - 1; i >= 0 && at < 0; i-- {
 		objects, err := t.log.Replay(t.log.Entries[i].ID)
 		if err != nil {
@@ -423,6 +437,7 @@ func (t *applyTarget) baseline(ctx context.Context, opts applyOptions, color boo
 		}
 		if !report.HasDrift() {
 			at = i
+			clean = cleanObjects(objectKinds(objects), report)
 		}
 	}
 	if at < 0 {
@@ -443,6 +458,9 @@ func (t *applyTarget) baseline(ctx context.Context, opts applyOptions, color boo
 	if err := t.exec.Apply(ctx, m, conn); err != nil {
 		return ui.WrapDB(err)
 	}
+	if err := recordFingerprints(ctx, conn, opts.ledger, t.key, clean, "baseline"); err != nil {
+		return err
+	}
 	ui.PrintSuccess(os.Stdout, "Recorded", fmt.Sprintf("%s — at migration %s (%d of %d); dpg apply runs the rest", t.label, upTo.ID, at+1, len(t.log.Entries)), color)
 	return nil
 }
@@ -462,7 +480,7 @@ func (s ledgerStmt) Mode() pipeline.ExecMode { return pipeline.ModeTransactional
 // depending on an object they drop or recreate, no grant made outside DPG
 // on an object they recreate. Drift elsewhere is a note. head is the
 // database's position in the log.
-func (t *applyTarget) preflight(ctx context.Context, conn *executor.PgxConn, head string, toRun []*migrationlog.Entry, opts applyOptions, color bool) error {
+func (t *applyTarget) preflight(ctx context.Context, conn *executor.PgxConn, head string, toRun []*migrationlog.Entry, opts applyOptions, color bool) (map[string]string, error) {
 	// The state the database should be in: the log at its position.
 	var expected map[string]json.RawMessage
 	atHead := head == t.log.Head()
@@ -474,16 +492,16 @@ func (t *applyTarget) preflight(ctx context.Context, conn *executor.PgxConn, hea
 	default:
 		var err error
 		if expected, err = t.log.Replay(head); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	snap := &pipeline.Snapshot{Objects: expected}
 	if err := t.rules.FilterSnapshot(snap); err != nil {
-		return err
+		return nil, err
 	}
 	live, err := t.live(ctx, conn)
 	if err != nil {
-		return ui.WrapDB(err)
+		return nil, ui.WrapDB(err)
 	}
 	var source []pipeline.IRObject
 	if atHead {
@@ -491,12 +509,12 @@ func (t *applyTarget) preflight(ctx context.Context, conn *executor.PgxConn, hea
 	}
 	report, err := drift.Detect(t.differ, live, snap, drift.Options{Ignore: t.rules, Source: source})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if t.ackFile != "" {
 		acks, err := drift.LoadAcks(t.ackFile)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		drift.ApplyAcks(report, acks, time.Now())
 	}
@@ -536,7 +554,7 @@ func (t *applyTarget) preflight(ctx context.Context, conn *executor.PgxConn, hea
 		for k, v := range e.Set {
 			cp, err := drift.ChangedProperties(state[k], v)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if changed[k] == nil {
 				changed[k] = map[string]bool{}
@@ -600,7 +618,7 @@ func (t *applyTarget) preflight(ctx context.Context, conn *executor.PgxConn, hea
 		}
 		deps, err := precondition.Unmanaged(ctx, conn, tc.kind, k, managed)
 		if err != nil {
-			return ui.WrapDB(err)
+			return nil, ui.WrapDB(err)
 		}
 		for _, d := range deps {
 			destructive = true
@@ -612,8 +630,16 @@ func (t *applyTarget) preflight(ctx context.Context, conn *executor.PgxConn, hea
 		sort.Strings(notes)
 		ui.PrintInfo(os.Stderr, "note", fmt.Sprintf("%s: drift on objects these migrations don't touch: %s", t.label, strings.Join(notes, ", ")), ui.IsColorEnabled(os.Stderr))
 	}
+	// The objects the migrations change that the database has, checked:
+	// DPG has seen them as they are (their fingerprints).
+	verified := map[string]string{}
+	for k, tc := range touched {
+		if expected[k] != nil {
+			verified[k] = tc.kind
+		}
+	}
 	if len(blocks) == 0 {
-		return nil
+		return verified, nil
 	}
 	sort.Strings(blocks)
 	fmt.Fprintf(os.Stderr, "\n%s\n", ui.Bold(fmt.Sprintf("%s: the database isn't as the migrations expect", t.label), ui.IsColorEnabled(os.Stderr)))
@@ -622,10 +648,31 @@ func (t *applyTarget) preflight(ctx context.Context, conn *executor.PgxConn, hea
 	}
 	if opts.allowDrift && (!destructive || opts.allowDestructive) {
 		ui.PrintInfo(os.Stderr, "warn", "continuing anyway (--allow-drift)", ui.IsColorEnabled(os.Stderr))
-		return nil
+		return nil, nil
 	}
 	if opts.allowDrift {
-		return &ui.ExitError{Code: 1, Err: fmt.Errorf("DPG-E052: running it would drop objects DPG doesn't manage; --allow-drift with --allow-destructive proceeds")}
+		return nil, &ui.ExitError{Code: 1, Err: fmt.Errorf("DPG-E052: running it would drop objects DPG doesn't manage; --allow-drift with --allow-destructive proceeds")}
 	}
-	return &ui.ExitError{Code: 1, Err: fmt.Errorf("DPG-E053: %d problem(s); dpg resolve fixes them, or --allow-drift proceeds anyway", len(blocks))}
+	return nil, &ui.ExitError{Code: 1, Err: fmt.Errorf("DPG-E053: %d problem(s); dpg resolve fixes them, or --allow-drift proceeds anyway", len(blocks))}
+}
+
+// noteUnguarded notes the objects a migration changes whose kind has no
+// fingerprint: another runner's guards can't tell whether they drifted.
+func noteUnguarded(e *migrationlog.Entry, label string) {
+	seen := map[string]bool{}
+	var out []string
+	for _, st := range e.Steps {
+		t := st.Target
+		if t == nil || t.Kind == "ledger" || t.Effect == pipeline.EffectCreate || seen[t.Kind+":"+t.Key] {
+			continue
+		}
+		seen[t.Kind+":"+t.Key] = true
+		if precondition.Fingerprint(t.Kind, t.Key) == "" {
+			out = append(out, t.Kind+":"+t.Key)
+		}
+	}
+	if len(out) > 0 {
+		sort.Strings(out)
+		ui.PrintInfo(os.Stderr, "note", fmt.Sprintf("%s: run by another tool, this migration can't check these for drift (no fingerprint for their kind): %s", label, strings.Join(out, ", ")), ui.IsColorEnabled(os.Stderr))
+	}
 }

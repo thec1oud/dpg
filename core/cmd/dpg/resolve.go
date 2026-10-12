@@ -402,7 +402,7 @@ func (env *resolveEnv) target(cl *project.Cluster, db *project.Database, files [
 			// databases run to get it. This database has it: its ledger
 			// records it as complete.
 			led := ledgerFor(env.proj.RootConfig)
-			e, err := migrationlog.New(log.Head(), guardedSteps(m, s.Objects), migrationlog.OriginAdopt, stored.Objects, s.Objects, time.Now())
+			e, err := migrationlog.New(log.Head(), guardedSteps(m, s.Objects, led, snapKey), migrationlog.OriginAdopt, stored.Objects, s.Objects, time.Now())
 			if err != nil {
 				return nil, err
 			}
