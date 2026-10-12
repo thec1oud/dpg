@@ -126,6 +126,13 @@ With --dry-run, the migration is computed and printed but never executed.
 With --no-snapshot, the snapshot is not updated after a successful apply.
 With --strict, lint warnings are promoted to errors and block the apply.
 
+Before anything runs (also with --dry-run), apply checks the database is
+as the migrations expect: no drift on the objects they change, nothing
+they create already there, nothing DPG doesn't manage depending on what
+they drop or recreate. It refuses (exit 1) otherwise; --allow-drift
+proceeds anyway. Each migration also carries these checks as guards
+that any runner executes.
+
 Each apply records its migration in the migration log beside the
 snapshot, and each database records the migrations it has run in its
 ledger table. apply first runs the log's migrations a database hasn't
@@ -147,6 +154,7 @@ transaction failed.`,
 	cmd.Flags().Bool("strict", false, "treat lint warnings as errors (blocks apply if any exist)")
 	cmd.Flags().Bool("baseline", false, "start the migration log of a snapshot that predates it, and record how far along it each database is")
 	cmd.Flags().Bool("resume", false, "finish a migration whose steps after its transaction failed")
+	cmd.Flags().Bool("allow-drift", false, "run even when the database isn't as the migration expects (and skip the migration's guards)")
 	return cmd
 }
 

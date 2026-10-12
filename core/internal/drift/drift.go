@@ -86,6 +86,9 @@ type Item struct {
 // Report is the result of Detect, sorted by object.
 type Report struct {
 	Items []Item
+	// Pending is how many migrations of the log the database hasn't run:
+	// it was compared with the log at its own position (set by callers).
+	Pending int
 }
 
 // HasDrift reports whether any item is drift, a conflict or converged and

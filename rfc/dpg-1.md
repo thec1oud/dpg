@@ -172,6 +172,7 @@ Copyright Notice
     16.7.  Source Revision Detection
     16.8.  Migration Log
     16.9.  Ledger
+    16.10. Preconditions
 17. Migration Output Format
     17.1.  Output Structure
     17.2.  Safety Classification
@@ -4985,6 +4986,39 @@ CREATE TABLE IF NOT EXISTS "dpg".migrations (
        source's change, as if every database were at the log's last
        migration, and writes nothing to the database besides it.
 
+### 16.10. Preconditions
+
+   [DPG] Before a migration runs, the database must be as the
+   migration expects: as the migration log describes it at the
+   database's position (Section 16.9).  `dpg apply` checks this before
+   running anything, also with `--dry-run` (the preflight), and each
+   migration carries the checks it can make in SQL as guards.
+
+   | # | Precondition | Preflight | Guard |
+   |---|--------------|-----------|-------|
+   | P0 | The migration follows the database's last migration | Section 16.9 | Section 16.9 |
+   | P1 | An object it creates doesn't exist | yes | yes (DPG-E051) |
+   | P2 | Nothing DPG doesn't manage depends on an object it drops or recreates (`pg_depend`) | yes | yes (DPG-E052) |
+   | P3 | No drift, conflict or converged item (Section 18.3) on an object it changes; an acknowledged item only on a property it doesn't change | yes | |
+   | P4 | No grant made outside DPG on an object it recreates | yes | |
+   | P5 | The running role is a member of every role it makes an owner | yes | yes (DPG-E036) |
+
+   The preflight compares the live catalog with the log replayed to
+   the database's position, applies acknowledgements (Section 18.4),
+   and checks every migration about to run: the log's migrations the
+   database hasn't run, then the source's change.  A problem makes
+   `dpg apply` exit 1 (DPG-E053) without running anything; drift on
+   objects the migrations don't touch is printed as a note.
+   `--allow-drift` proceeds anyway and leaves the guards out of what
+   `dpg apply` runs; when an object DPG doesn't manage depends on a
+   dropped or recreated one, `--allow-destructive` is needed as well.
+
+   The guards are a migration's `check` steps (Section 16.8): they run
+   before everything else and again first in its transaction.  A
+   dependent part of another object (a view's rule, an index, a
+   trigger, a constraint, a default) counts as that object.  A
+   dependent function is matched by its schema-qualified name.
+
 
 ---
 
@@ -5389,6 +5423,9 @@ Options:
                              (Section 16.9).
   --resume                   Finish a migration whose steps after its
                              transaction failed (Section 16.9).
+  --allow-drift              Run even when the database isn't as the
+                             migrations expect, without their guards
+                             (Section 16.10).
   --strict                   Promote linter warnings to errors. Apply is
                              blocked if any lint errors exist.
   --cluster <name>
@@ -5438,6 +5475,13 @@ Options:
    finishes it.  With `--baseline`, `dpg apply` only starts the log and
    records the database's position, and runs nothing.
 
+   After step 5 prints what will run, and before step 6, the preflight
+   (Section 16.10) checks the database; it runs with `--dry-run` too.
+
+   Exit codes: 0 = applied, nothing to apply, or a dry run that would
+   proceed; 1 = the preflight refused (DPG-E053, DPG-E052); 2 = any
+   other error.
+
    If step 7 fails, the transaction is rolled back.  The snapshot is
    not updated.  The error from the database is printed with the
    failing SQL statement highlighted.
@@ -5445,7 +5489,11 @@ Options:
 ### 18.3. dpg verify
 
    Introspects the live catalog and compares it with the snapshot
-   (Section 20.2).
+   (Section 20.2).  A database that hasn't run all of the migration
+   log's migrations (Section 16.9) is compared with the log replayed to
+   its position instead, and without the source, which is ahead of it;
+   the number of migrations it hasn't run is shown, and is `pending`
+   in the JSON.
 
 ```
 dpg verify [options]
@@ -7124,6 +7172,9 @@ WITH NO DATA {
    | DPG-E048 | `migration_log_missing` | The snapshot predates its migration log; `dpg apply --baseline` starts it (Section 16.8). |
    | DPG-E049 | `ledger_migration_state` | A migration is recorded in the database's ledger with other steps, is already applied, or is waiting for `dpg apply --resume` (Section 16.9). |
    | DPG-E050 | `ledger_position` | A migration doesn't follow the database's last migration, the database's last migration isn't in the log, or the database has the log's objects but no ledger (Section 16.9). |
+   | DPG-E051 | `precondition_exists` | A migration creates an object the database already has (Section 16.10). |
+   | DPG-E052 | `precondition_dependents` | A migration drops or recreates an object something DPG doesn't manage depends on (Section 16.10). |
+   | DPG-E053 | `preflight_refused` | The database isn't as the migrations about to run expect (Section 16.10). |
 
 ---
 

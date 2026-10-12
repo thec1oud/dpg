@@ -345,6 +345,20 @@ func (env *resolveEnv) target(cl *project.Cluster, db *project.Database, files [
 	if err != nil {
 		return nil, err
 	}
+	// A database behind the log is compared with the log at its position.
+	at, pending, err := positioned(ctx, conn, logPositionFor(env.proj), cl.Name(), snapKey, &stored)
+	if err != nil {
+		conn.Close(ctx)
+		return nil, err
+	}
+	if pending > 0 {
+		at.Objects = copyObjects(at.Objects)
+		if err := rules.FilterSnapshot(at); err != nil {
+			conn.Close(ctx)
+			return nil, err
+		}
+		snap = at
+	}
 	all, err := introspector.Introspect(ctx, conn)
 	conn.Close(ctx)
 	if err != nil {
@@ -365,7 +379,7 @@ func (env *resolveEnv) target(cl *project.Cluster, db *project.Database, files [
 		return nil, err
 	}
 	source = rules.FilterObjects(source)
-	report, err := drift.Detect(env.deps.Differ, live, snap, drift.Options{Ignore: rules, Source: source})
+	report, err := detectAt(env.deps.Differ, live, snap, rules, source, pending)
 	if err != nil {
 		return nil, err
 	}
@@ -382,17 +396,17 @@ func (env *resolveEnv) target(cl *project.Cluster, db *project.Database, files [
 		Source: source, Index: index, SourceFiles: files, SourceDir: dir, CompileOpts: opts,
 		ConfigPath: configPath,
 		AckPath:    ackFile,
-		LogErr:     noBaselineHint(logErr),
+		LogErr:     behindLog(noBaselineHint(logErr), pending),
 		SaveSnapshot: func(s *pipeline.Snapshot, m pipeline.Migration) (func() error, error) {
 			// The adopted state is recorded as a migration: what other
 			// databases run to get it. This database has it: its ledger
 			// records it as complete.
 			led := ledgerFor(env.proj.RootConfig)
-			e, err := migrationlog.New(log.Head(), migrationlog.StepsOf(m), migrationlog.OriginAdopt, stored.Objects, s.Objects, time.Now())
+			e, err := migrationlog.New(log.Head(), guardedSteps(m, s.Objects), migrationlog.OriginAdopt, stored.Objects, s.Objects, time.Now())
 			if err != nil {
 				return nil, err
 			}
-			file, err := renderFile(m, led, ledger.Of(snapKey, e))
+			file, err := renderFile(e, m.Meta, led, snapKey)
 			if err != nil {
 				return nil, err
 			}
@@ -690,4 +704,13 @@ func renderResolvePlan(w io.Writer, p *resolve.Plan, root string, color bool) {
 	for _, a := range p.Acks {
 		fmt.Fprintf(w, "\n%s  acknowledgements: %d → %d (%s)\n", ui.Cyan(a.Target.Label(), color), len(a.Before), len(a.After), rel(a.Target.AckPath))
 	}
+}
+
+// behindLog refuses adoption in a database the log is ahead of: adopting
+// records a migration after the log's last one.
+func behindLog(err error, pending int) error {
+	if err == nil && pending > 0 {
+		return fmt.Errorf("this database hasn't run the log's last %d migration(s); dpg apply runs them first", pending)
+	}
+	return err
 }

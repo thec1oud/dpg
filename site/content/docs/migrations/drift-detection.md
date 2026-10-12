@@ -138,7 +138,22 @@ A column that comes from a macro needs `--macro edit` (change the macro, and so 
 
 Acknowledgements live in `.dpg/acknowledged/<cluster>/<database>.json` and are meant to be committed. Each records who acknowledged the item (git's `user.name`), when, why, and a fingerprint of the values it saw. If the drift changes, or the `--expires` date passes, the acknowledgement lapses and the item is reported again.
 
-`dpg apply` alone does not undo drift: it plans from the snapshot, not from the database, so it doesn't see changes made outside DPG.
+## Before `dpg apply` runs anything
+
+`dpg apply` plans from the snapshot, not from the database, so it checks the database first (also with `--dry-run`). It refuses, with exit code 1 and the list of problems, when:
+
+- an object the migration changes has drift, a conflict or a converged item (an acknowledged one only blocks if the migration changes that very property);
+- an object it creates already exists;
+- something DPG doesn't manage (a view, a function) depends on an object it drops or recreates;
+- an object it recreates has grants made outside DPG, which recreating would lose.
+
+Drift on objects the migration doesn't touch is printed as a note and doesn't block. Fix the problems with `dpg resolve`, or pass `--allow-drift` to go ahead anyway.
+
+Every migration file also carries the checks it can make in SQL as guards at its start, so a migration run with `psql` or another tool refuses in the same situations without changing anything.
+
+## Databases that are behind
+
+A database that hasn't run all of the migration log's migrations yet (production between deploys, say) is compared with the log at its own position, not with the latest snapshot: the migrations it hasn't run aren't drift. `dpg verify` shows how many it hasn't run (`pending` in the JSON), and `dpg apply` runs them.
 
 ## Relation to `dpg plan --live`
 

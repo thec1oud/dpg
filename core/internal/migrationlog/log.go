@@ -37,6 +37,7 @@ const (
 	StageTransaction = "transaction" // inside the transaction
 	StageAfter       = "after"       // after COMMIT (CREATE INDEX CONCURRENTLY, ...)
 	StageInstruction = "instruction" // a step the operator does by hand; never run
+	StageCheck       = "check"       // a guard: raises unless a precondition holds
 )
 
 // Step is one statement of a migration, with {{...}} secret references
@@ -45,6 +46,8 @@ type Step struct {
 	SQL    string `json:"sql"`
 	Safety string `json:"safety"` // SAFE, CAUTION, DESTRUCTIVE
 	Stage  string `json:"stage"`
+	// Target is the object the step changes (absent for guards).
+	Target *pipeline.Target `json:"target,omitempty"`
 }
 
 // StepsOf returns a migration's statements in the order they run.
@@ -56,7 +59,12 @@ func StepsOf(m pipeline.Migration) []Step {
 			if op.Mode() == pipeline.ModeInstructionOnly {
 				st = StageInstruction
 			}
-			out = append(out, Step{SQL: op.SQL(), Safety: op.Safety().String(), Stage: st})
+			step := Step{SQL: op.SQL(), Safety: op.Safety().String(), Stage: st}
+			if to, ok := op.(pipeline.TargetedOp); ok {
+				t := to.Target()
+				step.Target = &t
+			}
+			out = append(out, step)
 		}
 	}
 	add(m.PreTransactional, StageBefore)
@@ -414,12 +422,20 @@ func (o stepOp) ExecSQL(r pipeline.SecretResolver) (string, error) {
 }
 
 // Migration returns the entry's steps as a migration; instruction steps
-// (never run) are left out unless withInstructions.
-func (e *Entry) Migration(meta pipeline.MigrationMeta, withInstructions bool) pipeline.Migration {
+// (never run) are left out unless withInstructions. Guards run twice:
+// before everything and first in the transaction (closing the window
+// between them); withChecks false leaves them out (dpg apply
+// --allow-drift).
+func (e *Entry) Migration(meta pipeline.MigrationMeta, withInstructions, withChecks bool) pipeline.Migration {
 	m := pipeline.Migration{Meta: meta}
 	for _, s := range e.Steps {
 		op := stepOp{s}
 		switch s.Stage {
+		case StageCheck:
+			if withChecks {
+				m.PreTransactional = append(m.PreTransactional, stepOp{Step{SQL: s.SQL, Safety: s.Safety, Stage: StageBefore}})
+				m.Transactional = append(m.Transactional, stepOp{Step{SQL: s.SQL, Safety: s.Safety, Stage: StageTransaction}})
+			}
 		case StageBefore:
 			m.PreTransactional = append(m.PreTransactional, op)
 		case StageAfter:

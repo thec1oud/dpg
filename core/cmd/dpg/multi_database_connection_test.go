@@ -141,7 +141,7 @@ func TestMultiDatabaseClusterConnectsToCorrectDatabase(t *testing.T) {
 	// instead of mdb_b) or, worse, ever references table_a at all.
 	dbB.SourceFiles = []string{schemaBPath}
 	dbB.Dir = dbBOut
-	report, err := runVerify(cl, dbB, store, introspect.New(), diff.New(), resolver, nil)
+	report, err := runVerify(cl, dbB, store, introspect.New(), diff.New(), resolver, nil, logPosition{})
 	if err != nil {
 		t.Fatalf("runVerify mdb_b: %v", err)
 	}

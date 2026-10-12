@@ -162,21 +162,22 @@ func TestSettleLive(t *testing.T) {
 		t.Errorf("an old migration again: %v", err)
 	}
 
-	// 4. A migration that fails on prod is retried once the cause is gone.
+	// 4. A migration that fails on prod (a row its new CHECK rejects: only
+	// running it finds that) is retried once the cause is gone.
 	deployTo(t, root, dev)
-	writeSource(t, root, tFile, "TABLE t (id int PRIMARY KEY, x int, y int, z int);\n\nTABLE blocker (id int PRIMARY KEY);\n")
+	writeSource(t, root, tFile, "TABLE t (id int PRIMARY KEY, x int, y int, z int, CONSTRAINT x_pos CHECK (x >= 0));\n")
 	if err := applyErr(t, root); err != nil {
 		t.Fatal(err)
 	}
 	deployTo(t, root, prod)
-	prod.exec(`CREATE TABLE public.blocker (other text)`)
+	prod.exec(`INSERT INTO public.t (id, x) VALUES (100, -1)`)
 	if err := applyErr(t, root); err == nil {
-		t.Fatal("settling must fail while prod has its own blocker table")
+		t.Fatal("settling must fail while prod has a row the CHECK rejects")
 	}
 	if got := prod.query(`SELECT status FROM dpg.migrations ORDER BY started_at DESC LIMIT 1`); got != "started" {
 		t.Errorf("the failed attempt's row: %s", got)
 	}
-	prod.exec(`DROP TABLE public.blocker`)
+	prod.exec(`DELETE FROM public.t WHERE id = 100`)
 	if err := applyErr(t, root); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
@@ -188,7 +189,7 @@ func TestSettleLive(t *testing.T) {
 	// unique index built concurrently): the migration is committed, apply
 	// refuses until --resume finishes it.
 	deployTo(t, root, dev)
-	writeSource(t, root, tFile, "TABLE t (id int PRIMARY KEY, x int, y int, z int) {\n    INDEXES {\n        UNIQUE CONCURRENTLY t_x_u (x);\n    }\n}\n\nTABLE blocker (id int PRIMARY KEY);\n")
+	writeSource(t, root, tFile, "TABLE t (id int PRIMARY KEY, x int, y int, z int, CONSTRAINT x_pos CHECK (x >= 0)) {\n    INDEXES {\n        UNIQUE CONCURRENTLY t_x_u (x);\n    }\n}\n")
 	if err := applyErr(t, root); err != nil {
 		t.Fatal(err)
 	}

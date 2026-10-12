@@ -3,6 +3,7 @@ package drift
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"reflect"
 	"sort"
 
@@ -270,4 +271,73 @@ func subtract(a, b []string) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// ChangedProperties names the properties that differ between two snapshot
+// entries of an object as items name them ("comment", "column:email",
+// "grants"). A created or dropped object (one side nil) changes as a whole:
+// {"": true}.
+func ChangedProperties(before, after json.RawMessage) (map[string]bool, error) {
+	out := map[string]bool{}
+	if before == nil || after == nil {
+		out[""] = true
+		return out, nil
+	}
+	b, _, err := innerMap(before)
+	if err != nil {
+		return nil, err
+	}
+	a, _, err := innerMap(after)
+	if err != nil {
+		return nil, err
+	}
+	keys := map[string]bool{}
+	for k := range b {
+		keys[k] = true
+	}
+	for k := range a {
+		keys[k] = true
+	}
+	for k := range keys {
+		if compact(b[k]) == compact(a[k]) {
+			continue
+		}
+		if kind, ok := elementKinds[k]; ok {
+			bn, _, okB := namedElements(b[k])
+			an, _, okA := namedElements(a[k])
+			if okB && okA {
+				names := map[string]bool{}
+				for n := range bn {
+					names[n] = true
+				}
+				for n := range an {
+					names[n] = true
+				}
+				for n := range names {
+					if compact(bn[n]) != compact(an[n]) {
+						out[kind+":"+escapeName(n)] = true
+					}
+				}
+				continue
+			}
+		}
+		out[k] = true
+	}
+	return out, nil
+}
+
+// Touches reports whether an item's property is among changed
+// (ChangedProperties).
+func Touches(it Item, changed map[string]bool) bool {
+	if len(changed) == 0 {
+		return false
+	}
+	if changed[""] || it.Property == "" {
+		return true
+	}
+	head, _, _ := strings.Cut(it.Property, "/")
+	if strings.HasPrefix(head, "grant:") {
+		return changed["grants"] || changed["revocations"]
+	}
+	return changed[head]
 }

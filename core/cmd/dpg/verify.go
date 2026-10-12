@@ -120,7 +120,7 @@ func runVerifyAll(clusterName, databaseName string) ([]verifyTarget, error) {
 	for _, cl := range clusters {
 		if len(cl.SourceFiles) > 0 {
 			r, err := runVerifyCluster(cl, store, introspector, differ, secretResolver,
-				ignore.New(cl.EffectiveIgnore(proj.RootConfig)))
+				ignore.New(cl.EffectiveIgnore(proj.RootConfig)), logPositionFor(proj))
 			if err != nil {
 				return nil, fmt.Errorf("%s (cluster): %w", cl.Name(), err)
 			}
@@ -135,7 +135,7 @@ func runVerifyAll(clusterName, databaseName string) ([]verifyTarget, error) {
 		}
 		for _, db := range databases {
 			r, err := runVerify(cl, db, store, introspector, differ, secretResolver,
-				ignore.New(db.EffectiveIgnore(cl, proj.RootConfig)))
+				ignore.New(db.EffectiveIgnore(cl, proj.RootConfig)), logPositionFor(proj))
 			if err != nil {
 				return nil, fmt.Errorf("%s/%s: %w", cl.Name(), db.Name(), err)
 			}
@@ -173,6 +173,7 @@ func runVerify(
 	differ pipeline.Differ,
 	secretResolver pipeline.SecretResolver,
 	rules *ignore.Rules,
+	lp logPosition,
 ) (*drift.Report, error) {
 	ctx := context.Background()
 
@@ -180,15 +181,18 @@ func runVerify(
 	if err != nil {
 		return nil, fmt.Errorf("load snapshot: %w", err)
 	}
-	if err := rules.FilterSnapshot(snap); err != nil {
-		return nil, err
-	}
-
 	conn, err := connectDatabase(ctx, cl, db, secretResolver)
 	if err != nil {
 		return nil, err
 	}
 	defer conn.Close(ctx)
+	snap, pending, err := positioned(ctx, conn, lp, cl.Name(), db.Name(), snap)
+	if err != nil {
+		return nil, err
+	}
+	if err := rules.FilterSnapshot(snap); err != nil {
+		return nil, err
+	}
 
 	liveObjects, err := introspector.Introspect(ctx, conn)
 	if err != nil {
@@ -203,7 +207,21 @@ func runVerify(
 	// Cluster-level objects (roles, tablespaces) are verified against the
 	// cluster snapshot, not the database snapshot.
 	live := rules.FilterObjects(excludeClusterScoped(liveObjects))
-	return drift.Detect(differ, live, snap, drift.Options{Ignore: rules, Source: rules.FilterObjects(source)})
+	return detectAt(differ, live, snap, rules, source, pending)
+}
+
+// detectAt detects drift against the snapshot at the database's position.
+// The source is the next state only of a database at the log's end.
+func detectAt(differ pipeline.Differ, live []pipeline.IRObject, snap *pipeline.Snapshot, rules *ignore.Rules, source []pipeline.IRObject, pending int) (*drift.Report, error) {
+	opts := drift.Options{Ignore: rules}
+	if pending == 0 {
+		opts.Source = rules.FilterObjects(source)
+	}
+	r, err := drift.Detect(differ, live, snap, opts)
+	if r != nil {
+		r.Pending = pending
+	}
+	return r, err
 }
 
 // runVerifyCluster compares cluster-level objects (roles, tablespaces) with
@@ -215,15 +233,13 @@ func runVerifyCluster(
 	differ pipeline.Differ,
 	secretResolver pipeline.SecretResolver,
 	rules *ignore.Rules,
+	lp logPosition,
 ) (*drift.Report, error) {
 	ctx := context.Background()
 
 	snap, err := store.Load(cl.Name(), cl.ClusterSnapshotKey())
 	if err != nil {
 		return nil, fmt.Errorf("load snapshot: %w", err)
-	}
-	if err := rules.FilterSnapshot(snap); err != nil {
-		return nil, err
 	}
 
 	connStr := cl.ConnectionString()
@@ -241,6 +257,13 @@ func runVerifyCluster(
 		return nil, ui.WrapDB(withMissingDatabaseHint(err))
 	}
 	defer conn.Close(ctx)
+	snap, pending, err := positioned(ctx, conn, lp, cl.Name(), cl.ClusterSnapshotKey(), snap)
+	if err != nil {
+		return nil, err
+	}
+	if err := rules.FilterSnapshot(snap); err != nil {
+		return nil, err
+	}
 
 	allObjects, err := introspector.Introspect(ctx, conn)
 	if err != nil {
@@ -260,7 +283,7 @@ func runVerifyCluster(
 	if err != nil {
 		return nil, err
 	}
-	return drift.Detect(differ, live, snap, drift.Options{Ignore: rules, Source: rules.FilterObjects(source)})
+	return detectAt(differ, live, snap, rules, source, pending)
 }
 
 // describeItem is the one-line description of an item.
@@ -370,11 +393,15 @@ func renderVerifyText(w io.Writer, targets []verifyTarget, color bool) {
 		if t.Database == "(cluster)" {
 			label = t.Cluster + " (cluster)"
 		}
+		pending := ""
+		if t.Report.Pending > 0 {
+			pending = fmt.Sprintf(" (%d migration(s) of the log not run here yet: compared with the log at this database's position; dpg apply runs them)", t.Report.Pending)
+		}
 		if len(t.Report.Items) == 0 {
-			ui.PrintInfo(w, label, "no drift detected", color)
+			ui.PrintInfo(w, label, "no drift detected"+pending, color)
 			continue
 		}
-		fmt.Fprintf(w, "%s\n", ui.Cyan(label, color))
+		fmt.Fprintf(w, "%s%s\n", ui.Cyan(label, color), ui.Dim(pending, color))
 		for _, g := range verifyGroups {
 			var items []drift.Item
 			for _, it := range t.Report.Items {
@@ -438,9 +465,11 @@ type verifyItemJSON struct {
 }
 
 type verifyTargetJSON struct {
-	Cluster  string           `json:"cluster"`
-	Database string           `json:"database"`
-	Items    []verifyItemJSON `json:"items"`
+	Cluster  string `json:"cluster"`
+	Database string `json:"database"`
+	// Pending is how many migrations of the log the database hasn't run.
+	Pending int              `json:"pending"`
+	Items   []verifyItemJSON `json:"items"`
 }
 
 // renderVerifyJSON writes one JSON document for all targets.
@@ -450,7 +479,7 @@ func renderVerifyJSON(w io.Writer, targets []verifyTarget, hasDrift bool) error 
 		Targets []verifyTargetJSON `json:"targets"`
 	}{Drift: hasDrift, Targets: []verifyTargetJSON{}}
 	for _, t := range targets {
-		tj := verifyTargetJSON{Cluster: t.Cluster, Database: t.Database, Items: []verifyItemJSON{}}
+		tj := verifyTargetJSON{Cluster: t.Cluster, Database: t.Database, Pending: t.Report.Pending, Items: []verifyItemJSON{}}
 		for _, it := range t.Report.Items {
 			tj.Items = append(tj.Items, verifyItemJSON{
 				ID: it.ID, Group: it.Group.String(), Kind: it.Kind, Object: it.Object, Property: it.Property,

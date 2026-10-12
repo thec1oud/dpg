@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -35,6 +36,7 @@ func newApplyCmd() *cobra.Command {
 		noSnapshot              bool
 		baseline                bool
 		resume                  bool
+		allowDrift              bool
 		strict                  bool
 	)
 
@@ -50,6 +52,13 @@ Partition strategy changes additionally require --approve-partition-rebuild.
 With --dry-run, the migration is computed and printed but never executed.
 With --no-snapshot, the snapshot is not updated after a successful apply.
 With --strict, lint warnings are promoted to errors and block the apply.
+
+Before anything runs (also with --dry-run), apply checks the database is
+as the migrations expect: no drift on the objects they change, nothing
+they create already there, nothing DPG doesn't manage depending on what
+they drop or recreate. It refuses (exit 1) otherwise; --allow-drift
+proceeds anyway. Each migration also carries these checks as guards
+that any runner executes.
 
 Each apply records its migration in the migration log beside the
 snapshot, and each database records the migrations it has run in its
@@ -101,6 +110,9 @@ transaction failed.`,
 				noSnapshot:              noSnapshot,
 				baseline:                baseline,
 				resume:                  resume,
+				allowDrift:              allowDrift,
+				preflight:               true,
+				dpgDir:                  proj.DPGDir(),
 				strict:                  strict,
 				migrationsDir:           proj.MigrationsDir(),
 				lintCfg:                 linterConfigFrom(proj.RootConfig.Linter),
@@ -146,6 +158,7 @@ transaction failed.`,
 	cmd.Flags().BoolVar(&strict, "strict", false, "treat lint warnings as errors (blocks apply if any exist)")
 	cmd.Flags().BoolVar(&baseline, "baseline", false, "start the migration log of a snapshot that predates it, and record how far along it each database is")
 	cmd.Flags().BoolVar(&resume, "resume", false, "finish a migration whose steps after its transaction failed")
+	cmd.Flags().BoolVar(&allowDrift, "allow-drift", false, "run even when the database isn't as the migration expects (and skip the migration's guards)")
 
 	return cmd
 }
@@ -158,10 +171,15 @@ type applyOptions struct {
 	noSnapshot              bool
 	baseline                bool
 	resume                  bool
-	strict                  bool
-	migrationsDir           string
-	lintCfg                 pipeline.LinterConfig
-	ignore                  *ignore.Rules
+	allowDrift              bool
+	// preflight checks the database before anything runs (dpg apply sets
+	// it; it needs a connection, also for --dry-run).
+	preflight     bool
+	dpgDir        string // the project's .dpg directory (acknowledgements)
+	strict        bool
+	migrationsDir string
+	lintCfg       pipeline.LinterConfig
+	ignore        *ignore.Rules
 	// ledger is the databases' ledger; nil when it is turned off.
 	ledger *ledger.Ledger
 }
@@ -246,9 +264,18 @@ func runApply(
 		},
 		live:    liveObjects(opts.ignore, false),
 		rules:   opts.ignore,
+		ackFile: ackFileFor(opts.dpgDir, cl.Name(), db.Name()),
 		desired: desired, stored: &stored, log: log, logErr: logErr, ops: ops,
 		meta: pipeline.MigrationMeta{GeneratedAt: time.Now().UTC(), SourceRevision: rev, Cluster: cl.Name(), SourceRoot: cl.ProjectRoot, Database: db.Name()},
 	}, opts)
+}
+
+// ackFileFor is a target's acknowledgement file, or "" without a project.
+func ackFileFor(dpgDir, cluster, key string) string {
+	if dpgDir == "" {
+		return ""
+	}
+	return filepath.Join(dpgDir, "acknowledged", cluster, key+".json")
 }
 
 // connectCluster connects to a cluster's own connection (its cluster-level
@@ -354,6 +381,7 @@ func runClusterApply(
 		},
 		live:    liveObjects(opts.ignore, true),
 		rules:   opts.ignore,
+		ackFile: ackFileFor(opts.dpgDir, cl.Name(), cl.ClusterSnapshotKey()),
 		desired: desired, stored: &stored, log: log, logErr: logErr, ops: ops,
 		meta: pipeline.MigrationMeta{GeneratedAt: time.Now().UTC(), SourceRevision: rev, Cluster: cl.Name(), SourceRoot: cl.ProjectRoot, Database: cl.ClusterSnapshotKey()},
 	}, opts)

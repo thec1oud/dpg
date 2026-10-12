@@ -14,6 +14,8 @@ import (
 	"github.com/thec1oud/dpg/internal/ledger"
 	"github.com/thec1oud/dpg/internal/migrationlog"
 	"github.com/thec1oud/dpg/internal/pipeline"
+	"github.com/thec1oud/dpg/internal/precondition"
+	"github.com/thec1oud/dpg/internal/project"
 	"github.com/thec1oud/dpg/internal/ui"
 )
 
@@ -57,11 +59,13 @@ func recordEntry(l *migrationlog.Log, e *migrationlog.Entry, file string, next *
 	}, nil
 }
 
-// renderFile renders a migration as its log file: with the ledger's
-// statements around it when the ledger is used, so any runner records it.
-func renderFile(m pipeline.Migration, led *ledger.Ledger, lm ledger.Migration) (string, error) {
+// renderFile renders a log entry as its file: its guards and steps, with
+// the ledger's statements around them when the ledger is used, so any
+// runner records it.
+func renderFile(e *migrationlog.Entry, meta pipeline.MigrationMeta, led *ledger.Ledger, log string) (string, error) {
+	m := e.Migration(meta, true, true)
 	if led != nil {
-		m = led.Wrap(m, lm)
+		m = led.Wrap(m, ledger.Of(log, e))
 	}
 	var b strings.Builder
 	if err := emit.Render(&b, m, emit.DefaultRenderOptions()); err != nil {
@@ -89,11 +93,11 @@ func writeBaseline(l *migrationlog.Log, store pipeline.SnapshotStore, cluster, k
 	}
 	next := *stored
 	next.Objects = copyObjects(stored.Objects)
-	e, err := migrationlog.New(l.Head(), migrationlog.StepsOf(m), migrationlog.OriginBaseline, nil, next.Objects, time.Now())
+	e, err := migrationlog.New(l.Head(), guardedSteps(m, next.Objects), migrationlog.OriginBaseline, nil, next.Objects, time.Now())
 	if err != nil {
 		return nil, err
 	}
-	file, err := renderFile(m, led, ledger.Of(key, e))
+	file, err := renderFile(e, meta, led, key)
 	if err != nil {
 		return nil, err
 	}
@@ -152,4 +156,80 @@ func recordInLedger(ctx context.Context, connect func() (*executor.PgxConn, erro
 		}
 	}
 	return nil
+}
+
+// guardedSteps are a migration's steps after its guards (RFC Section
+// 16.10). after is the snapshot objects it produces: they and the objects
+// it drops are the ones DPG manages.
+func guardedSteps(m pipeline.Migration, after map[string]json.RawMessage) []migrationlog.Step {
+	ops := append(append(append([]pipeline.DiffOp(nil), m.PreTransactional...), m.Transactional...), m.NonTransactional...)
+	managed := map[string]bool{}
+	for k := range after {
+		managed[k] = true
+	}
+	var runnable []pipeline.DiffOp
+	for _, op := range ops {
+		if to, ok := op.(pipeline.TargetedOp); ok && to.Target().Effect == pipeline.EffectDrop {
+			managed[to.Target().Key] = true
+		}
+		if op.Mode() != pipeline.ModeInstructionOnly {
+			runnable = append(runnable, op)
+		}
+	}
+	var steps []migrationlog.Step
+	for _, g := range precondition.Guards(ops, managed, executor.DistinctOwnerRoles(runnable)) {
+		steps = append(steps, migrationlog.Step{SQL: g, Safety: "SAFE", Stage: migrationlog.StageCheck})
+	}
+	return append(steps, migrationlog.StepsOf(m)...)
+}
+
+// logPosition finds a database's place in its migration log; the zero
+// value compares databases with the stored snapshot.
+type logPosition struct {
+	dir    string
+	ledger *ledger.Ledger
+}
+
+func logPositionFor(proj *project.Project) logPosition {
+	return logPosition{dir: proj.MigrationsDir(), ledger: ledgerFor(proj.RootConfig)}
+}
+
+// positioned returns the snapshot a database is expected to match: its
+// migration log replayed to the last migration its ledger records, and how
+// many of the log's migrations follow it. A database at the log's end, one
+// whose ledger records nothing, and a project without a ledger are
+// compared with the stored snapshot.
+func positioned(ctx context.Context, q pipeline.Querier, lp logPosition, cluster, key string, snap *pipeline.Snapshot) (*pipeline.Snapshot, int, error) {
+	if lp.dir == "" || lp.ledger == nil {
+		return snap, 0, nil
+	}
+	l, err := migrationlog.Load(migrationlog.Dir(lp.dir, cluster, key))
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(l.Entries) == 0 {
+		return snap, 0, nil
+	}
+	st, err := lp.ledger.Read(ctx, q, key)
+	if err != nil {
+		return nil, 0, ui.WrapDB(err)
+	}
+	head, err := st.Head()
+	if err != nil {
+		return nil, 0, err
+	}
+	if head == "" || head == l.Head() {
+		return snap, 0, nil
+	}
+	i := l.Index(head)
+	if i < 0 {
+		return nil, 0, fmt.Errorf("DPG-E050: the last migration this database ran, %s, isn't in the migration log", head)
+	}
+	objects, err := l.Replay(head)
+	if err != nil {
+		return nil, 0, err
+	}
+	at := *snap
+	at.Objects, at.Migration = objects, head
+	return &at, len(l.Entries) - i - 1, nil
 }
