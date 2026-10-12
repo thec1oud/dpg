@@ -2,43 +2,65 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
 	"strings"
 
+	"github.com/thec1oud/dpg/internal/diff"
 	"github.com/thec1oud/dpg/internal/ignore"
-	"github.com/thec1oud/dpg/internal/ir"
 	"github.com/thec1oud/dpg/internal/pipeline"
+	snapshotpkg "github.com/thec1oud/dpg/internal/snapshot"
 	"github.com/thec1oud/dpg/internal/ui"
 )
 
-// liveRoleNames returns the names of the roles in objs.
-func liveRoleNames(objs []pipeline.IRObject) []string {
-	var names []string
-	for _, o := range objs {
-		if r, ok := o.(*ir.Role); ok {
-			names = append(names, r.Name)
+// liveUndeclared splits the objects of a live snapshot that desired neither
+// declares nor renames from into roles and tablespaces (reported as
+// warnings) and other objects (unmanaged), each as "kind name".
+func liveUndeclared(snap *pipeline.Snapshot, desired []pipeline.IRObject) (warn, unmanaged []string) {
+	declared := map[string]bool{}
+	for _, o := range desired {
+		declared[o.QualifiedName()] = true
+		if k := diff.RenamedFromKey(o); k != "" {
+			declared[k] = true
 		}
 	}
-	return names
+	for key, raw := range snap.Objects {
+		if declared[key] {
+			continue
+		}
+		var so snapshotpkg.SnapObject
+		if err := json.Unmarshal(raw, &so); err != nil {
+			continue
+		}
+		kind, _, _, ok := snapshotpkg.Ident(&so)
+		if !ok || (kind == "schema" && key == "public") {
+			continue
+		}
+		switch kind {
+		case "role", "tablespace":
+			warn = append(warn, kind+" "+key)
+		default:
+			unmanaged = append(unmanaged, kind+" "+key)
+		}
+	}
+	sort.Strings(warn)
+	sort.Strings(unmanaged)
+	return warn, unmanaged
 }
 
-// printUndeclaredRoles warns about roles that exist in the database but that
-// DPG neither manages nor ignores (RFC Section 11.1). It is a warning, not
-// drift: roles are shared by everything on the cluster.
-func printUndeclaredRoles(w io.Writer, label string, names []string, color bool) {
-	if len(names) == 0 {
-		return
+// printUndeclared lists, after a dpg plan --live, the live objects the
+// source doesn't declare. They are left alone, never dropped.
+func printUndeclared(w io.Writer, label string, warn, unmanaged []string, color bool) {
+	if len(warn) > 0 {
+		fmt.Fprintf(w, "%s %s  %s\n  not declared: %s; declare them or add them to [ignore]\n\n",
+			ui.Yellow("warning", color), ui.Dim("[undeclared]", color), ui.Cyan(label, color), strings.Join(warn, ", "))
 	}
-	sort.Strings(names)
-	quoted := make([]string, len(names))
-	for i, n := range names {
-		quoted[i] = fmt.Sprintf("%q", n)
+	if len(unmanaged) > 0 {
+		fmt.Fprintf(w, "%s %s  %s\n  %d object(s) not declared, left alone: %s\n\n",
+			ui.Cyan("info", color), ui.Dim("[unmanaged]", color), ui.Cyan(label, color), len(unmanaged), strings.Join(unmanaged, ", "))
 	}
-	fmt.Fprintf(w, "%s %s  %s\n  roles not declared: %s; declare them or add them to [ignore] roles\n\n",
-		ui.Yellow("warning", color), ui.Dim("[undeclared-role]", color), ui.Cyan(label, color),
-		strings.Join(quoted, ", "))
 }
 
 // ignoringIntrospector drops objects matching rules from an introspection

@@ -16,6 +16,7 @@ import (
 
 	"github.com/thec1oud/dpg/internal/compiler"
 	"github.com/thec1oud/dpg/internal/diff"
+	"github.com/thec1oud/dpg/internal/drift"
 	"github.com/thec1oud/dpg/internal/emit"
 	"github.com/thec1oud/dpg/internal/executor"
 	"github.com/thec1oud/dpg/internal/introspect"
@@ -749,5 +750,37 @@ func applyFixture(
 	}
 	if err := store.Save("test", "dpgtest", snap); err != nil {
 		t.Fatalf("save snapshot: %v", err)
+	}
+	assertVerifyClean(t, ctx, conn, differ, snap, desired)
+}
+
+// assertVerifyClean asserts that dpg verify's drift detection finds no
+// drift right after an apply (RFC Section 18.3: only declared properties
+// are compared). Every applyFixture call checks it twice: comparing from
+// the source (the normal path) and with no source at all (the path taken
+// for an object whose source has changed since the snapshot).
+func assertVerifyClean(t *testing.T, ctx context.Context, conn *executor.PgxConn, differ pipeline.Differ, snap *pipeline.Snapshot, source []pipeline.IRObject) {
+	t.Helper()
+	live, err := introspect.New().Introspect(ctx, conn)
+	if err != nil {
+		t.Fatalf("introspect for verify: %v", err)
+	}
+	for _, path := range []struct {
+		name   string
+		source []pipeline.IRObject
+	}{{"source", source}, {"masked", nil}} {
+		report, err := drift.Detect(differ, live, snap, drift.Options{Source: path.source})
+		if err != nil {
+			t.Fatalf("drift (%s): %v", path.name, err)
+		}
+		for _, it := range report.Items {
+			if it.Group != drift.Drift {
+				continue
+			}
+			t.Errorf("verify right after apply (%s): %s %s (snapshot %q, live %q)", path.name, it.ID, it.Change, it.Snapshot, it.Live)
+			for _, s := range it.SQL {
+				t.Errorf("    %s", s)
+			}
+		}
 	}
 }

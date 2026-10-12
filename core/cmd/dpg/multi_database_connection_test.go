@@ -140,33 +140,17 @@ func TestMultiDatabaseClusterConnectsToCorrectDatabase(t *testing.T) {
 	// instead of mdb_b) or, worse, ever references table_a at all.
 	dbB.SourceFiles = []string{schemaBPath}
 	dbB.Dir = dbBOut
-	origStderr := os.Stderr
-	r, w, pipeErr := os.Pipe()
-	if pipeErr != nil {
-		t.Fatalf("os.Pipe: %v", pipeErr)
-	}
-	os.Stderr = w
-	_, err = runVerify(cl, dbB, store, introspect.New(), diff.New(), emit.New(), resolver, nil)
-	w.Close()
-	os.Stderr = origStderr
+	report, err := runVerify(cl, dbB, store, introspect.New(), diff.New(), resolver, nil)
 	if err != nil {
 		t.Fatalf("runVerify mdb_b: %v", err)
 	}
-	var captured strings.Builder
-	buf := make([]byte, 4096)
-	for {
-		n, readErr := r.Read(buf)
-		captured.Write(buf[:n])
-		if readErr != nil {
-			break
+	for _, it := range report.Items {
+		if strings.Contains(it.Object, "table_a") {
+			t.Errorf("runVerify(mdb_b) reported table_a — connected to the wrong database: %s", it.ID)
 		}
-	}
-	verifyOutput := captured.String()
-	if strings.Contains(verifyOutput, "table_a") {
-		t.Errorf("runVerify(mdb_b) output referenced table_a — connected to the wrong database:\n%s", verifyOutput)
-	}
-	if strings.Contains(verifyOutput, `CREATE TABLE "public"."table_b"`) {
-		t.Errorf("runVerify(mdb_b) thought table_b needed creating — it must already exist if connected to mdb_b:\n%s", verifyOutput)
+		if it.Object == "public.table_b" && it.Change == "missing" {
+			t.Errorf("runVerify(mdb_b) found table_b missing — it must exist if connected to mdb_b: %s", it.ID)
+		}
 	}
 
 	// --- apply: a new table declared in mdb_b's source must land in mdb_b

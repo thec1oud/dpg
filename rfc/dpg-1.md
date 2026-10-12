@@ -3407,8 +3407,10 @@ ROLE app_admin
    -   Removing a grant declaration emits nothing.  Revoking needs an
        explicit `REVOKES { }` entry (Section 11.3).
    -   Grants made outside DPG are not touched.  `dpg verify` reports a
-       declared grant missing from the live catalog, but not a live grant
-       DPG didn't declare.
+       declared grant missing from the live catalog as drift, and a live
+       grant DPG didn't declare as a warning (Section 20.2), except
+       grants to an ignored role (Section 3.9) and the privileges
+       PostgreSQL grants `PUBLIC` by default.
    -   Adding `WITH GRANT OPTION` emits `GRANT ... WITH GRANT OPTION`;
        removing it emits nothing (revoking the option is done manually).
 
@@ -5144,6 +5146,13 @@ Options:
   --database <name>      Target a specific database (default: all databases).
 ```
 
+   [DPG] With `--live`, an object in the live catalog that the source
+   doesn't declare is left alone: `dpg plan --live` never proposes
+   dropping it, and lists it after the migration (roles and tablespaces
+   as warnings, other objects as unmanaged).  The live catalog can't
+   tell an object removed from the source from one DPG never managed;
+   removing a declared object is planned against the snapshot.
+
    `dpg plan` always shows the full computed migration, including any
    `DESTRUCTIVE` operations — there is no `--allow-destructive` or
    `--no-color` flag on `plan`; those only gate `dpg apply` (Section 18.2),
@@ -5258,46 +5267,81 @@ Options:
 
 ### 18.3. dpg verify
 
-   Introspects the live database catalog and reports drift: any
-   divergence between the snapshot and the live state.
+   Introspects the live catalog and compares it with the snapshot
+   (Section 20.2).
 
 ```
-dpg verify [options] [<cluster>[/<database>]]
+dpg verify [options]
 
 Options:
-  --cluster <name>
-  --database <name>
+  --cluster <name>    Target a specific cluster (default: all clusters).
+  --database <name>   Target a specific database (default: all databases).
+  --format <fmt>      Output format: text (default), json.
 ```
 
-   The drift report is always printed as human-readable text (to stdout
-   when a database/cluster has no drift, to stderr with the computed SQL
-   otherwise) — there is no `--format` flag.
+   Each finding is an item in one of five groups:
 
-   **Drift detection model:**
+   -   **drift:** a declared object or property differs from the
+       snapshot, is missing from the live catalog, or a declared grant
+       or revocation no longer holds.
+   -   **conflict:** drift on a property the source has also changed
+       since the snapshot was written, to a different value.
+   -   **converged:** drift on a property the source has also changed,
+       to the value the live catalog already has; the snapshot is out
+       of date.
+   -   **unmanaged:** a live object the snapshot doesn't record.  Not
+       drift.
+   -   **warning:** a live role or tablespace the snapshot doesn't
+       record, or a live grant the source didn't declare.  Not drift.
 
-   -   **Reports:** any DPG-declared object property that is absent
-       from or differs in the live catalog.
+   Objects matching an `[ignore]` pattern (Section 3.9) are not
+   compared.  Every item has a stable ID:
+   `<kind>:<object>[/<property>]`, where `<object>` is the snapshot key
+   and `<property>` names a property (`connection_limit`), a sub-object
+   (`column:email`, `index:orders_status_idx`) or a grant
+   (`grant:SELECT:app_ro`, `column:email/grant:SELECT:app_ro`).  The
+   characters `/`, `:`, `%` and whitespace in a name are written as `%`
+   followed by two hexadecimal digits.
 
-   -   **Reports:** any DPG-declared grant that is absent from the
-       live catalog.
+   The text format groups the items per cluster and database and shows,
+   for each, the snapshot and live values and, when they can be computed,
+   the statements that would restore the declared state.  They can't be
+   computed for an object whose source declaration has changed since the
+   snapshot was written.  `--format json` prints
+   one document:
 
-   -   **Does NOT report:** extra grants present in the live catalog
-       but not declared in DPG source (additive model, Section 11.2).
+```json
+{
+  "drift": true,
+  "targets": [
+    {
+      "cluster": "production",
+      "database": "(cluster)",
+      "items": [
+        {
+          "id": "role:app_service/connection_limit",
+          "group": "drift",
+          "kind": "role",
+          "object": "app_service",
+          "property": "connection_limit",
+          "change": "changed",
+          "snapshot": "20",
+          "live": "50",
+          "sql": ["ALTER ROLE \"app_service\" CONNECTION LIMIT 20;"]
+        }
+      ]
+    }
+  ]
+}
+```
 
-   -   **Does NOT report:** objects present in the live catalog but
-       absent from DPG source (unmanaged objects).  A role is the one
-       exception: a live role that is neither in the snapshot nor
-       ignored is reported as a warning, which does not affect the exit
-       code (Section 11.1).
+   `change` is `changed`, `missing` (in the snapshot only), `extra`
+   (live only) or `regranted` (a privilege the source revokes is granted
+   live).
 
-   -   **Does NOT compare:** objects matching an `[ignore]` pattern
-       (Section 3.9).
-
-   Exit codes: 0 = no drift (warnings included); non-zero = drift was detected in at least
-   one targeted cluster/database, OR an error occurred (a connection
-   failure is reported the same way as drift — both produce a non-zero
-   exit; the two are distinguished only by the printed message, not by
-   a separate exit code).
+   Exit codes: 0 = no drift (unmanaged objects and warnings allowed);
+   1 = drift, a conflict or a converged item in at least one targeted
+   cluster or database; 2 = error.
 
 ### 18.4. dpg dump
 
@@ -5727,18 +5771,46 @@ serial-sequence-declared      = "off"
 
 ### 20.2. Drift Detection
 
-   The `dpg verify` command compares the snapshot with the live catalog:
+   `dpg verify` (Section 18.3) compares the live catalog with the
+   snapshot.  Only properties the snapshot records, which are the
+   properties the source declared, are compared, using the same
+   equivalence rules as `dpg plan`.  A property PostgreSQL reports but
+   the source never declared (an owner, a storage mode, a role
+   attribute left at its default) is never drift.
 
-   1.  Introspect the live catalog → produce the live state as IR objects.
-   2.  Load the committed snapshot → produce the snapshot state as IR objects.
-   3.  Compute the diff between snapshot state (desired) and live state
-       (current) — i.e., treat the snapshot as the "desired" input and
-       the live catalog as the "snapshot" input to the Differ.
-   4.  Any non-empty DiffOps represent drift.
+   1.  Introspect the live catalog and remove ignored objects (Section
+       3.9) from it and from the snapshot.
+   2.  For each snapshot entry, find the live object with the same
+       key.  None: the object is missing (drift).  Otherwise, compare
+       each property the entry records with the live value.  A
+       sub-object (column, constraint, index, trigger, policy,
+       partition, ...) the snapshot doesn't record is drift on its
+       object.  An unnamed constraint in the source is matched with
+       the constraint PostgreSQL named for it.
+   3.  [PG] A value the catalog can't show is never compared: role
+       passwords, subscription `CONNECTION`, password options of a user
+       mapping.  For an object PostgreSQL reconstructs from the catalog
+       rather than storing as source text, its structured properties
+       are compared instead of its text.
+   4.  Grants are compared privilege by privilege and role by role; a
+       declared `ALL` holds when the role has every privilege of the
+       object kind.
+   5.  A live object with no snapshot entry is unmanaged, or a warning
+       for a role or tablespace.
 
-   **Grant drift:** Report as drift any DPG-declared grant absent from
-   the live catalog.  Do NOT report extra grants present in the live
-   catalog.
+   **Drift policies.**
+
+   | Object | Missing live | Changed | Extra live |
+   |--------|--------------|---------|------------|
+   | Role, tablespace | drift | drift | warning |
+   | Role membership of a declared role | drift | drift | drift |
+   | Grant | drift | — | warning |
+   | Privilege named in `REVOKES { }` | — | granted live: drift | — |
+   | Other top-level object | drift | drift | unmanaged |
+   | Sub-object (column, constraint, index, trigger, policy, partition, enum value, ...) | drift | drift | drift |
+
+   [DPG] A virtual type (Section 5.6) exists only in the source and the
+   snapshot and is never compared.
 
 ---
 

@@ -130,4 +130,4 @@ GRANT EXECUTE ON FUNCTION "public"."..." TO "app_readonly", "app_service";
 
 ## Drift detection behaviour
 
-`dpg verify` reports as drift any DPG-declared grant absent from the live catalog. It does not report extra grants present in the live catalog but absent from source.
+`dpg verify` reports as drift any DPG-declared grant absent from the live catalog, and any privilege a `REVOKES { }` entry removes that has been granted again. A grant present in the live catalog but absent from source is reported as a warning, never as drift; grants to roles listed under `[ignore]` and the privileges PostgreSQL gives `PUBLIC` by default are not reported. See [Drift Detection](../../migrations/drift-detection/).

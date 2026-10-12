@@ -348,7 +348,8 @@ func toSnapObject(obj pipeline.IRObject) *SnapObject {
 			CollationStructured: true, CollationProvider: o.Provider,
 			CollationCollate: o.Collate, CollationCtype: o.Ctype, CollationICULocale: o.ICULocale,
 			CollationDeterministic: o.Deterministic, CollationOwner: o.Owner, CollationRules: o.Rules,
-			BodyHash: sourceBodyHash(o.Body, o.Reconstructed), Comment: o.Comment,
+			CollationCopyFrom: o.CopyFrom,
+			BodyHash:          sourceBodyHash(o.Body, o.Reconstructed), Comment: o.Comment,
 		}}
 	case *ir.Operator:
 		return &SnapObject{Kind: "operator", Opaque: &SnapOpaque{
@@ -392,6 +393,7 @@ func toSnapObject(obj pipeline.IRObject) *SnapObject {
 			OperatorClassMembersStructured: true, OperatorClassMembers: toSnapOpFamilyMembers(o.Members),
 			OperatorClassStorageType:  o.StorageType,
 			OperatorClassFamilySchema: famSchema, OperatorClassFamilyName: famName,
+			OperatorClassFamilyImplicit: o.FamilyName == "",
 		}}
 	case *ir.OperatorFamily:
 		// Members are populated unconditionally, never routed through
@@ -1103,3 +1105,7 @@ func IdentOf(obj pipeline.IRObject) (kind, schema, name string, ok bool) {
 	}
 	return Ident(so)
 }
+
+// ToSnapObject returns obj's snapshot form, or nil for kinds the snapshot
+// doesn't record.
+func ToSnapObject(obj pipeline.IRObject) *SnapObject { return toSnapObject(obj) }

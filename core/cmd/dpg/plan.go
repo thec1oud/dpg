@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,7 +15,6 @@ import (
 	"github.com/thec1oud/dpg/internal/emit"
 	"github.com/thec1oud/dpg/internal/executor"
 	"github.com/thec1oud/dpg/internal/ignore"
-	"github.com/thec1oud/dpg/internal/ir"
 	"github.com/thec1oud/dpg/internal/linter"
 	"github.com/thec1oud/dpg/internal/pipeline"
 	"github.com/thec1oud/dpg/internal/project"
@@ -273,6 +271,10 @@ func buildPlan(
 	if err := rules.FilterSnapshot(snap); err != nil {
 		return pipeline.Migration{}, err
 	}
+	if snap.Live {
+		warn, unmanaged := liveUndeclared(snap, desired)
+		printUndeclared(os.Stderr, cl.Name()+"/"+db.Name(), warn, unmanaged, errColor)
+	}
 
 	lintCfg.Snapshot = snap
 	diags := linter.FilterMergeDiagnostics(mergeDiags, lintCfg)
@@ -352,21 +354,8 @@ func buildClusterPlan(
 		return pipeline.Migration{}, err
 	}
 	if snap.Live {
-		declared := map[string]bool{}
-		for _, o := range desired {
-			declared[o.QualifiedName()] = true
-			if r, ok := o.(*ir.Role); ok && r.RenamedFrom != nil {
-				declared[*r.RenamedFrom] = true
-			}
-		}
-		var undeclared []string
-		for key, raw := range snap.Objects {
-			var so snapshotpkg.SnapObject
-			if err := json.Unmarshal(raw, &so); err == nil && so.Role != nil && !declared[key] {
-				undeclared = append(undeclared, so.Role.Name)
-			}
-		}
-		printUndeclaredRoles(os.Stderr, cl.Name()+" (cluster)", undeclared, errColor)
+		warn, unmanaged := liveUndeclared(snap, desired)
+		printUndeclared(os.Stderr, cl.Name()+" (cluster)", warn, unmanaged, errColor)
 	}
 
 	diags := linter.FilterMergeDiagnostics(mergeDiags, lintCfg)

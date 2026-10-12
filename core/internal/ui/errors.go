@@ -14,6 +14,26 @@ import (
 // additional.
 var ErrSilent = errors.New("")
 
+// ExitError carries the process exit code for Err. Commands with more than
+// one non-zero outcome use it (dpg verify: 1 = drift, 2 = error).
+type ExitError struct {
+	Code int
+	Err  error
+}
+
+func (e *ExitError) Error() string { return e.Err.Error() }
+func (e *ExitError) Unwrap() error { return e.Err }
+
+// ExitCode returns the exit code for a command's error: an ExitError's
+// code, else 1.
+func ExitCode(err error) int {
+	var ee *ExitError
+	if errors.As(err, &ee) {
+		return ee.Code
+	}
+	return 1
+}
+
 // DBError tags a database-origin error so the UI can distinguish it from DPG
 // source errors and show a different heading.
 type DBError struct{ Err error }

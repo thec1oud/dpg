@@ -13,6 +13,7 @@ import (
 
 	"github.com/thec1oud/dpg/internal/config"
 	"github.com/thec1oud/dpg/internal/diff"
+	"github.com/thec1oud/dpg/internal/drift"
 	"github.com/thec1oud/dpg/internal/emit"
 	"github.com/thec1oud/dpg/internal/executor"
 	"github.com/thec1oud/dpg/internal/ignore"
@@ -108,34 +109,24 @@ func TestIgnoreAndUndeclaredRolesLive(t *testing.T) {
 	dbRules := ignore.New(map[string][]string{"schema": {"cron"}})
 
 	// verify, cluster: undeclared roles warn, they are not drift; ignored
-	// roles are not mentioned at all.
-	var drift bool
-	stderr := captureStderr(t, func() {
-		drift, err = runVerifyCluster(cl, store, introspect.New(), diff.New(), emit.New(), resolver, clusterRules)
-	})
+	// roles and the bootstrap superuser are not mentioned at all.
+	report, err := runVerifyCluster(cl, store, introspect.New(), diff.New(), resolver, clusterRules)
 	if err != nil {
 		t.Fatalf("verify cluster: %v", err)
 	}
-	if drift {
-		t.Errorf("an undeclared role must not be drift; output:\n%s", stderr)
-	}
-	if !strings.Contains(stderr, `"other_app"`) || strings.Contains(stderr, "rds_admin") || strings.Contains(stderr, `"dpg"`) {
-		t.Errorf("expected a warning naming other_app only, got:\n%s", stderr)
+	if got := itemIDs(report, ""); got != "warning role:other_app" {
+		t.Errorf("verify cluster: got %q, want only the other_app warning", got)
 	}
 
-	// verify, database: the ignored schema and its table are not drift;
-	// without the rule they are.
-	stderr = captureStderr(t, func() {
-		drift, err = runVerify(cl, db, store, introspect.New(), diff.New(), emit.New(), resolver, dbRules)
-	})
-	if err != nil || drift {
-		t.Errorf("ignored schema reported as drift (err %v):\n%s", err, stderr)
+	// verify, database: the ignored schema and its table are not reported;
+	// without the rule they are unmanaged, which is not drift.
+	report, err = runVerify(cl, db, store, introspect.New(), diff.New(), resolver, dbRules)
+	if err != nil || len(report.Items) != 0 {
+		t.Errorf("ignored schema reported (err %v): %q", err, itemIDs(report, ""))
 	}
-	stderr = captureStderr(t, func() {
-		drift, err = runVerify(cl, db, store, introspect.New(), diff.New(), emit.New(), resolver, nil)
-	})
-	if err != nil || !drift || !strings.Contains(stderr, "cron") {
-		t.Errorf("without [ignore], cron must be drift (err %v, drift %v):\n%s", err, drift, stderr)
+	report, err = runVerify(cl, db, store, introspect.New(), diff.New(), resolver, nil)
+	if err != nil || report.HasDrift() || !strings.Contains(itemIDs(report, ""), "unmanaged schema:cron") {
+		t.Errorf("without [ignore], cron must be unmanaged, not drift (err %v): %q", err, itemIDs(report, ""))
 	}
 
 	// plan --live, cluster: empty plan, the same warning.
@@ -144,7 +135,7 @@ func TestIgnoreAndUndeclaredRolesLive(t *testing.T) {
 		t.Fatalf("introspectClusterSnapshot: %v", err)
 	}
 	var m pipeline.Migration
-	stderr = captureStderr(t, func() {
+	stderr := captureStderr(t, func() {
 		m, err = buildClusterPlan(cl, liveSnap, diff.New(), emit.New(), pipeline.LinterConfig{}, "text", clusterRules)
 	})
 	if err != nil {
@@ -153,7 +144,7 @@ func TestIgnoreAndUndeclaredRolesLive(t *testing.T) {
 	for _, op := range append(append(m.PreTransactional, m.Transactional...), m.NonTransactional...) {
 		t.Errorf("expected an empty plan, got: %s", op.SQL())
 	}
-	if !strings.Contains(stderr, `"other_app"`) || strings.Contains(stderr, "rds_admin") {
+	if !strings.Contains(stderr, "role other_app") || strings.Contains(stderr, "rds_admin") {
 		t.Errorf("plan --live: expected a warning naming other_app only, got:\n%s", stderr)
 	}
 
@@ -185,10 +176,25 @@ func TestIgnoreAndUndeclaredRolesLive(t *testing.T) {
 
 	// A declared role dropped outside DPG is still drift.
 	exec(`DROP ROLE app_service`)
-	stderr = captureStderr(t, func() {
-		drift, err = runVerifyCluster(cl, store, introspect.New(), diff.New(), emit.New(), resolver, clusterRules)
-	})
-	if err != nil || !drift || !strings.Contains(stderr, "app_service") {
-		t.Errorf("a dropped declared role must be drift (err %v, drift %v):\n%s", err, drift, stderr)
+	report, err = runVerifyCluster(cl, store, introspect.New(), diff.New(), resolver, clusterRules)
+	if err != nil || !report.HasDrift() || !strings.Contains(itemIDs(report, "drift"), "role:app_service") {
+		t.Errorf("a dropped declared role must be drift (err %v): %q", err, itemIDs(report, ""))
 	}
+}
+
+// itemIDs lists "group id" for each item, or only the IDs of group when
+// group is not "".
+func itemIDs(r *drift.Report, group string) string {
+	if r == nil {
+		return ""
+	}
+	var out []string
+	for _, it := range r.Items {
+		if group == "" {
+			out = append(out, it.Group.String()+" "+it.ID)
+		} else if it.Group.String() == group {
+			out = append(out, it.ID)
+		}
+	}
+	return strings.Join(out, ", ")
 }

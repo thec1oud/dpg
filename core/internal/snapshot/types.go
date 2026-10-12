@@ -210,6 +210,10 @@ type SnapOpaque struct {
 	// CollationRules is RFC audit item #111's PG16+ ICU RULES diffing
 	// input — see ir.Collation.Rules' doc comment.
 	CollationRules *string `json:"collation_rules,omitempty"`
+	// CollationCopyFrom is the collation a FROM declaration copied
+	// (RFC Section 14.2). Its other Collation* fields are then not the
+	// collation's real properties and are never compared.
+	CollationCopyFrom *string `json:"collation_copy_from,omitempty"`
 	// SubscriptionOwner is Section 13.2's ALTER SUBSCRIPTION ... OWNER TO
 	// diffing input — same shape as CollationOwner above.
 	SubscriptionOwner *string `json:"subscription_owner,omitempty"`
@@ -279,6 +283,11 @@ type SnapOpaque struct {
 	// it wouldn't otherwise show up in Members/StorageType.
 	OperatorClassFamilySchema string `json:"operator_class_family_schema,omitempty"`
 	OperatorClassFamilyName   string `json:"operator_class_family_name,omitempty"`
+	// OperatorClassFamilyImplicit records that the source declared no
+	// FAMILY clause: the family schema and name above are then the class's
+	// own at creation, and PostgreSQL leaves that family behind when the
+	// class later moves to another schema.
+	OperatorClassFamilyImplicit bool `json:"operator_class_family_implicit,omitempty"`
 	// AggregateOptionsStructured/AggregateOptions mirror
 	// OperatorClassMembersStructured/OperatorClassMembers above, for a CREATE
 	// AGGREGATE's SFUNC/STYPE/INITCOND/... option list (see

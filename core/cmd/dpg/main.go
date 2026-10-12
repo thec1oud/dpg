@@ -46,7 +46,7 @@ func main() {
 		if !errors.Is(err, ui.ErrSilent) {
 			ui.PrintError(os.Stderr, err, ui.IsColorEnabled(os.Stderr))
 		}
-		os.Exit(1)
+		os.Exit(ui.ExitCode(err))
 	}
 }
 

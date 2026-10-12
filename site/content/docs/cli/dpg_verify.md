@@ -10,14 +10,15 @@ Check the live database for drift against the snapshot
 ### Synopsis
 
 Introspects the live database catalog and compares it against the committed
-snapshot. Reports any objects that differ from the declared state (drift).
-
-A role that exists in the cluster but is not in the snapshot is reported as
-a warning, not drift. Objects matching an [ignore] pattern in dpg.toml are
+snapshot. Only properties the source declares are compared. Reports drift
+(declared objects or properties that differ, including conflicts with source
+changes not yet applied), unmanaged objects (live objects DPG doesn't
+manage) and warnings (roles and tablespaces DPG doesn't declare, grants it
+didn't make). Objects matching an [ignore] pattern in dpg.toml are
 not compared.
 
-Exits 0 when no drift is detected (warnings included). Exits 1 when drift
-is found.
+Exits 0 when there is no drift (unmanaged objects and warnings allowed),
+1 when drift is found, 2 on error.
 
 ```
 dpg verify [flags]
@@ -28,6 +29,7 @@ dpg verify [flags]
 ```
       --cluster string    cluster to verify (required when multiple clusters exist)
       --database string   database to verify (required when multiple databases exist)
+      --format string     output format: text or json (default "text")
   -h, --help              help for verify
 ```
 

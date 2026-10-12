@@ -14956,23 +14956,29 @@ func TestDiffRolePasswordNotComparedAgainstLiveSnapshot(t *testing.T) {
 	}
 }
 
-// TestDiffLiveSnapshotLeavesUndeclaredRolesAlone: against a live snapshot, a
-// role DPG doesn't declare (the connecting role, another application's role)
-// is not dropped. Against a stored snapshot, a removed declaration still is.
-func TestDiffLiveSnapshotLeavesUndeclaredRolesAlone(t *testing.T) {
+// TestDiffLiveSnapshotLeavesUndeclaredObjectsAlone: against a live
+// snapshot, an object DPG doesn't declare (the connecting role, another
+// application's role or table) is unmanaged, not dropped. Against a stored
+// snapshot, a removed declaration still is.
+func TestDiffLiveSnapshotLeavesUndeclaredObjectsAlone(t *testing.T) {
 	for _, live := range []bool{true, false} {
 		snap := &pipeline.Snapshot{Live: live}
 		_ = snap.SetObject("other_app", &snapshot.SnapObject{
 			Kind: "role",
 			Role: &snapshot.SnapRole{Name: "other_app"},
 		})
+		_ = snap.SetObject("public.audit", &snapshot.SnapObject{
+			Kind:  "table",
+			Table: &snapshot.SnapTable{Schema: "public", Name: "audit"},
+		})
 		ops, err := New().Diff(nil, snap)
 		if err != nil {
 			t.Fatal(err)
 		}
-		dropped := containsSQL(ops, `DROP ROLE IF EXISTS "other_app";`)
-		if dropped == live {
-			t.Errorf("live=%v: dropped=%v, got: %v", live, dropped, sqlList(ops))
+		for _, want := range []string{`DROP ROLE IF EXISTS "other_app";`, `DROP TABLE IF EXISTS "public"."audit";`} {
+			if dropped := containsSQL(ops, want); dropped == live {
+				t.Errorf("live=%v: %s dropped=%v, got: %v", live, want, dropped, sqlList(ops))
+			}
 		}
 	}
 }

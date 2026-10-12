@@ -253,10 +253,11 @@ func (d *Differ) Diff(desired []pipeline.IRObject, snap *pipeline.Snapshot) ([]p
 		if so.Kind == "schema" && so.Schema != nil && so.Schema.Name == "public" {
 			continue
 		}
-		// Roles are shared by every database and application on the
-		// cluster, so a live role DPG doesn't declare is left alone; only a
-		// role removed from the stored snapshot is dropped.
-		if snap.Live && so.Kind == "role" {
+		// Against the live catalog, an object the source doesn't declare is
+		// unmanaged, never dropped (RFC Section 18.1): the catalog can't
+		// tell "removed from source" from "never managed by DPG". Only a
+		// declaration removed since the stored snapshot is dropped.
+		if snap.Live {
 			continue
 		}
 		ops = append(ops, dropObject(&so)...)
@@ -481,6 +482,10 @@ func legacyTypeNameBeforeFix(resolvedType string) string {
 
 // renamedFromKey returns the snapshot key under the OLD name for objects that
 // carry a RENAMED FROM directive. Returns "" if the object has no such field.
+// RenamedFromKey returns the snapshot key obj declares it was renamed from
+// (RENAMED FROM), or "".
+func RenamedFromKey(obj pipeline.IRObject) string { return renamedFromKey(obj) }
+
 func renamedFromKey(obj pipeline.IRObject) string {
 	switch o := obj.(type) {
 	case *ir.Table:

@@ -2,101 +2,74 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/thec1oud/dpg/internal/emit"
+	"github.com/thec1oud/dpg/internal/compiler"
+	"github.com/thec1oud/dpg/internal/drift"
 	"github.com/thec1oud/dpg/internal/executor"
 	"github.com/thec1oud/dpg/internal/ignore"
-	"github.com/thec1oud/dpg/internal/ir"
 	"github.com/thec1oud/dpg/internal/pipeline"
 	"github.com/thec1oud/dpg/internal/project"
-	"github.com/thec1oud/dpg/internal/snapshot"
 	"github.com/thec1oud/dpg/internal/ui"
 )
+
+// verifyTarget is one compared cluster or database.
+type verifyTarget struct {
+	Cluster  string
+	Database string // "(cluster)" for cluster-level objects
+	Report   *drift.Report
+}
 
 func newVerifyCmd() *cobra.Command {
 	var (
 		clusterName  string
 		databaseName string
+		format       string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "verify",
 		Short: "Check the live database for drift against the snapshot",
 		Long: `Introspects the live database catalog and compares it against the committed
-snapshot. Reports drift, including DPG-managed grants missing from the live
-catalog, and exits 1 when drift is found.
+snapshot. Only properties the source declares are compared. Reports drift
+(declared objects or properties that differ, including conflicts with source
+changes not yet applied), unmanaged objects (live objects DPG doesn't
+manage) and warnings (roles and tablespaces DPG doesn't declare, grants it
+didn't make). Objects matching an [ignore] pattern in dpg.toml are
+not compared.
 
-Extra grants present in the live catalog but absent from DPG source are
-not reported (additive grant model). A role that exists in the cluster but
-is not in the snapshot is reported as a warning, not drift. Objects matching
-an [ignore] pattern in dpg.toml are not compared.`,
+Exits 0 when there is no drift (unmanaged objects and warnings allowed),
+1 when drift is found, 2 on error.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			proj, err := discoverProject()
-			if err != nil {
-				return err
+			if format != "text" && format != "json" {
+				return &ui.ExitError{Code: 2, Err: fmt.Errorf("--format must be text or json, got %q", format)}
 			}
-			loadEnv(proj, envFile)
-
-			clusters, err := resolveClusters(proj, clusterName)
+			targets, err := runVerifyAll(clusterName, databaseName)
 			if err != nil {
-				return err
+				return &ui.ExitError{Code: 2, Err: err}
 			}
-
-			store, err := pipeline.MustResolve[pipeline.SnapshotStore](pipeline.Default, pipeline.KeySnapshotStore)
-			if err != nil {
-				return err
-			}
-			introspector, err := pipeline.MustResolve[pipeline.Introspector](pipeline.Default, pipeline.KeyIntrospector)
-			if err != nil {
-				return err
-			}
-			differ, err := pipeline.MustResolve[pipeline.Differ](pipeline.Default, pipeline.KeyDiffer)
-			if err != nil {
-				return err
-			}
-			emitter, err := pipeline.MustResolve[pipeline.Emitter](pipeline.Default, pipeline.KeyEmitter)
-			if err != nil {
-				return err
-			}
-			secretResolver, err := pipeline.MustResolve[pipeline.SecretResolver](pipeline.Default, pipeline.KeySecretResolver)
-			if err != nil {
-				return err
-			}
-
-			driftFound := false
-			for _, cl := range clusters {
-				if len(cl.SourceFiles) > 0 {
-					hasDrift, err := runVerifyCluster(cl, store, introspector, differ, emitter, secretResolver,
-						ignore.New(cl.EffectiveIgnore(proj.RootConfig)))
-					if err != nil {
-						return fmt.Errorf("%s (cluster): %w", cl.Name(), err)
-					}
-					if hasDrift {
-						driftFound = true
-					}
-				}
-
-				databases, err := resolveDatabases(cl, databaseName)
-				if err != nil {
-					return err
-				}
-				for _, db := range databases {
-					hasDrift, err := runVerify(cl, db, store, introspector, differ, emitter, secretResolver,
-						ignore.New(db.EffectiveIgnore(cl, proj.RootConfig)))
-					if err != nil {
-						return fmt.Errorf("%s/%s: %w", cl.Name(), db.Name(), err)
-					}
-					if hasDrift {
-						driftFound = true
-					}
+			hasDrift := false
+			for _, t := range targets {
+				if t.Report.HasDrift() {
+					hasDrift = true
 				}
 			}
-			if driftFound {
-				return fmt.Errorf("drift detected")
+			if format == "json" {
+				if err := renderVerifyJSON(os.Stdout, targets, hasDrift); err != nil {
+					return &ui.ExitError{Code: 2, Err: err}
+				}
+			} else {
+				renderVerifyText(os.Stdout, targets, ui.IsColorEnabled(os.Stdout))
+			}
+			if hasDrift {
+				return &ui.ExitError{Code: 1, Err: ui.ErrSilent}
 			}
 			return nil
 		},
@@ -104,166 +77,327 @@ an [ignore] pattern in dpg.toml are not compared.`,
 
 	cmd.Flags().StringVar(&clusterName, "cluster", "", "cluster to verify (required when multiple clusters exist)")
 	cmd.Flags().StringVar(&databaseName, "database", "", "database to verify (required when multiple databases exist)")
+	cmd.Flags().StringVar(&format, "format", "text", "output format: text or json")
 
 	return cmd
 }
 
+// runVerifyAll verifies every targeted cluster and database.
+func runVerifyAll(clusterName, databaseName string) ([]verifyTarget, error) {
+	proj, err := discoverProject()
+	if err != nil {
+		return nil, err
+	}
+	loadEnv(proj, envFile)
+
+	clusters, err := resolveClusters(proj, clusterName)
+	if err != nil {
+		return nil, err
+	}
+	store, err := pipeline.MustResolve[pipeline.SnapshotStore](pipeline.Default, pipeline.KeySnapshotStore)
+	if err != nil {
+		return nil, err
+	}
+	introspector, err := pipeline.MustResolve[pipeline.Introspector](pipeline.Default, pipeline.KeyIntrospector)
+	if err != nil {
+		return nil, err
+	}
+	differ, err := pipeline.MustResolve[pipeline.Differ](pipeline.Default, pipeline.KeyDiffer)
+	if err != nil {
+		return nil, err
+	}
+	secretResolver, err := pipeline.MustResolve[pipeline.SecretResolver](pipeline.Default, pipeline.KeySecretResolver)
+	if err != nil {
+		return nil, err
+	}
+
+	var targets []verifyTarget
+	for _, cl := range clusters {
+		if len(cl.SourceFiles) > 0 {
+			r, err := runVerifyCluster(cl, store, introspector, differ, secretResolver,
+				ignore.New(cl.EffectiveIgnore(proj.RootConfig)))
+			if err != nil {
+				return nil, fmt.Errorf("%s (cluster): %w", cl.Name(), err)
+			}
+			targets = append(targets, verifyTarget{Cluster: cl.Name(), Database: "(cluster)", Report: r})
+		}
+		databases, err := resolveDatabases(cl, databaseName)
+		if err != nil {
+			return nil, err
+		}
+		for _, db := range databases {
+			r, err := runVerify(cl, db, store, introspector, differ, secretResolver,
+				ignore.New(db.EffectiveIgnore(cl, proj.RootConfig)))
+			if err != nil {
+				return nil, fmt.Errorf("%s/%s: %w", cl.Name(), db.Name(), err)
+			}
+			targets = append(targets, verifyTarget{Cluster: cl.Name(), Database: db.Name(), Report: r})
+		}
+	}
+	return targets, nil
+}
+
+// runVerify compares one database's objects with its snapshot.
 func runVerify(
 	cl *project.Cluster,
 	db *project.Database,
 	store pipeline.SnapshotStore,
 	introspector pipeline.Introspector,
 	differ pipeline.Differ,
-	emitter pipeline.Emitter,
 	secretResolver pipeline.SecretResolver,
 	rules *ignore.Rules,
-) (bool, error) {
+) (*drift.Report, error) {
 	ctx := context.Background()
-	errColor := ui.IsColorEnabled(os.Stderr)
 
 	snap, err := store.Load(cl.Name(), db.Name())
 	if err != nil {
-		return false, fmt.Errorf("load snapshot: %w", err)
+		return nil, fmt.Errorf("load snapshot: %w", err)
 	}
 	if err := rules.FilterSnapshot(snap); err != nil {
-		return false, err
+		return nil, err
 	}
 
 	conn, err := connectDatabase(ctx, cl, db, secretResolver)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	defer conn.Close(ctx)
 
 	liveObjects, err := introspector.Introspect(ctx, conn)
 	if err != nil {
-		return false, ui.WrapDB(fmt.Errorf("introspect: %w", err))
+		return nil, ui.WrapDB(fmt.Errorf("introspect: %w", err))
 	}
 
-	// Exclude cluster-level objects (roles, tablespaces); they are verified
-	// against the cluster snapshot, not the database snapshot.
-	databaseObjects := rules.FilterObjects(excludeClusterScoped(liveObjects))
-
-	liveSnap := &pipeline.Snapshot{}
-	if err := snapshot.Populate(liveSnap, databaseObjects); err != nil {
-		return false, fmt.Errorf("build live snapshot: %w", err)
-	}
-
-	ops, err := differ.Diff(databaseObjects, snap)
+	source, _, err := compiler.CompileWith(db.SourceFiles, db.Dir, pipeline.Default, dbCompileOptions(db))
 	if err != nil {
-		return false, fmt.Errorf("diff: %w", err)
+		return nil, err
 	}
 
-	if len(ops) == 0 {
-		ui.PrintInfo(os.Stdout, cl.Name()+"/"+db.Name(), "no drift detected", ui.IsColorEnabled(os.Stdout))
-		return false, nil
-	}
-
-	fmt.Fprintf(os.Stderr, "%s  %s\n\n",
-		ui.Red("drift detected", errColor),
-		ui.Cyan(cl.Name()+"/"+db.Name(), errColor),
-	)
-	migration, _ := emitter.Emit(ops, pipeline.MigrationMeta{
-		Cluster:    cl.Name(),
-		SourceRoot: cl.ProjectRoot,
-		Database:   db.Name(),
-	})
-	_ = emit.Render(os.Stderr, migration, emit.RenderOptions{
-		ShowSafety:    true,
-		ShowSourcePos: true,
-		Color:         errColor,
-	})
-	return true, nil
+	// Cluster-level objects (roles, tablespaces) are verified against the
+	// cluster snapshot, not the database snapshot.
+	live := rules.FilterObjects(excludeClusterScoped(liveObjects))
+	return drift.Detect(differ, live, snap, drift.Options{Ignore: rules, Source: rules.FilterObjects(source)})
 }
 
-// runVerifyCluster checks cluster-level objects (roles, tablespaces) for drift.
+// runVerifyCluster compares cluster-level objects (roles, tablespaces) with
+// the cluster snapshot.
 func runVerifyCluster(
 	cl *project.Cluster,
 	store pipeline.SnapshotStore,
 	introspector pipeline.Introspector,
 	differ pipeline.Differ,
-	emitter pipeline.Emitter,
 	secretResolver pipeline.SecretResolver,
 	rules *ignore.Rules,
-) (bool, error) {
+) (*drift.Report, error) {
 	ctx := context.Background()
-	errColor := ui.IsColorEnabled(os.Stderr)
 
 	snap, err := store.Load(cl.Name(), cl.ClusterSnapshotKey())
 	if err != nil {
-		return false, fmt.Errorf("load snapshot: %w", err)
+		return nil, fmt.Errorf("load snapshot: %w", err)
 	}
 	if err := rules.FilterSnapshot(snap); err != nil {
-		return false, err
+		return nil, err
 	}
 
 	connStr := cl.ConnectionString()
 	if connStr == "" {
-		return false, fmt.Errorf("DPG-E003: cluster %q has no connection configured (set url or link in cluster dpg.toml)", cl.Name())
+		return nil, fmt.Errorf("DPG-E003: cluster %q has no connection configured (set url or link in cluster dpg.toml)", cl.Name())
 	}
 	if cl.IsLink() {
 		connStr, err = secretResolver.Resolve(connStr)
 		if err != nil {
-			return false, ui.WrapDB(fmt.Errorf("resolve connection secret: %w", err))
+			return nil, ui.WrapDB(fmt.Errorf("resolve connection secret: %w", err))
 		}
 	}
-
 	conn, err := executor.Connect(ctx, connStr)
 	if err != nil {
-		return false, ui.WrapDB(err)
+		return nil, ui.WrapDB(withMissingDatabaseHint(err))
 	}
 	defer conn.Close(ctx)
 
 	allObjects, err := introspector.Introspect(ctx, conn)
 	if err != nil {
-		return false, ui.WrapDB(fmt.Errorf("introspect: %w", err))
+		return nil, ui.WrapDB(fmt.Errorf("introspect: %w", err))
 	}
 
-	// Retain only cluster-level objects (roles, tablespaces). This must match
-	// dump's routing (isClusterScoped): database-scoped schemaless objects like
-	// FDWs and publications belong to the database, not the cluster.
-	// A live role missing from the snapshot was created outside DPG; roles
-	// are shared by everything on the cluster, so it is a warning, not drift.
-	var clusterObjects []pipeline.IRObject
-	var undeclared []string
+	// Only cluster-level objects, matching dump's routing (isClusterScoped):
+	// database-scoped schemaless objects like FDWs and publications belong
+	// to the database.
+	var live []pipeline.IRObject
 	for _, obj := range rules.FilterObjects(allObjects) {
-		if !isClusterScoped(obj) {
+		if isClusterScoped(obj) {
+			live = append(live, obj)
+		}
+	}
+	source, _, err := compiler.Compile(cl.SourceFiles, cl.ObjectsDir, pipeline.Default)
+	if err != nil {
+		return nil, err
+	}
+	return drift.Detect(differ, live, snap, drift.Options{Ignore: rules, Source: rules.FilterObjects(source)})
+}
+
+// describeItem is the one-line description of an item.
+func describeItem(it drift.Item) string {
+	switch it.Change {
+	case "missing":
+		if it.Property == "" {
+			return "missing from the database"
+		}
+		if it.Snapshot != "" {
+			return "missing: " + it.Snapshot
+		}
+		return "missing from the database"
+	case "extra":
+		switch {
+		case it.Property == "" && it.Group == drift.Warning:
+			return "exists in the database but is not declared"
+		case it.Property == "":
+			return "exists in the database but is not in the snapshot"
+		case it.Live != "":
+			return "only in the database: " + it.Live
+		}
+		return "only in the database"
+	case "regranted":
+		return "revoked in the source, granted in the database: " + it.Live
+	}
+	if d := objectDifferences(it.Snapshot, it.Live); d != "" {
+		return d
+	}
+	if it.Snapshot != "" || it.Live != "" {
+		return fmt.Sprintf("snapshot %s, database %s", orNone(it.Snapshot), orNone(it.Live))
+	}
+	return "differs from the snapshot"
+}
+
+// objectDifferences describes two JSON objects by the keys the snapshot
+// side records that differ ("default: 'new' → (none)"); keys only the
+// database has are properties the source never declared and are left out.
+// It returns "" when the values aren't both objects.
+func objectDifferences(snapshotJSON, liveJSON string) string {
+	var sm, lm map[string]json.RawMessage
+	if json.Unmarshal([]byte(snapshotJSON), &sm) != nil || json.Unmarshal([]byte(liveJSON), &lm) != nil || sm == nil || lm == nil {
+		return ""
+	}
+	var keys []string
+	for k := range sm {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var parts []string
+	for _, k := range keys {
+		sv, lv := string(sm[k]), string(lm[k])
+		if sv == lv {
 			continue
 		}
-		if r, ok := obj.(*ir.Role); ok {
-			if _, inSnap := snap.Objects[r.QualifiedName()]; !inSnap {
-				undeclared = append(undeclared, r.Name)
+		parts = append(parts, fmt.Sprintf("%s: %s → %s", k, orNone(sv), orNone(lv)))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "(none)"
+	}
+	return s
+}
+
+// verifyGroups are the report groups in display order, with headings.
+var verifyGroups = []struct {
+	group   drift.Group
+	heading string
+	paint   func(string, bool) string
+}{
+	{drift.Drift, "drift", ui.Red},
+	{drift.Conflict, "conflicts (changed in the source and in the database)", ui.Red},
+	{drift.Converged, "converged (the database already has the source's change; the snapshot is out of date)", ui.Yellow},
+	{drift.Unmanaged, "unmanaged", ui.Yellow},
+	{drift.Warning, "warnings", ui.Yellow},
+}
+
+// renderVerifyText writes the human-readable report.
+func renderVerifyText(w io.Writer, targets []verifyTarget, color bool) {
+	counts := map[drift.Group]int{}
+	for _, t := range targets {
+		label := t.Cluster + "/" + t.Database
+		if t.Database == "(cluster)" {
+			label = t.Cluster + " (cluster)"
+		}
+		if len(t.Report.Items) == 0 {
+			ui.PrintInfo(w, label, "no drift detected", color)
+			continue
+		}
+		fmt.Fprintf(w, "%s\n", ui.Cyan(label, color))
+		for _, g := range verifyGroups {
+			var items []drift.Item
+			for _, it := range t.Report.Items {
+				if it.Group == g.group {
+					items = append(items, it)
+				}
+			}
+			if len(items) == 0 {
 				continue
 			}
+			counts[g.group] += len(items)
+			fmt.Fprintf(w, "  %s\n", g.paint(g.heading, color))
+			for _, it := range items {
+				fmt.Fprintf(w, "    %s  %s\n", it.ID, describeItem(it))
+				for _, s := range it.SQL {
+					fmt.Fprintf(w, "      %s\n", ui.Dim(s, color))
+				}
+			}
 		}
-		clusterObjects = append(clusterObjects, obj)
+		fmt.Fprintln(w)
 	}
-	printUndeclaredRoles(os.Stderr, cl.Name()+" (cluster)", undeclared, errColor)
-
-	ops, err := differ.Diff(clusterObjects, snap)
-	if err != nil {
-		return false, fmt.Errorf("diff: %w", err)
+	var parts []string
+	for _, g := range verifyGroups {
+		if n := counts[g.group]; n > 0 {
+			name := g.group.String()
+			if n > 1 && (g.group == drift.Conflict || g.group == drift.Warning) {
+				name += "s"
+			}
+			parts = append(parts, fmt.Sprintf("%d %s", n, name))
+		}
 	}
-
-	label := cl.Name() + " (cluster)"
-	if len(ops) == 0 {
-		ui.PrintInfo(os.Stdout, label, "no drift detected", ui.IsColorEnabled(os.Stdout))
-		return false, nil
+	if len(parts) > 0 {
+		fmt.Fprintln(w, strings.Join(parts, ", "))
 	}
+}
 
-	fmt.Fprintf(os.Stderr, "%s  %s\n\n",
-		ui.Red("drift detected", errColor),
-		ui.Cyan(label, errColor),
-	)
-	migration, _ := emitter.Emit(ops, pipeline.MigrationMeta{
-		Cluster:    cl.Name(),
-		SourceRoot: cl.ProjectRoot,
-		Database:   "(cluster)",
-	})
-	_ = emit.Render(os.Stderr, migration, emit.RenderOptions{
-		ShowSafety:    true,
-		ShowSourcePos: true,
-		Color:         errColor,
-	})
-	return true, nil
+type verifyItemJSON struct {
+	ID       string   `json:"id"`
+	Group    string   `json:"group"`
+	Kind     string   `json:"kind"`
+	Object   string   `json:"object"`
+	Property string   `json:"property,omitempty"`
+	Change   string   `json:"change"`
+	Snapshot string   `json:"snapshot,omitempty"`
+	Live     string   `json:"live,omitempty"`
+	SQL      []string `json:"sql,omitempty"`
+}
+
+type verifyTargetJSON struct {
+	Cluster  string           `json:"cluster"`
+	Database string           `json:"database"`
+	Items    []verifyItemJSON `json:"items"`
+}
+
+// renderVerifyJSON writes one JSON document for all targets.
+func renderVerifyJSON(w io.Writer, targets []verifyTarget, hasDrift bool) error {
+	out := struct {
+		Drift   bool               `json:"drift"`
+		Targets []verifyTargetJSON `json:"targets"`
+	}{Drift: hasDrift, Targets: []verifyTargetJSON{}}
+	for _, t := range targets {
+		tj := verifyTargetJSON{Cluster: t.Cluster, Database: t.Database, Items: []verifyItemJSON{}}
+		for _, it := range t.Report.Items {
+			tj.Items = append(tj.Items, verifyItemJSON{
+				ID: it.ID, Group: it.Group.String(), Kind: it.Kind, Object: it.Object, Property: it.Property,
+				Change: it.Change, Snapshot: it.Snapshot, Live: it.Live, SQL: it.SQL,
+			})
+		}
+		out.Targets = append(out.Targets, tj)
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
 }

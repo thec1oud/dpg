@@ -297,9 +297,10 @@ type Snapshot struct {
 
 	// Live marks a snapshot built by introspecting the live catalog
 	// (plan --live) rather than loaded from disk. The catalog cannot show
-	// a role's password, and roles are shared by every database in the
-	// cluster, so the differ neither compares passwords nor drops
-	// undeclared roles against a live snapshot (RFC Section 11.1).
+	// a role's password, and can't tell an object removed from source from
+	// one DPG never managed, so the differ neither compares passwords nor
+	// drops undeclared objects against a live snapshot (RFC Sections 11.1
+	// and 18.1).
 	Live bool `json:"-"`
 }
 

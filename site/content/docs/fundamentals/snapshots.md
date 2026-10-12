@@ -189,4 +189,4 @@ Running `dpg apply` on a database that already matches the declared state produc
 
 DPG only emits `GRANT`. It never auto-revokes. Removing a `GRANTS` entry from source emits nothing. Add an explicit `REVOKES { }` block to revoke. See [Grants](../../access-control/grants/).
 
-`dpg verify` reports as drift any DPG-declared grant absent from the live catalog. It does not report extra grants present in the live catalog but absent from source.
+`dpg verify` reports as drift any DPG-declared grant absent from the live catalog, and any privilege a `REVOKES { }` entry removes that has been granted again. A grant present in the live catalog but absent from source is reported as a warning, never as drift; grants to roles listed under `[ignore]` and the privileges PostgreSQL gives `PUBLIC` by default are not reported. See [Drift Detection](../../migrations/drift-detection/).
