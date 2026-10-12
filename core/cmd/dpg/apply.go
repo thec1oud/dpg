@@ -233,6 +233,7 @@ func runApply(
 		GeneratedAt:    time.Now().UTC(),
 		SourceRevision: rev,
 		Cluster:        cl.Name(),
+		SourceRoot:     cl.ProjectRoot,
 		Database:       db.Name(),
 	})
 	if err != nil {
@@ -289,6 +290,7 @@ func runApply(
 		GeneratedAt:    time.Now().UTC(),
 		SourceRevision: rev,
 		Cluster:        cl.Name(),
+		SourceRoot:     cl.ProjectRoot,
 		Database:       db.Name(),
 	})
 	if err != nil {
@@ -403,6 +405,7 @@ func runClusterApply(
 		GeneratedAt:    time.Now().UTC(),
 		SourceRevision: rev,
 		Cluster:        cl.Name(),
+		SourceRoot:     cl.ProjectRoot,
 		Database:       cl.ClusterSnapshotKey(),
 	})
 	if err != nil {
@@ -457,6 +460,7 @@ func runClusterApply(
 		GeneratedAt:    time.Now().UTC(),
 		SourceRevision: rev,
 		Cluster:        cl.Name(),
+		SourceRoot:     cl.ProjectRoot,
 		Database:       cl.ClusterSnapshotKey(),
 	})
 	if err != nil {

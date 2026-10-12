@@ -154,8 +154,9 @@ func runVerify(
 		ui.Cyan(cl.Name()+"/"+db.Name(), errColor),
 	)
 	migration, _ := emitter.Emit(ops, pipeline.MigrationMeta{
-		Cluster:  cl.Name(),
-		Database: db.Name(),
+		Cluster:    cl.Name(),
+		SourceRoot: cl.ProjectRoot,
+		Database:   db.Name(),
 	})
 	_ = emit.Render(os.Stderr, migration, emit.RenderOptions{
 		ShowSafety:    true,
@@ -230,8 +231,9 @@ func runVerifyCluster(
 		ui.Cyan(label, errColor),
 	)
 	migration, _ := emitter.Emit(ops, pipeline.MigrationMeta{
-		Cluster:  cl.Name(),
-		Database: cl.ClusterSnapshotKey(),
+		Cluster:    cl.Name(),
+		SourceRoot: cl.ProjectRoot,
+		Database:   cl.ClusterSnapshotKey(),
 	})
 	_ = emit.Render(os.Stderr, migration, emit.RenderOptions{
 		ShowSafety:    true,

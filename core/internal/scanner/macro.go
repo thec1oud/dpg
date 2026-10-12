@@ -233,6 +233,9 @@ func expandMacros(src []byte, store macroStore) ([]byte, error) {
 				if !p.eof() && p.peek() == ';' {
 					p.advance()
 				}
+				// Keep the declaration's line breaks so every later source
+				// position keeps its original line number.
+				out.WriteString(strings.Repeat("\n", strings.Count(string(src[c:p.pos]), "\n")))
 				continue
 			}
 			// Not MACRO — write the word verbatim.
@@ -263,7 +266,9 @@ func expandMacros(src []byte, store macroStore) ([]byte, error) {
 					return nil, fmt.Errorf("spread ...%s: brace-body macro %q spread inside a ( ) list, must be spread inside a { } block (DPG-E009)", name, name)
 				}
 			}
-			out.WriteString(def.Body)
+			// The expansion stays on the spread's own line, so later source
+			// positions keep their original line numbers.
+			out.WriteString(oneLine(def.Body))
 			// Consume optional trailing comma/semicolon that was the spread's separator.
 			// We leave it to the caller to provide correct separators around the spread.
 			continue
@@ -281,6 +286,45 @@ func expandMacros(src []byte, store macroStore) ([]byte, error) {
 		p.advance()
 	}
 	return []byte(out.String()), nil
+}
+
+// oneLine rewrites an expanded macro body onto a single line: line comments
+// are dropped and line breaks outside quoted text become spaces. Line breaks
+// inside string literals or dollar-quoted text are kept unchanged.
+func oneLine(body string) string {
+	p := &macroParser{src: []byte(body)}
+	var out strings.Builder
+	for !p.eof() {
+		switch {
+		case p.peek() == '\'':
+			start := p.pos
+			if err := p.skipSingleQuoted(); err != nil {
+				out.WriteString(body[start:])
+				return out.String()
+			}
+			out.Write(p.src[start:p.pos])
+		case p.peek() == '-' && p.peekAt(1) == '-':
+			for !p.eof() && p.peek() != '\n' {
+				p.advance()
+			}
+		case p.peek() == '\n' || p.peek() == '\r':
+			out.WriteByte(' ')
+			p.advance()
+		default:
+			if tag, ok := p.peekDollarTag(); ok {
+				start := p.pos
+				if err := p.skipDollarQuoted(tag); err != nil {
+					out.WriteString(body[start:])
+					return out.String()
+				}
+				out.Write(p.src[start:p.pos])
+				continue
+			}
+			out.WriteByte(p.src[p.pos])
+			p.advance()
+		}
+	}
+	return out.String()
 }
 
 // resolveStoreBodies fully expands all macro bodies in-place so that nested

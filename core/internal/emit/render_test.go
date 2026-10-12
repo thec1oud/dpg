@@ -140,3 +140,21 @@ func TestRenderHeader(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderSourcePathRelativeToRoot guards RFC Section 17.1: source
+// annotations are relative to the project root, so committed migration
+// archives never carry machine-specific absolute paths.
+func TestRenderSourcePathRelativeToRoot(t *testing.T) {
+	op := testOp{sql: "SELECT 1;", pos: pipeline.SourcePos{File: "/home/u/proj/prod/app/schemas/public/t.dpg", Line: 3}}
+	m := pipeline.Migration{
+		Meta:          pipeline.MigrationMeta{SourceRoot: "/home/u/proj"},
+		Transactional: []pipeline.DiffOp{op},
+	}
+	var buf strings.Builder
+	if err := Render(&buf, m, DefaultRenderOptions()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "source: prod/app/schemas/public/t.dpg:3") {
+		t.Errorf("expected a root-relative source path, got:\n%s", buf.String())
+	}
+}

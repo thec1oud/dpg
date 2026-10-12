@@ -282,6 +282,7 @@ func buildPlan(
 		GeneratedAt:    time.Now().UTC(),
 		SourceRevision: rev,
 		Cluster:        cl.Name(),
+		SourceRoot:     cl.ProjectRoot,
 		Database:       db.Name(),
 	}
 
@@ -305,7 +306,7 @@ func renderPlanJSON(ops []pipeline.DiffOp, meta pipeline.MigrationMeta) error {
 		pos := o.Pos()
 		oj := opJSON{SQL: o.SQL(), Safety: o.Safety().String()}
 		if pos.File != "" {
-			oj.File = pos.File
+			oj.File = emit.RelSourcePath(meta.SourceRoot, pos.File)
 			oj.Line = pos.Line
 		}
 		out.Ops = append(out.Ops, oj)
@@ -351,6 +352,7 @@ func buildClusterPlan(
 		GeneratedAt:    time.Now().UTC(),
 		SourceRevision: rev,
 		Cluster:        cl.Name(),
+		SourceRoot:     cl.ProjectRoot,
 		// Database is intentionally empty for cluster-level plans; the Cluster
 		// field already identifies the context and _cluster must not appear in output.
 	}

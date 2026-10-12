@@ -3,6 +3,7 @@ package emit
 import (
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -127,7 +128,7 @@ func RenderAll(w io.Writer, migrations []pipeline.Migration, opts RenderOptions)
 				fmt.Fprintf(w, "\n%s %s\n", dim("-- Database:       "), cyan(m.Meta.Database))
 			}
 			for _, op := range m.Transactional {
-				writeOp(w, op, opts)
+				writeOp(w, op, opts, m.Meta.SourceRoot)
 			}
 		}
 		fmt.Fprintf(w, "\n%s\n", ui.HighlightSQL("COMMIT;", c))
@@ -149,7 +150,7 @@ func RenderAll(w io.Writer, migrations []pipeline.Migration, opts RenderOptions)
 				fmt.Fprintf(w, "\n%s %s\n", dim("-- Database:       "), cyan(m.Meta.Database))
 			}
 			for _, op := range m.NonTransactional {
-				writeOp(w, op, opts)
+				writeOp(w, op, opts, m.Meta.SourceRoot)
 			}
 		}
 	}
@@ -169,7 +170,7 @@ func writeMigrationBody(w io.Writer, m pipeline.Migration, opts RenderOptions) {
 		fmt.Fprintf(w, "\n%s\n", dim("-- transactional"))
 		fmt.Fprintf(w, "%s\n", ui.HighlightSQL("BEGIN;", c))
 		for _, op := range m.Transactional {
-			writeOp(w, op, opts)
+			writeOp(w, op, opts, m.Meta.SourceRoot)
 		}
 		fmt.Fprintf(w, "\n%s\n", ui.HighlightSQL("COMMIT;", c))
 	}
@@ -181,18 +182,18 @@ func writeMigrationBody(w io.Writer, m pipeline.Migration, opts RenderOptions) {
 	if len(m.NonTransactional) > 0 {
 		fmt.Fprintf(w, "\n%s\n", dim("-- non-transactional"))
 		for _, op := range m.NonTransactional {
-			writeOp(w, op, opts)
+			writeOp(w, op, opts, m.Meta.SourceRoot)
 		}
 	}
 }
 
-func writeOp(w io.Writer, op pipeline.DiffOp, opts RenderOptions) {
+func writeOp(w io.Writer, op pipeline.DiffOp, opts RenderOptions, root string) {
 	c := opts.Color
 	var parts []string
 
 	if opts.ShowSourcePos {
 		if pos := op.Pos(); pos.File != "" {
-			posStr := fmt.Sprintf("%s:%d", pos.File, pos.Line)
+			posStr := fmt.Sprintf("%s:%d", RelSourcePath(root, pos.File), pos.Line)
 			parts = append(parts, "source: "+ui.Magenta(posStr, c))
 		}
 	}
@@ -205,6 +206,19 @@ func writeOp(w io.Writer, op pipeline.DiffOp, opts RenderOptions) {
 		fmt.Fprintf(w, "%s %s\n", ui.Dim("--", c), strings.Join(parts, ui.Dim(", ", c)))
 	}
 	fmt.Fprintf(w, "%s\n", ui.HighlightSQL(op.SQL(), c))
+}
+
+// RelSourcePath returns file relative to root (RFC Section 17.1), or file
+// unchanged when root is empty or file is not under it.
+func RelSourcePath(root, file string) string {
+	if root == "" || !filepath.IsAbs(file) {
+		return file
+	}
+	rel, err := filepath.Rel(root, file)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return file
+	}
+	return filepath.ToSlash(rel)
 }
 
 func safetyLabel(s pipeline.Safety, color bool) string {

@@ -291,6 +291,9 @@ type MigrationMeta struct {
 	SourceRevision string
 	Cluster        string
 	Database       string
+	// SourceRoot is the project root; source positions in rendered output
+	// are shown relative to it (RFC Section 17.1). Empty leaves them as is.
+	SourceRoot string
 }
 
 // Migration is the output of the Emitter stage.
