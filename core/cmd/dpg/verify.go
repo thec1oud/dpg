@@ -258,7 +258,7 @@ func runVerifyCluster(
 	migration, _ := emitter.Emit(ops, pipeline.MigrationMeta{
 		Cluster:    cl.Name(),
 		SourceRoot: cl.ProjectRoot,
-		Database:   cl.ClusterSnapshotKey(),
+		Database:   "(cluster)",
 	})
 	_ = emit.Render(os.Stderr, migration, emit.RenderOptions{
 		ShowSafety:    true,

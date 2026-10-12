@@ -49,7 +49,7 @@ func Render(w io.Writer, m pipeline.Migration, opts RenderOptions) error {
 		fmt.Fprintf(w, "%s %s\n", dim("-- Source revision:"), m.Meta.SourceRevision)
 	}
 	if m.Meta.Cluster != "" {
-		fmt.Fprintf(w, "%s %s", dim("-- Cluster:        "), cyan(m.Meta.Cluster))
+		fmt.Fprintf(w, "%s %s\n", dim("-- Cluster:        "), cyan(m.Meta.Cluster))
 	}
 	if m.Meta.Database != "" {
 		fmt.Fprintf(w, "%s %s\n", dim("-- Database:       "), cyan(m.Meta.Database))
