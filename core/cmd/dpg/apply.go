@@ -1,28 +1,27 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/thec1oud/dpg/internal/compiler"
-	"github.com/thec1oud/dpg/internal/emit"
+	"github.com/thec1oud/dpg/internal/config"
 	"github.com/thec1oud/dpg/internal/executor"
 	"github.com/thec1oud/dpg/internal/ignore"
 	"github.com/thec1oud/dpg/internal/ir"
+	"github.com/thec1oud/dpg/internal/ledger"
 	"github.com/thec1oud/dpg/internal/linter"
 	"github.com/thec1oud/dpg/internal/migrationlog"
 	"github.com/thec1oud/dpg/internal/pipeline"
 	"github.com/thec1oud/dpg/internal/project"
-	snapshotpkg "github.com/thec1oud/dpg/internal/snapshot"
 	"github.com/thec1oud/dpg/internal/ui"
+	"github.com/thec1oud/dpg/internal/version"
 )
 
 func newApplyCmd() *cobra.Command {
@@ -35,6 +34,7 @@ func newApplyCmd() *cobra.Command {
 		dryRun                  bool
 		noSnapshot              bool
 		baseline                bool
+		resume                  bool
 		strict                  bool
 	)
 
@@ -52,8 +52,14 @@ With --no-snapshot, the snapshot is not updated after a successful apply.
 With --strict, lint warnings are promoted to errors and block the apply.
 
 Each apply records its migration in the migration log beside the
-snapshot. A project whose snapshot predates the log starts it with
---baseline, which records the snapshot as the first migration.`,
+snapshot, and each database records the migrations it has run in its
+ledger table. apply first runs the log's migrations a database hasn't
+run (a database that is behind catches up), then the source's change.
+
+--baseline starts the log of a snapshot that predates it, and records in
+a database that has the log's objects but no ledger how far along the
+log it is. --resume finishes a migration whose steps after its
+transaction failed.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			proj, err := discoverProject()
 			if err != nil {
@@ -94,9 +100,11 @@ snapshot. A project whose snapshot predates the log starts it with
 				dryRun:                  dryRun,
 				noSnapshot:              noSnapshot,
 				baseline:                baseline,
+				resume:                  resume,
 				strict:                  strict,
 				migrationsDir:           proj.MigrationsDir(),
 				lintCfg:                 linterConfigFrom(proj.RootConfig.Linter),
+				ledger:                  ledgerFor(proj.RootConfig),
 			}
 
 			for _, cl := range clusters {
@@ -136,7 +144,8 @@ snapshot. A project whose snapshot predates the log starts it with
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the migration plan but do not execute or update the snapshot")
 	cmd.Flags().BoolVar(&noSnapshot, "no-snapshot", false, "skip snapshot update after a successful apply")
 	cmd.Flags().BoolVar(&strict, "strict", false, "treat lint warnings as errors (blocks apply if any exist)")
-	cmd.Flags().BoolVar(&baseline, "baseline", false, "start the migration log of a project whose snapshot predates it")
+	cmd.Flags().BoolVar(&baseline, "baseline", false, "start the migration log of a snapshot that predates it, and record how far along it each database is")
+	cmd.Flags().BoolVar(&resume, "resume", false, "finish a migration whose steps after its transaction failed")
 
 	return cmd
 }
@@ -148,37 +157,21 @@ type applyOptions struct {
 	dryRun                  bool
 	noSnapshot              bool
 	baseline                bool
+	resume                  bool
 	strict                  bool
 	migrationsDir           string
 	lintCfg                 pipeline.LinterConfig
 	ignore                  *ignore.Rules
+	// ledger is the databases' ledger; nil when it is turned off.
+	ledger *ledger.Ledger
 }
 
-// applyBaseline handles dpg apply --baseline for one database.
-func applyBaseline(log *migrationlog.Log, logErr error, store pipeline.SnapshotStore, cluster, key, label string, stored *pipeline.Snapshot,
-	desired []pipeline.IRObject, ops []pipeline.DiffOp, differ pipeline.Differ, emitter pipeline.Emitter, meta pipeline.MigrationMeta, opts applyOptions, color bool) error {
-	if logErr == nil {
-		ui.PrintInfo(os.Stdout, label, "the migration log already started at "+firstID(log), color)
+// ledgerFor is the project's ledger, or nil when [ledger] turns it off.
+func ledgerFor(root config.RootConfig) *ledger.Ledger {
+	if !root.Ledger.On() {
 		return nil
 	}
-	if opts.dryRun {
-		ui.PrintInfo(os.Stdout, "dry-run", label+": would record the snapshot as the baseline migration", color)
-		return nil
-	}
-	e, err := writeBaseline(log, store, cluster, key, stored, desired, ops, differ, emitter, meta)
-	if err != nil {
-		return err
-	}
-	path, _ := log.Paths(e.ID)
-	ui.PrintSuccess(os.Stdout, "Baseline", label+" — migration log started\n         "+ui.Dim(path, color), color)
-	return nil
-}
-
-func firstID(l *migrationlog.Log) string {
-	if len(l.Entries) == 0 {
-		return "(empty)"
-	}
-	return l.Entries[0].ID
+	return &ledger.Ledger{Schema: root.Ledger.Schema, Version: version.Version}
 }
 
 // isInstructionOp reports whether op is an instruction-only step (RFC Section
@@ -197,8 +190,6 @@ func runApply(
 	secretResolver pipeline.SecretResolver,
 	opts applyOptions,
 ) error {
-	ctx := context.Background()
-	color := ui.IsColorEnabled(os.Stdout)
 	errColor := ui.IsColorEnabled(os.Stderr)
 
 	desired, mergeDiags, err := compiler.CompileWith(db.SourceFiles, db.Dir, pipeline.Default, dbCompileOptions(db))
@@ -246,152 +237,57 @@ func runApply(
 	if err != nil {
 		return err
 	}
-
-	if opts.baseline {
-		return applyBaseline(log, logErr, store, cl.Name(), db.Name(), cl.Name()+"/"+db.Name(), &stored, desired, ops, differ, emitter,
-			pipeline.MigrationMeta{GeneratedAt: time.Now().UTC(), Cluster: cl.Name(), SourceRoot: cl.ProjectRoot, Database: db.Name()}, opts, color)
-	}
-
-	if len(ops) == 0 {
-		ui.PrintInfo(os.Stdout, cl.Name()+"/"+db.Name(), "already up to date", color)
-		return nil
-	}
-
-	// Warn about new tables being created without a primary key.
-	warnMissingPK(os.Stderr, desired, snap, errColor)
-
-	if !opts.allowDestructive {
-		for _, op := range ops {
-			if op.Safety() == pipeline.Destructive && !isInstructionOp(op) {
-				return fmt.Errorf("DPG-E025: migration contains destructive operations; re-run with --allow-destructive to proceed\n  first: %s", op.SQL())
-			}
-		}
-	}
-
-	// Instruction-only ops are shown in the plan but never sent to the
-	// executor.
-	var instructionOps []pipeline.DiffOp
-	var executableOps []pipeline.DiffOp
-	for _, op := range ops {
-		if isInstructionOp(op) {
-			instructionOps = append(instructionOps, op)
-		} else {
-			executableOps = append(executableOps, op)
-		}
-	}
-	// A Destructive instruction (a partition strategy rebuild) is a step
-	// the operator must perform; apply refuses to continue until it is
-	// acknowledged. Safe instructions are informational notes.
-	if !opts.approvePartitionRebuild {
-		for _, op := range instructionOps {
-			if op.Safety() == pipeline.Destructive {
-				return fmt.Errorf("migration requires a manual partition strategy rebuild;\nre-run with --approve-partition-rebuild to acknowledge and proceed\n  first: %s", op.SQL())
-			}
-		}
-	}
-
 	rev, _ := gitRevision()
-	// Emit the full op list so the printed plan includes the instruction ops.
-	migration, err := emitter.Emit(ops, pipeline.MigrationMeta{
-		GeneratedAt:    time.Now().UTC(),
-		SourceRevision: rev,
-		Cluster:        cl.Name(),
-		SourceRoot:     cl.ProjectRoot,
-		Database:       db.Name(),
-	})
-	if err != nil {
-		return err
-	}
+	return runTarget(&applyTarget{
+		label: cl.Name() + "/" + db.Name(), cluster: cl.Name(), key: db.Name(),
+		store: store, differ: differ, emitter: emitter, exec: applyExec,
+		connect: func(ctx context.Context) (*executor.PgxConn, error) {
+			return connectDatabase(ctx, cl, db, secretResolver)
+		},
+		live:    liveObjects(opts.ignore, false),
+		rules:   opts.ignore,
+		desired: desired, stored: &stored, log: log, logErr: logErr, ops: ops,
+		meta: pipeline.MigrationMeta{GeneratedAt: time.Now().UTC(), SourceRevision: rev, Cluster: cl.Name(), SourceRoot: cl.ProjectRoot, Database: db.Name()},
+	}, opts)
+}
 
-	// Render plain SQL for the archive file.
-	var sqlBuf strings.Builder
-	if err := emit.Render(&sqlBuf, migration, emit.DefaultRenderOptions()); err != nil {
-		return err
+// connectCluster connects to a cluster's own connection (its cluster-level
+// objects and their ledger).
+func connectCluster(ctx context.Context, cl *project.Cluster, secretResolver pipeline.SecretResolver) (*executor.PgxConn, error) {
+	connStr := cl.ConnectionString()
+	if connStr == "" {
+		return nil, fmt.Errorf("DPG-E003: cluster %q has no connection configured", cl.Name())
 	}
-	plainSQL := sqlBuf.String()
-
-	// Print with colour to stdout.
-	if err := emit.Render(os.Stdout, migration, emit.RenderOptions{
-		ShowSafety:    true,
-		ShowSourcePos: true,
-		Color:         color,
-	}); err != nil {
-		return err
-	}
-
-	if opts.dryRun {
-		ui.PrintInfo(os.Stdout, "dry-run", "migration not applied; snapshot not updated", color)
-		return nil
-	}
-
-	if !opts.yes {
-		fmt.Printf("\n%s [y/N] ", ui.Bold("Apply this migration?", color))
-		scanner := bufio.NewScanner(os.Stdin)
-		if !scanner.Scan() || !strings.EqualFold(strings.TrimSpace(scanner.Text()), "y") {
-			ui.PrintInfo(os.Stdout, "", "Aborted.", color)
-			return nil
+	if cl.IsLink() {
+		var err error
+		if connStr, err = secretResolver.Resolve(connStr); err != nil {
+			return nil, ui.WrapDB(fmt.Errorf("resolve connection secret: %w", err))
 		}
 	}
+	conn, err := executor.Connect(ctx, connStr)
+	return conn, ui.WrapDB(err)
+}
 
-	conn, err := connectDatabase(ctx, cl, db, secretResolver)
-	if err != nil {
-		return err
-	}
-	defer conn.Close(ctx)
-
-	// RFC Section 11.5: before any DDL runs, every role a SET ROLE/OWNER TO
-	// statement in this migration will target must count the connecting
-	// role as a member — checked upfront so a missing membership surfaces
-	// as one DPG-E036 error, not a bare PostgreSQL failure mid-migration.
-	if err := executor.ValidateOwnerMembership(ctx, conn, executableOps); err != nil {
-		return err
-	}
-
-	// Execute only non-instruction ops. Instruction ops are manual steps the
-	// operator must perform outside DPG; they must not be sent to the executor.
-	execMigration, err := emitter.Emit(executableOps, pipeline.MigrationMeta{
-		GeneratedAt:    time.Now().UTC(),
-		SourceRevision: rev,
-		Cluster:        cl.Name(),
-		SourceRoot:     cl.ProjectRoot,
-		Database:       db.Name(),
-	})
-	if err != nil {
-		return err
-	}
-	if err := applyExec.Apply(ctx, execMigration, conn); err != nil {
-		return ui.WrapDB(err)
-	}
-
-	// Record the migration in the log, then the snapshot it produced.
-	var migPath string
-	if !opts.noSnapshot {
-		newSnap := &pipeline.Snapshot{}
-		if err := snapshotpkg.Populate(newSnap, desired); err != nil {
-			return fmt.Errorf("build snapshot: %w", err)
-		}
-		e, undo, err := recordMigration(log, plainSQL, migrationlog.OriginApply, stored.Objects, newSnap)
+// liveObjects introspects a target's objects: a database's, or (cluster)
+// the cluster-level ones; [ignore] applied.
+func liveObjects(rules *ignore.Rules, cluster bool) func(ctx context.Context, conn *executor.PgxConn) ([]pipeline.IRObject, error) {
+	return func(ctx context.Context, conn *executor.PgxConn) ([]pipeline.IRObject, error) {
+		introspector, err := pipeline.MustResolve[pipeline.Introspector](pipeline.Default, pipeline.KeyIntrospector)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if err := store.Save(cl.Name(), db.Name(), newSnap); err != nil {
-			undo()
-			return fmt.Errorf("save snapshot: %w", err)
+		all, err := introspector.Introspect(ctx, conn)
+		if err != nil {
+			return nil, err
 		}
-		migPath, _ = log.Paths(e.ID)
+		var out []pipeline.IRObject
+		for _, o := range rules.FilterObjects(all) {
+			if isClusterScoped(o) == cluster {
+				out = append(out, o)
+			}
+		}
+		return out, nil
 	}
-
-	detail := cl.Name() + "/" + db.Name()
-	if opts.noSnapshot {
-		detail += " — snapshot and migration log not updated (--no-snapshot)"
-	} else {
-		detail += " — snapshot updated"
-	}
-	if migPath != "" {
-		detail += "\n         " + ui.Dim(migPath, color)
-	}
-	ui.PrintSuccess(os.Stdout, "Applied", detail, color)
-	return nil
 }
 
 // runClusterApply applies cluster-level objects (roles, tablespaces, etc.).
@@ -404,8 +300,6 @@ func runClusterApply(
 	secretResolver pipeline.SecretResolver,
 	opts applyOptions,
 ) error {
-	ctx := context.Background()
-	color := ui.IsColorEnabled(os.Stdout)
 	errColor := ui.IsColorEnabled(os.Stderr)
 
 	desired, mergeDiags, err := compiler.Compile(cl.SourceFiles, cl.ObjectsDir, pipeline.Default)
@@ -451,134 +345,18 @@ func runClusterApply(
 	if err != nil {
 		return err
 	}
-	if opts.baseline {
-		return applyBaseline(log, logErr, store, cl.Name(), cl.ClusterSnapshotKey(), cl.Name()+" (cluster)", &stored, desired, ops, differ, emitter,
-			pipeline.MigrationMeta{GeneratedAt: time.Now().UTC(), Cluster: cl.Name(), SourceRoot: cl.ProjectRoot, Database: cl.ClusterSnapshotKey()}, opts, color)
-	}
-	if len(ops) == 0 {
-		ui.PrintInfo(os.Stdout, cl.Name()+" (cluster)", "already up to date", color)
-		return nil
-	}
-
-	if !opts.allowDestructive {
-		for _, op := range ops {
-			if op.Safety() == pipeline.Destructive && !isInstructionOp(op) {
-				return fmt.Errorf("DPG-E025: cluster migration contains destructive operations; re-run with --allow-destructive\n  first: %s", op.SQL())
-			}
-		}
-	}
-
-	var instructionOps []pipeline.DiffOp
-	var executableOps []pipeline.DiffOp
-	for _, op := range ops {
-		if isInstructionOp(op) {
-			instructionOps = append(instructionOps, op)
-		} else {
-			executableOps = append(executableOps, op)
-		}
-	}
-	if len(instructionOps) > 0 && !opts.approvePartitionRebuild {
-		return fmt.Errorf("cluster migration requires manual steps (partition strategy change or similar);\nre-run with --approve-partition-rebuild to acknowledge and proceed\n  first: %s", instructionOps[0].SQL())
-	}
-
 	rev, _ := gitRevision()
-	migration, err := emitter.Emit(ops, pipeline.MigrationMeta{
-		GeneratedAt:    time.Now().UTC(),
-		SourceRevision: rev,
-		Cluster:        cl.Name(),
-		SourceRoot:     cl.ProjectRoot,
-		Database:       cl.ClusterSnapshotKey(),
-	})
-	if err != nil {
-		return err
-	}
-
-	var sqlBuf strings.Builder
-	if err := emit.Render(&sqlBuf, migration, emit.DefaultRenderOptions()); err != nil {
-		return err
-	}
-
-	if err := emit.Render(os.Stdout, migration, emit.RenderOptions{
-		ShowSafety:    true,
-		ShowSourcePos: true,
-		Color:         color,
-	}); err != nil {
-		return err
-	}
-
-	if opts.dryRun {
-		ui.PrintInfo(os.Stdout, "dry-run", "migration not applied; snapshot not updated", color)
-		return nil
-	}
-
-	if !opts.yes {
-		fmt.Printf("\n%s [y/N] ", ui.Bold("Apply cluster changes?", color))
-		scanner := bufio.NewScanner(os.Stdin)
-		if !scanner.Scan() || !strings.EqualFold(strings.TrimSpace(scanner.Text()), "y") {
-			ui.PrintInfo(os.Stdout, "", "Aborted.", color)
-			return nil
-		}
-	}
-
-	connStr := cl.ConnectionString()
-	if connStr == "" {
-		return fmt.Errorf("DPG-E003: cluster %q has no connection configured", cl.Name())
-	}
-	if cl.IsLink() {
-		connStr, err = secretResolver.Resolve(connStr)
-		if err != nil {
-			return ui.WrapDB(fmt.Errorf("resolve connection secret: %w", err))
-		}
-	}
-
-	conn, err := executor.Connect(ctx, connStr)
-	if err != nil {
-		return ui.WrapDB(err)
-	}
-	defer conn.Close(ctx)
-
-	execMigration, err := emitter.Emit(executableOps, pipeline.MigrationMeta{
-		GeneratedAt:    time.Now().UTC(),
-		SourceRevision: rev,
-		Cluster:        cl.Name(),
-		SourceRoot:     cl.ProjectRoot,
-		Database:       cl.ClusterSnapshotKey(),
-	})
-	if err != nil {
-		return err
-	}
-	if err := applyExec.Apply(ctx, execMigration, conn); err != nil {
-		return ui.WrapDB(err)
-	}
-
-	var migPath string
-	if !opts.noSnapshot {
-		newSnap := &pipeline.Snapshot{}
-		if err := snapshotpkg.Populate(newSnap, desired); err != nil {
-			return fmt.Errorf("build cluster snapshot: %w", err)
-		}
-		e, undo, err := recordMigration(log, sqlBuf.String(), migrationlog.OriginApply, stored.Objects, newSnap)
-		if err != nil {
-			return err
-		}
-		if err := store.Save(cl.Name(), cl.ClusterSnapshotKey(), newSnap); err != nil {
-			undo()
-			return fmt.Errorf("save cluster snapshot: %w", err)
-		}
-		migPath, _ = log.Paths(e.ID)
-	}
-
-	detail := cl.Name() + " (cluster)"
-	if opts.noSnapshot {
-		detail += " — snapshot and migration log not updated (--no-snapshot)"
-	} else {
-		detail += " — snapshot updated"
-	}
-	if migPath != "" {
-		detail += "\n         " + ui.Dim(migPath, color)
-	}
-	ui.PrintSuccess(os.Stdout, "Applied", detail, color)
-	return nil
+	return runTarget(&applyTarget{
+		label: cl.Name() + " (cluster)", cluster: cl.Name(), key: cl.ClusterSnapshotKey(),
+		store: store, differ: differ, emitter: emitter, exec: applyExec,
+		connect: func(ctx context.Context) (*executor.PgxConn, error) {
+			return connectCluster(ctx, cl, secretResolver)
+		},
+		live:    liveObjects(opts.ignore, true),
+		rules:   opts.ignore,
+		desired: desired, stored: &stored, log: log, logErr: logErr, ops: ops,
+		meta: pipeline.MigrationMeta{GeneratedAt: time.Now().UTC(), SourceRevision: rev, Cluster: cl.Name(), SourceRoot: cl.ProjectRoot, Database: cl.ClusterSnapshotKey()},
+	}, opts)
 }
 
 // warnMissingPK writes a bold warning for every table that is being newly

@@ -30,7 +30,8 @@ func chain(t *testing.T, states ...map[string]json.RawMessage) (string, []*Entry
 	var out []*Entry
 	for i, after := range states {
 		sql := "-- step " + string(rune('a'+i)) + "\n"
-		e, err := New(l.Head(), sql, OriginApply, before, after, t0.Add(time.Duration(i)*time.Second))
+		steps := []Step{{SQL: "SELECT " + string(rune('a'+i)) + ";", Safety: "SAFE", Stage: StageTransaction}}
+		e, err := New(l.Head(), steps, OriginApply, before, after, t0.Add(time.Duration(i)*time.Second))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -55,7 +56,7 @@ func TestHashIgnoresLayout(t *testing.T) {
 func TestEntryDiff(t *testing.T) {
 	before := objs("a", `{"x":1}`, "b", `{"x":2}`, "c", `{"x":3}`)
 	after := objs("a", `{ "x" : 1 }`, "b", `{"x":20}`, "d", `{"x":4}`)
-	e, err := New("p", "SELECT 1;", OriginApply, before, after, t0)
+	e, err := New("p", []Step{{SQL: "SELECT 1;", Safety: "SAFE", Stage: StageTransaction}}, OriginApply, before, after, t0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +118,7 @@ func TestLoadRejects(t *testing.T) {
 
 	// Two migrations after the same parent (two branches).
 	dir, es := chain(t, s1, s2)
-	other, _ := New(es[0].ID, "-- other branch\n", OriginApply, s1, objs("a", `3`), t0.Add(time.Hour))
+	other, _ := New(es[0].ID, []Step{{SQL: "SELECT 3;", Safety: "SAFE", Stage: StageTransaction}}, OriginApply, s1, objs("a", `3`), t0.Add(time.Hour))
 	l := &Log{Dir: dir}
 	if err := l.Write(other, "-- other branch\n"); err != nil {
 		t.Fatal(err)
@@ -143,6 +144,15 @@ func TestLoadRejects(t *testing.T) {
 		t.Errorf("edited SQL: %v", err)
 	}
 
+	// Edited steps.
+	dir, es = chain(t, s1)
+	_, entryPath = (&Log{Dir: dir}).Paths(es[0].ID)
+	data, _ := os.ReadFile(entryPath)
+	os.WriteFile(entryPath, []byte(strings.Replace(string(data), "SELECT a;", "DROP TABLE x;", 1)), 0o644)
+	if _, err := Load(dir); code(err) != "DPG-E046" || !strings.Contains(err.Error(), "steps") {
+		t.Errorf("edited steps: %v", err)
+	}
+
 	// Missing SQL.
 	dir, es = chain(t, s1)
 	sqlPath, _ = (&Log{Dir: dir}).Paths(es[0].ID)
@@ -154,7 +164,7 @@ func TestLoadRejects(t *testing.T) {
 	// An edited diff: replay catches it.
 	dir, es = chain(t, s1, s2)
 	_, entryPath = (&Log{Dir: dir}).Paths(es[0].ID)
-	data, _ := os.ReadFile(entryPath)
+	data, _ = os.ReadFile(entryPath)
 	os.WriteFile(entryPath, []byte(strings.Replace(string(data), `"a": 1`, `"a": 5`, 1)), 0o644)
 	l, err := Load(dir)
 	if err != nil {

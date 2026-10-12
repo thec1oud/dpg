@@ -157,12 +157,12 @@ func (pl *planner) adoptAll(targets map[string]*Target, decisions []Decision, de
 	return nil
 }
 
-// migrationSQL sets the SQL of the target's snapshot change: the differ's
+// migrationSQL sets the migration of the target's snapshot change: the differ's
 // ops from the stored snapshot to the adopted source, for the objects the
 // change touches only (the source's other pending edits aren't adopted).
 func (pl *planner) migrationSQL(t *Target, src []pipeline.IRObject, deps Deps) error {
 	sc := pl.snaps[t]
-	if sc == nil || deps.RenderSQL == nil {
+	if sc == nil || deps.Emit == nil {
 		return nil
 	}
 	changed := map[string]bool{}
@@ -186,11 +186,11 @@ func (pl *planner) migrationSQL(t *Target, src []pipeline.IRObject, deps Deps) e
 			keep = append(keep, op)
 		}
 	}
-	sql, err := deps.RenderSQL(keep)
+	m, err := deps.Emit(keep)
 	if err != nil {
 		return err
 	}
-	sc.SQL = sql
+	sc.Migration = m
 	return nil
 }
 

@@ -17,6 +17,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/thec1oud/dpg/internal/pipeline"
 )
 
 // Format is the version of the entry format.
@@ -29,14 +31,61 @@ const (
 	OriginBaseline = "baseline" // the first entry of a project that had a snapshot before its log
 )
 
+// Stages of a step.
+const (
+	StageBefore      = "before"      // committed one by one before the transaction
+	StageTransaction = "transaction" // inside the transaction
+	StageAfter       = "after"       // after COMMIT (CREATE INDEX CONCURRENTLY, ...)
+	StageInstruction = "instruction" // a step the operator does by hand; never run
+)
+
+// Step is one statement of a migration, with {{...}} secret references
+// unresolved.
+type Step struct {
+	SQL    string `json:"sql"`
+	Safety string `json:"safety"` // SAFE, CAUTION, DESTRUCTIVE
+	Stage  string `json:"stage"`
+}
+
+// StepsOf returns a migration's statements in the order they run.
+func StepsOf(m pipeline.Migration) []Step {
+	var out []Step
+	add := func(ops []pipeline.DiffOp, stage string) {
+		for _, op := range ops {
+			st := stage
+			if op.Mode() == pipeline.ModeInstructionOnly {
+				st = StageInstruction
+			}
+			out = append(out, Step{SQL: op.SQL(), Safety: op.Safety().String(), Stage: st})
+		}
+	}
+	add(m.PreTransactional, StageBefore)
+	add(m.Transactional, StageTransaction)
+	add(m.NonTransactional, StageAfter)
+	return out
+}
+
+// StepsChecksum identifies a migration's statements.
+func StepsChecksum(steps []Step) string {
+	h := sha256.New()
+	for _, s := range steps {
+		fmt.Fprintf(h, "%s\x00%s\x00%s\x00", s.Stage, s.Safety, s.SQL)
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
 // Entry is one migration of the log: <ID>.json beside <ID>.sql.
 type Entry struct {
 	Format string `json:"format"`
 	ID     string `json:"id"`
 	// Parent is the ID of the migration this one follows; "" for the first.
 	Parent string `json:"parent"`
-	// Checksum is the sha256 of the SQL file.
+	// Checksum is the sha256 of the SQL file (set by Write).
 	Checksum string `json:"checksum"`
+	// Steps are the statements dpg runs; StepsChecksum identifies them
+	// (the ID is derived from it).
+	Steps         []Step `json:"steps"`
+	StepsChecksum string `json:"steps_checksum"`
 	// Snapshot is Hash of the snapshot objects after this migration.
 	Snapshot string `json:"snapshot"`
 	Origin   string `json:"origin"`
@@ -85,9 +134,12 @@ func Checksum(sql string) string {
 }
 
 // New builds the entry taking the snapshot objects from before to after
-// with sql, following parent.
-func New(parent, sql, origin string, before, after map[string]json.RawMessage, now time.Time) (*Entry, error) {
-	e := &Entry{Format: Format, Parent: parent, Checksum: Checksum(sql), Origin: origin, Set: map[string]json.RawMessage{}}
+// with steps, following parent. Its SQL file is given to Write.
+func New(parent string, steps []Step, origin string, before, after map[string]json.RawMessage, now time.Time) (*Entry, error) {
+	if steps == nil {
+		steps = []Step{}
+	}
+	e := &Entry{Format: Format, Parent: parent, Steps: steps, StepsChecksum: StepsChecksum(steps), Origin: origin, Set: map[string]json.RawMessage{}}
 	for k, v := range after {
 		cv, err := Canonical(v)
 		if err != nil {
@@ -115,7 +167,7 @@ func New(parent, sql, origin string, before, after map[string]json.RawMessage, n
 		return nil, err
 	}
 	e.Snapshot = h
-	e.ID = now.UTC().Format("20060102T150405Z") + "-" + strings.TrimPrefix(e.Checksum, "sha256:")[:12]
+	e.ID = now.UTC().Format("20060102T150405Z") + "-" + strings.TrimPrefix(e.StepsChecksum, "sha256:")[:12]
 	return e, nil
 }
 
@@ -193,6 +245,9 @@ func Load(dir string) (*Log, error) {
 		}
 		if Checksum(string(sql)) != e.Checksum {
 			return nil, errorf("DPG-E046", "%s.sql was changed after it was written (checksum mismatch)", filepath.Join(dir, e.ID))
+		}
+		if StepsChecksum(e.Steps) != e.StepsChecksum {
+			return nil, errorf("DPG-E046", "%s: its steps were changed after it was written (checksum mismatch)", f)
 		}
 		ep := e
 		byID[e.ID] = &ep
@@ -286,8 +341,10 @@ func (l *Log) Check(snapMigration string, objects map[string]json.RawMessage) er
 // ErrNoBaseline: the snapshot has objects but there is no log yet.
 var ErrNoBaseline = errors.New("DPG-E048: the snapshot has no migration log yet; run dpg apply --baseline to start it")
 
-// Write writes an entry and its SQL to the log's directory.
+// Write writes an entry and its SQL file to the log's directory, setting
+// the entry's checksum.
 func (l *Log) Write(e *Entry, sql string) error {
+	e.Checksum = Checksum(sql)
 	if err := os.MkdirAll(l.Dir, 0o755); err != nil {
 		return err
 	}
@@ -323,4 +380,75 @@ func writeAtomic(path string, data []byte) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// stepOp is a logged step run again (settling a database that hasn't it).
+type stepOp struct{ s Step }
+
+func (o stepOp) SQL() string { return o.s.SQL }
+func (o stepOp) Safety() pipeline.Safety {
+	switch o.s.Safety {
+	case "CAUTION":
+		return pipeline.Caution
+	case "DESTRUCTIVE":
+		return pipeline.Destructive
+	}
+	return pipeline.Safe
+}
+func (o stepOp) Pos() pipeline.SourcePos { return pipeline.SourcePos{} }
+func (o stepOp) Mode() pipeline.ExecMode {
+	switch o.s.Stage {
+	case StageBefore:
+		return pipeline.ModePreTransactional
+	case StageAfter:
+		return pipeline.ModeNonTransactional
+	case StageInstruction:
+		return pipeline.ModeInstructionOnly
+	}
+	return pipeline.ModeTransactional
+}
+
+// ExecSQL resolves the step's secret references (pipeline.SecretBearingOp).
+func (o stepOp) ExecSQL(r pipeline.SecretResolver) (string, error) {
+	return pipeline.ResolveTemplateSQL(o.s.SQL, r)
+}
+
+// Migration returns the entry's steps as a migration; instruction steps
+// (never run) are left out unless withInstructions.
+func (e *Entry) Migration(meta pipeline.MigrationMeta, withInstructions bool) pipeline.Migration {
+	m := pipeline.Migration{Meta: meta}
+	for _, s := range e.Steps {
+		op := stepOp{s}
+		switch s.Stage {
+		case StageBefore:
+			m.PreTransactional = append(m.PreTransactional, op)
+		case StageAfter:
+			m.NonTransactional = append(m.NonTransactional, op)
+		case StageInstruction:
+			if withInstructions {
+				m.Transactional = append(m.Transactional, op)
+			}
+		default:
+			m.Transactional = append(m.Transactional, op)
+		}
+	}
+	return m
+}
+
+// Index returns the position of migration id in the log, or -1.
+func (l *Log) Index(id string) int {
+	for i, e := range l.Entries {
+		if e.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// Find returns migration id, or nil.
+func (l *Log) Find(id string) *Entry {
+	if i := l.Index(id); i >= 0 {
+		return l.Entries[i]
+	}
+	return nil
 }

@@ -14,10 +14,12 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/thec1oud/dpg/internal/compiler"
+	"github.com/thec1oud/dpg/internal/executor"
 	"github.com/thec1oud/dpg/internal/format"
 	"github.com/thec1oud/dpg/internal/ignore"
 	"github.com/thec1oud/dpg/internal/introspect"
 	"github.com/thec1oud/dpg/internal/ir"
+	"github.com/thec1oud/dpg/internal/ledger"
 	"github.com/thec1oud/dpg/internal/migrationlog"
 	"github.com/thec1oud/dpg/internal/pipeline"
 	"github.com/thec1oud/dpg/internal/project"
@@ -85,15 +87,18 @@ silently clobbered.`,
 				}
 
 				clusterOut, dumpStore := dumpClusterTargets(cl, store, outputDir)
-				migrationsDir := proj.MigrationsDir()
+				// The dump starts the migration log; in place, the database's
+				// ledger records it too (a scratch dump under -o doesn't touch
+				// the database's ledger).
+				logOpts := dumpLogOptions{dir: proj.MigrationsDir(), ledger: ledgerFor(proj.RootConfig)}
 				if outputDir != "" {
-					migrationsDir = filepath.Join(outputDir, ".dpg", "migrations")
+					logOpts = dumpLogOptions{dir: filepath.Join(outputDir, ".dpg", "migrations")}
 				}
 
 				for _, db := range databases {
 					out := dumpDatabaseOutputDir(outputDir, db)
 					dbIntrospector := ignoringIntrospector{introspector, ignore.New(db.EffectiveIgnore(cl, proj.RootConfig))}
-					if err := runDump(cl, db, out, clusterOut, dbIntrospector, dumpStore, secretResolver, fmtOpts, yes, migrationsDir); err != nil {
+					if err := runDump(cl, db, out, clusterOut, dbIntrospector, dumpStore, secretResolver, fmtOpts, yes, logOpts); err != nil {
 						return fmt.Errorf("%s/%s: %w", cl.Name(), db.Name(), err)
 					}
 				}
@@ -208,8 +213,9 @@ func runDump(
 	secretResolver pipeline.SecretResolver,
 	fmtOpts format.Options,
 	skipConfirm bool,
-	migrationsDir string, // "": no migration log
+	logOpts dumpLogOptions,
 ) error {
+	migrationsDir := logOpts.dir
 	ctx := context.Background()
 	color := ui.IsColorEnabled(os.Stdout)
 	// A dump records the database's state as the start of its migration
@@ -374,7 +380,9 @@ func runDump(
 		return fmt.Errorf("save snapshot: %w", err)
 	}
 	ui.PrintSuccess(os.Stdout, "DB snapshot written", cl.Name()+"/"+db.Name(), color)
-	if err := dumpBaseline(store, migrationsDir, cl.Name(), db.Name(), dbSnap, dbSnapObjects); err != nil {
+	if err := dumpBaseline(store, logOpts, cl.Name(), db.Name(), dbSnap, dbSnapObjects, func(ctx context.Context) (*executor.PgxConn, error) {
+		return connectDatabase(ctx, cl, db, secretResolver)
+	}); err != nil {
 		return err
 	}
 
@@ -413,7 +421,9 @@ func runDump(
 		}
 		ui.PrintSuccess(os.Stdout, "Cluster snapshot written", cl.Name(), color)
 		if clusterSnap.Migration == "" {
-			if err := dumpBaseline(store, migrationsDir, cl.Name(), cl.ClusterSnapshotKey(), clusterSnap, clusterSnapObjects); err != nil {
+			if err := dumpBaseline(store, logOpts, cl.Name(), cl.ClusterSnapshotKey(), clusterSnap, clusterSnapObjects, func(ctx context.Context) (*executor.PgxConn, error) {
+				return connectCluster(ctx, cl, secretResolver)
+			}); err != nil {
 				return err
 			}
 		}
@@ -421,10 +431,19 @@ func runDump(
 	return nil
 }
 
+// dumpLogOptions say where a dump starts the migration log, and the ledger
+// that records it in the dumped database (nil: none).
+type dumpLogOptions struct {
+	dir    string // "": no migration log
+	ledger *ledger.Ledger
+}
+
 // dumpBaseline starts the migration log of a dumped database with its
-// snapshot as the baseline.
-func dumpBaseline(store pipeline.SnapshotStore, migrationsDir, cluster, key string, snap *pipeline.Snapshot, objects []pipeline.IRObject) error {
-	if migrationsDir == "" {
+// snapshot as the baseline, and records it in the database's ledger: the
+// database has that state.
+func dumpBaseline(store pipeline.SnapshotStore, lo dumpLogOptions, cluster, key string, snap *pipeline.Snapshot, objects []pipeline.IRObject,
+	connect func(ctx context.Context) (*executor.PgxConn, error)) error {
+	if lo.dir == "" {
 		return nil
 	}
 	differ, err := pipeline.MustResolve[pipeline.Differ](pipeline.Default, pipeline.KeyDiffer)
@@ -435,13 +454,27 @@ func dumpBaseline(store pipeline.SnapshotStore, migrationsDir, cluster, key stri
 	if err != nil {
 		return err
 	}
-	l, err := migrationlog.Load(migrationlog.Dir(migrationsDir, cluster, key))
+	l, err := migrationlog.Load(migrationlog.Dir(lo.dir, cluster, key))
 	if err != nil {
 		return err
 	}
-	_, err = writeBaseline(l, store, cluster, key, snap, objects, nil, differ, emitter,
-		pipeline.MigrationMeta{GeneratedAt: time.Now().UTC(), Cluster: cluster, Database: key})
-	return err
+	e, err := writeBaseline(l, store, cluster, key, snap, objects, nil, differ, emitter,
+		pipeline.MigrationMeta{GeneratedAt: time.Now().UTC(), Cluster: cluster, Database: key}, lo.ledger)
+	if err != nil || lo.ledger == nil {
+		return err
+	}
+	ctx := context.Background()
+	conn, err := connect(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close(ctx)
+	for _, stmt := range append(lo.ledger.Bootstrap(), lo.ledger.Record(ledger.Of(key, e))) {
+		if _, err := conn.Exec(ctx, stmt); err != nil {
+			return fmt.Errorf("record the baseline in the ledger: %w", ui.WrapDB(err))
+		}
+	}
+	return nil
 }
 
 // mergeExistingVirtualTypes recovers any VIRTUAL TYPE declarations (RFC

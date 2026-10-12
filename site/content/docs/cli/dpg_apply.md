@@ -20,8 +20,14 @@ With --no-snapshot, the snapshot is not updated after a successful apply.
 With --strict, lint warnings are promoted to errors and block the apply.
 
 Each apply records its migration in the migration log beside the
-snapshot. A project whose snapshot predates the log starts it with
---baseline, which records the snapshot as the first migration.
+snapshot, and each database records the migrations it has run in its
+ledger table. apply first runs the log's migrations a database hasn't
+run (a database that is behind catches up), then the source's change.
+
+--baseline starts the log of a snapshot that predates it, and records in
+a database that has the log's objects but no ledger how far along the
+log it is. --resume finishes a migration whose steps after its
+transaction failed.
 
 ```
 dpg apply [flags]
@@ -32,12 +38,13 @@ dpg apply [flags]
 ```
       --allow-destructive           allow destructive operations
       --approve-partition-rebuild   acknowledge an instruction-only partition strategy rebuild step
-      --baseline                    start the migration log of a project whose snapshot predates it
+      --baseline                    start the migration log of a snapshot that predates it, and record how far along it each database is
       --cluster string              cluster to apply (required when multiple clusters exist)
       --database string             database to apply (required when multiple databases exist)
       --dry-run                     print the migration plan but do not execute or update the snapshot
   -h, --help                        help for apply
       --no-snapshot                 skip snapshot update after a successful apply
+      --resume                      finish a migration whose steps after its transaction failed
       --strict                      treat lint warnings as errors (blocks apply if any exist)
   -y, --yes                         skip interactive approval prompt
 ```

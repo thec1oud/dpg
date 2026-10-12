@@ -43,6 +43,15 @@ There is one snapshot and one log per database, whatever the environment: dev an
 - **Adoptions are migrations too.** `dpg resolve --adopt` records the adopted change as a migration, so other databases get it; the database it came from already has it.
 - **Starting the log.** A project whose snapshot predates the log runs `dpg apply --baseline` once (DPG-E048 until then). It records the snapshot as the first migration, with the SQL that builds it in an empty database. `dpg dump` starts the log the same way.
 
+## Catching up: the ledger
+
+Each database records the migrations it has run in a ledger table, `dpg.migrations`. `dpg apply` reads it and first runs, in order, the log's migrations that database hasn't run, then your source's change. So a staging or production database that's a few releases behind runs exactly the migrations dev ran, one by one, each recorded as it goes.
+
+- **Any runner records it.** Every migration file begins by checking the ledger (the migration must follow the database's last one, and must not have run already) and ends by marking itself complete. Run a file with `psql` (use `ON_ERROR_STOP`) and `dpg apply` won't run it again; run it twice and the second run fails without changing anything.
+- **Failures.** A migration whose transaction fails rolls back and is retried by the next `dpg apply`. One whose steps after the transaction fail (`CREATE INDEX CONCURRENTLY`) stays half done until `dpg apply --resume` finishes it.
+- **Existing databases.** A database that already has the schema but no ledger is refused until `dpg apply --baseline` records where it is: the newest point of the log it matches with no drift. A new, empty database runs the whole log.
+- **Turning it off.** `[ledger] enabled = false` in the root `dpg.toml`; `schema` renames its schema. DPG never reports the ledger's schema as drift.
+
 ## Migration modes
 
 ```bash

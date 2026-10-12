@@ -84,7 +84,7 @@ func TestMultiDatabaseClusterConnectsToCorrectDatabase(t *testing.T) {
 	migrationsDir := filepath.Join(scratchOut, ".dpg", "migrations")
 
 	// --- dump: each database's dump must contain only its own table ---
-	if err := runDump(cl, dbA, dbAOut, clusterOut, introspect.New(), store, resolver, fmtOpts, true, migrationsDir); err != nil {
+	if err := runDump(cl, dbA, dbAOut, clusterOut, introspect.New(), store, resolver, fmtOpts, true, dumpLogOptions{dir: migrationsDir}); err != nil {
 		t.Fatalf("runDump mdb_a: %v", err)
 	}
 	schemaA, err := os.ReadFile(filepath.Join(dbAOut, "schemas", "public", "schema.dpg"))
@@ -98,7 +98,7 @@ func TestMultiDatabaseClusterConnectsToCorrectDatabase(t *testing.T) {
 		t.Errorf("mdb_a dump must not contain table_b (wrong-database leak), got:\n%s", schemaA)
 	}
 
-	if err := runDump(cl, dbB, dbBOut, clusterOut, introspect.New(), store, resolver, fmtOpts, true, migrationsDir); err != nil {
+	if err := runDump(cl, dbB, dbBOut, clusterOut, introspect.New(), store, resolver, fmtOpts, true, dumpLogOptions{dir: migrationsDir}); err != nil {
 		t.Fatalf("runDump mdb_b: %v", err)
 	}
 	schemaBPath := filepath.Join(dbBOut, "schemas", "public", "schema.dpg")

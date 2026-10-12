@@ -80,6 +80,11 @@ directory = ".dpg/snapshots"
 # It can't be empty.
 directory = ".dpg/migrations"
 
+[ledger]
+# Each database records the migrations it has run in <schema>.migrations.
+enabled = true
+schema  = "dpg"
+
 [fmt]
 indent        = 4        # spaces per indentation level
 keyword_case  = "upper"  # "upper" (default) or "lower"

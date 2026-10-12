@@ -94,7 +94,7 @@ func TestDumpDashOSandboxesClusterOutput(t *testing.T) {
 	scratchStore := &snapshot.FileStore{Dir: filepath.Join(scratchOut, ".dpg", "snapshots")}
 
 	fmtOpts := format.Options{IndentSize: 4, KeywordCase: "upper"}
-	if err := runDump(cl, db, dbOut, clusterOut, introspect.New(), scratchStore, &mockSecretResolver{}, fmtOpts, true, ""); err != nil {
+	if err := runDump(cl, db, dbOut, clusterOut, introspect.New(), scratchStore, &mockSecretResolver{}, fmtOpts, true, dumpLogOptions{}); err != nil {
 		t.Fatalf("runDump: %v", err)
 	}
 
@@ -192,7 +192,7 @@ func TestDumpRefusesToOverwriteWithoutConfirmation(t *testing.T) {
 	// First dump: nothing exists yet, must succeed with zero confirmation
 	// (skipConfirm=false here specifically, to prove the frictionless-first-
 	// dump guarantee holds even when confirmation isn't being bypassed).
-	if err := runDump(cl, db, dbOut, clusterOut, introspect.New(), store, &mockSecretResolver{}, fmtOpts, false, ""); err != nil {
+	if err := runDump(cl, db, dbOut, clusterOut, introspect.New(), store, &mockSecretResolver{}, fmtOpts, false, dumpLogOptions{}); err != nil {
 		t.Fatalf("first runDump (nothing pre-existing): %v", err)
 	}
 	rolesPath := filepath.Join(clusterOut, "roles.dpg")
@@ -204,7 +204,7 @@ func TestDumpRefusesToOverwriteWithoutConfirmation(t *testing.T) {
 	// Second dump, skipConfirm=true: roles.dpg now exists, must still
 	// succeed (and does genuinely overwrite — same content here since
 	// nothing changed live, but the write path is exercised for real).
-	if err := runDump(cl, db, dbOut, clusterOut, introspect.New(), store, &mockSecretResolver{}, fmtOpts, true, ""); err != nil {
+	if err := runDump(cl, db, dbOut, clusterOut, introspect.New(), store, &mockSecretResolver{}, fmtOpts, true, dumpLogOptions{}); err != nil {
 		t.Fatalf("second runDump with skipConfirm=true (roles.dpg pre-existing): %v", err)
 	}
 
@@ -220,7 +220,7 @@ func TestDumpRefusesToOverwriteWithoutConfirmation(t *testing.T) {
 	}
 	w.Close()
 	os.Stdin = r
-	err = runDump(cl, db, dbOut, clusterOut, introspect.New(), store, &mockSecretResolver{}, fmtOpts, false, "")
+	err = runDump(cl, db, dbOut, clusterOut, introspect.New(), store, &mockSecretResolver{}, fmtOpts, false, dumpLogOptions{})
 	os.Stdin = origStdin
 	r.Close()
 

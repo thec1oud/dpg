@@ -84,14 +84,21 @@ func (e *PgxExecutor) Apply(ctx context.Context, m pipeline.Migration, conn pipe
 	for _, op := range m.NonTransactional {
 		text, err := execText(op)
 		if err != nil {
-			return fmt.Errorf("executor: %s: %w", op.SQL(), err)
+			return &AfterCommitError{fmt.Errorf("executor: %s: %w", op.SQL(), err)}
 		}
 		if _, err := conn.Exec(ctx, text); err != nil {
-			return fmt.Errorf("executor: %s: %w", op.SQL(), err)
+			return &AfterCommitError{fmt.Errorf("executor: %s: %w", op.SQL(), err)}
 		}
 	}
 	return nil
 }
+
+// AfterCommitError is a failure in the steps after the migration's
+// transaction committed: the database has the transaction's changes.
+type AfterCommitError struct{ Err error }
+
+func (e *AfterCommitError) Error() string { return e.Err.Error() }
+func (e *AfterCommitError) Unwrap() error { return e.Err }
 
 var _ pipeline.ApplyExecutor = (*PgxExecutor)(nil)
 

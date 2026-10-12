@@ -100,6 +100,22 @@ func TestMigrationLogLive(t *testing.T) {
 	if b, _ := os.ReadFile(sql); !strings.Contains(string(b), `SET DEFAULT 'b'`) || strings.Contains(string(b), "age") {
 		t.Errorf("the adoption's SQL must hold the adopted change only:\n%s", b)
 	}
+	// The database it was adopted from records it as run.
+	rows, err := conn.QueryRows(ctx, `SELECT status FROM dpg.migrations WHERE log = 'dpgtest' AND id = $1`, head.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	for rows.Next() {
+		rows.Scan(&status)
+	}
+	rows.Close()
+	if status != "complete" {
+		t.Errorf("the adoption in the ledger: %q", status)
+	}
+	if err := runDPG(t, root, "apply", "--yes"); err != nil {
+		t.Errorf("apply after adopting must have nothing to do: %v", err)
+	}
 	if err := runDPG(t, root, "plan"); err != nil {
 		t.Errorf("plan after adopting: %v", err)
 	}
@@ -109,7 +125,7 @@ func TestMigrationLogLive(t *testing.T) {
 
 	// 4. Two migrations after the same parent: plan refuses.
 	logDir := l.Dir
-	sibling, err := migrationlog.New(l.Entries[1].ID, "-- other branch\n", migrationlog.OriginApply,
+	sibling, err := migrationlog.New(l.Entries[1].ID, []migrationlog.Step{{SQL: "SELECT 1;", Safety: "SAFE", Stage: migrationlog.StageTransaction}}, migrationlog.OriginApply,
 		map[string]json.RawMessage{}, map[string]json.RawMessage{"x": json.RawMessage(`1`)}, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -137,10 +153,12 @@ func TestMigrationLogLive(t *testing.T) {
 	}
 	os.WriteFile(snapPath, orig, 0o644)
 
-	// 6. A project from before the log: apply refuses until --baseline.
+	// 6. A project from before the log (and a database from before the
+	// ledger): apply refuses until --baseline.
 	if err := os.RemoveAll(filepath.Join(root, ".dpg", "migrations")); err != nil {
 		t.Fatal(err)
 	}
+	exec(`DROP SCHEMA dpg CASCADE`)
 	var s map[string]any
 	json.Unmarshal(orig, &s)
 	delete(s, "migration")
@@ -183,7 +201,7 @@ func TestMigrationLogLive(t *testing.T) {
 	if _, err := freshConn.Exec(ctx, string(sqlText)); err != nil {
 		t.Fatalf("running the baseline in an empty database: %v\n%s", err, sqlText)
 	}
-	rows, err := freshConn.QueryRows(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 't'`)
+	rows, err = freshConn.QueryRows(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 't'`)
 	if err != nil {
 		t.Fatal(err)
 	}

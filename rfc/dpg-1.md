@@ -171,6 +171,7 @@ Copyright Notice
     16.6.  Cluster-Level Snapshot File
     16.7.  Source Revision Detection
     16.8.  Migration Log
+    16.9.  Ledger
 17. Migration Output Format
     17.1.  Output Structure
     17.2.  Safety Classification
@@ -614,6 +615,13 @@ keyword_case = "upper"
 # (Section 16.8). Default: ".dpg/migrations". It can't be empty.
 directory = ".dpg/migrations"
 
+[ledger]
+# The table each database records the migrations it has run in
+# (Section 16.9). Default: true.
+enabled = true
+# Its schema. Default: "dpg".
+schema = "dpg"
+
 [ignore]
 # Objects that exist in a database but are not managed by DPG
 # (Section 3.9). OPTIONAL; allowed in every dpg.toml.
@@ -870,7 +878,7 @@ default_schema = "public"
    the roles, schemas and extensions a hosting platform creates.  The
    lists of the project root, the cluster and the database apply
    together, so patterns for one environment belong in that cluster's
-   `dpg.toml`.
+   `dpg.toml`.  The ledger's schema (Section 16.9) is always ignored.
 
 ```toml
 [ignore]
@@ -4897,8 +4905,85 @@ Phase 10: Emission
        `dpg apply --baseline` starts the log with a `baseline`
        migration: the snapshot's objects, and the SQL that creates them
        in an empty database.  The source must match the snapshot.
+       `dpg dump` starts the log the same way.
    4.  Files in the directory without a `.json` entry are not part of
        the log.
+
+   Each entry also holds `steps`, the migration's statements in the
+   order they run, with `{{...}}` secret references unresolved (each
+   with its `sql`, `safety`, and `stage`: `before`, `transaction`,
+   `after` or `instruction`), and `steps_checksum`, from which the `id`
+   takes its hexadecimal digits.  `dpg apply` runs a migration from its
+   steps (Section 16.9); the `.sql` file is the same migration for any
+   other runner.  A step whose secret reference sits inside a
+   single-quoted literal gets the secret with its quotes doubled.
+
+### 16.9. Ledger
+
+   [DPG] Each database records the migrations of its log it has run in
+   a ledger table, `<schema>.migrations` (`[ledger]`, Section 3.2):
+
+```sql
+CREATE TABLE IF NOT EXISTS "dpg".migrations (
+    log         text NOT NULL,   -- the database's name, or _cluster
+    id          text NOT NULL,
+    parent      text NOT NULL,
+    checksum    text NOT NULL,   -- the migration's steps_checksum
+    dpg_version text NOT NULL,
+    status      text NOT NULL CHECK (status IN ('started', 'committed', 'complete')),
+    started_at  timestamptz NOT NULL DEFAULT now(),
+    finished_at timestamptz,
+    PRIMARY KEY (log, id)
+);
+```
+
+   A database's position in its log is its last migration: the
+   `complete` row no `complete` row follows.  Cluster-level objects
+   keep their ledger in the database the cluster's connection names,
+   under the log `_cluster`.
+
+   **Every migration records itself.**  The statements around a
+   migration's own, in its `.sql` file and when `dpg apply` runs it:
+
+   1.  Before everything, each on its own: create the ledger if it
+       doesn't exist; then a guard that raises unless the migration's
+       parent is the database's last migration (DPG-E050), and raises
+       if the migration is recorded with other steps, is already
+       `complete`, or is `committed` (DPG-E049); and records it as
+       `started` (taking over the row of an earlier attempt that never
+       committed).
+   2.  The migration's `before` steps.
+   3.  `BEGIN;`, then a guard that locks the migration's row and raises
+       unless it is still `started` (a concurrent run that got there
+       first leaves it `committed` or `complete`) and checks the parent
+       again; the `transaction` steps; the row marked `complete`, or
+       `committed` when `after` steps follow; `COMMIT;`.
+   4.  The `after` steps, then the row marked `complete`.
+
+   A runner other than DPG MUST stop at the first error (with `psql`,
+   `ON_ERROR_STOP`).  Running a `complete` migration's file again
+   raises and changes nothing.
+
+   **`dpg apply` and the ledger:**
+
+   -   It runs, in order, the log's migrations after the database's last
+       one, then the source's change.  A database whose environment is
+       behind catches up this way, running exactly the migrations the
+       log holds.
+   -   A database with no `complete` row whose objects include none of
+       the log's (the `public` schema aside) runs the whole log.  One
+       that has some is refused (DPG-E050) until
+       `dpg apply --baseline` records it at the newest point of the log
+       whose snapshot (replayed, Section 16.8) it matches without drift
+       (Section 20.2).
+   -   A last migration the log doesn't contain is refused (DPG-E050).
+   -   A `committed` row (a step after the transaction failed) is
+       refused (DPG-E049) until `dpg apply --resume` runs the
+       migration's `after` steps.  A `started` row of a migration that
+       isn't in the log (its transaction never committed) is removed.
+   -   With `[ledger] enabled = false`, `dpg apply` runs only the
+       source's change, as if every database were at the log's last
+       migration, and writes nothing to the database besides it.
 
 
 ---
@@ -4911,9 +4996,14 @@ Phase 10: Emission
    standardised format.  It consists of:
 
    1.  A **header block** with metadata comments.
-   2.  A **transactional section** wrapped in `BEGIN;` / `COMMIT;`.
-   3.  Optionally a **non-transactional section** outside any
+   2.  Optionally a **section before the transaction**, each statement
+       on its own.
+   3.  A **transactional section** wrapped in `BEGIN;` / `COMMIT;`.
+   4.  Optionally a **non-transactional section** outside any
        transaction block.
+
+   A migration in the migration log carries the ledger's statements in
+   these sections (Section 16.9).
 
    When there are no changes, the output is the header block followed
    by `-- (no changes)`.
@@ -5293,7 +5383,12 @@ Options:
   --no-snapshot              Do not update the snapshot or the migration
                              log after apply.
   --baseline                 Start the migration log of a snapshot that
-                             predates it (Section 16.8).
+                             predates it (Section 16.8), and record in a
+                             database with the log's objects but no
+                             ledger how far along the log it is
+                             (Section 16.9).
+  --resume                   Finish a migration whose steps after its
+                             transaction failed (Section 16.9).
   --strict                   Promote linter warnings to errors. Apply is
                              blocked if any lint errors exist.
   --cluster <name>
@@ -5333,8 +5428,15 @@ Options:
        `--no-snapshot` was set (noted instead).
 
    Before step 1, the migration log is checked against the snapshot
-   (Section 16.8).  With `--baseline`, `dpg apply` only starts the log
-   and runs nothing.
+   (Section 16.8).  With the ledger (Section 16.9), `dpg apply` first
+   connects and runs, in order, the log's migrations the database
+   hasn't run, each recorded in the ledger; they are shown with the
+   source's change and pass the same `--allow-destructive` and
+   `--approve-partition-rebuild` checks, and `--dry-run` shows them.  A
+   step after the source's change's transaction that fails still
+   records the migration in the log and the snapshot; `--resume`
+   finishes it.  With `--baseline`, `dpg apply` only starts the log and
+   records the database's position, and runs nothing.
 
    If step 7 fails, the transaction is rolled back.  The snapshot is
    not updated.  The error from the database is printed with the
@@ -5479,7 +5581,9 @@ Options:
    written, and updates the snapshot entry from the edited source.  The
    change is recorded as an `adopt` migration (Section 16.8) whose SQL
    is what a database without the change runs to get it; the database
-   it was adopted from already has it.  Live
+   it was adopted from already has it, and its ledger records the
+   migration as `complete` (Section 16.9), which needs that database
+   to be at the log's last migration.  Live
    values are written as `dpg dump` writes them (Section 18.5).
 
    -   A changed property: the text declaring it is replaced.
@@ -5615,7 +5719,8 @@ Options:
 
    The dump starts the database's migration log (Section 16.8) with
    the snapshot as its `baseline` migration (`<dir>/.dpg/migrations/`
-   with `-o`).  A database whose log has started is not dumped in
+   with `-o`), and records it as `complete` in the dumped database's
+   ledger (Section 16.9), except with `-o`.  A database whose log has started is not dumped in
    place; `-o` writes the dump elsewhere.  The cluster snapshot every
    database's dump writes keeps the log an earlier dump started when it
    is the same.
@@ -7017,6 +7122,8 @@ WITH NO DATA {
    | DPG-E046 | `migration_log_invalid` | The migration log doesn't replay to the snapshot, or one of its files is missing or changed (Section 16.8). |
    | DPG-E047 | `migration_log_divergent` | Two migrations in the log follow the same migration (Section 16.8). |
    | DPG-E048 | `migration_log_missing` | The snapshot predates its migration log; `dpg apply --baseline` starts it (Section 16.8). |
+   | DPG-E049 | `ledger_migration_state` | A migration is recorded in the database's ledger with other steps, is already applied, or is waiting for `dpg apply --resume` (Section 16.9). |
+   | DPG-E050 | `ledger_position` | A migration doesn't follow the database's last migration, the database's last migration isn't in the log, or the database has the log's objects but no ledger (Section 16.9). |
 
 ---
 

@@ -22,10 +22,10 @@ type Target struct {
 	Database string // "(cluster)" for cluster-level objects
 	Report   *drift.Report
 	// Snapshot is the stored snapshot. SaveSnapshot writes a new one with
-	// the migration that records the change (sql: what other databases run
+	// the migration that records the change (m: what other databases run
 	// to reach it) and returns how to undo both.
 	Snapshot     *pipeline.Snapshot
-	SaveSnapshot func(s *pipeline.Snapshot, sql string) (undo func() error, err error)
+	SaveSnapshot func(s *pipeline.Snapshot, m pipeline.Migration) (undo func() error, err error)
 	// LogErr is why the target's migration log can't take a migration
 	// (adoption is then refused); nil when it can.
 	LogErr error
@@ -78,12 +78,12 @@ type FileChange struct {
 	existed       bool
 }
 
-// SnapshotChange is a target's new snapshot, and the SQL of the migration
-// recording it: what a database that hasn't the change runs to get it.
+// SnapshotChange is a target's new snapshot, and the migration recording
+// it: what a database that hasn't the change runs to get it.
 type SnapshotChange struct {
 	Target        *Target
 	Before, After *pipeline.Snapshot
-	SQL           string
+	Migration     pipeline.Migration
 }
 
 // MigrationChange is a revert migration for a target.
@@ -371,7 +371,7 @@ func Execute(p *Plan, check func() error) error {
 	}
 	for _, s := range p.Snapshots {
 		s := s
-		u, err := s.Target.SaveSnapshot(s.After, s.SQL)
+		u, err := s.Target.SaveSnapshot(s.After, s.Migration)
 		if err != nil {
 			return rollback(err)
 		}

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"github.com/thec1oud/dpg/internal/executor"
 	"github.com/thec1oud/dpg/internal/format"
 	"github.com/thec1oud/dpg/internal/ignore"
+	"github.com/thec1oud/dpg/internal/ledger"
 	"github.com/thec1oud/dpg/internal/migrationlog"
 	"github.com/thec1oud/dpg/internal/pipeline"
 	"github.com/thec1oud/dpg/internal/project"
@@ -238,12 +240,12 @@ func loadResolveEnv(f resolveFlags) (*resolveEnv, error) {
 			objs, _, err := compiler.CompileWith(files, dir, pipeline.Default, opts)
 			return objs, err
 		},
-		RenderSQL: func(ops []pipeline.DiffOp) (string, error) {
+		Emit: func(ops []pipeline.DiffOp) (pipeline.Migration, error) {
 			emitter, err := pipeline.MustResolve[pipeline.Emitter](pipeline.Default, pipeline.KeyEmitter)
 			if err != nil {
-				return "", err
+				return pipeline.Migration{}, err
 			}
-			return renderSQL(emitter, ops, pipeline.MigrationMeta{GeneratedAt: time.Now().UTC()})
+			return emitter.Emit(ops, pipeline.MigrationMeta{GeneratedAt: time.Now().UTC()})
 		},
 	}}
 	env.targets, err = env.load()
@@ -380,11 +382,21 @@ func (env *resolveEnv) target(cl *project.Cluster, db *project.Database, files [
 		Source: source, Index: index, SourceFiles: files, SourceDir: dir, CompileOpts: opts,
 		ConfigPath: configPath,
 		AckPath:    ackFile,
-		LogErr: noBaselineHint(logErr),
-		SaveSnapshot: func(s *pipeline.Snapshot, sql string) (func() error, error) {
+		LogErr:     noBaselineHint(logErr),
+		SaveSnapshot: func(s *pipeline.Snapshot, m pipeline.Migration) (func() error, error) {
 			// The adopted state is recorded as a migration: what other
-			// databases run to get it (the database it came from has it).
-			_, undoEntry, err := recordMigration(log, sql, migrationlog.OriginAdopt, stored.Objects, s)
+			// databases run to get it. This database has it: its ledger
+			// records it as complete.
+			led := ledgerFor(env.proj.RootConfig)
+			e, err := migrationlog.New(log.Head(), migrationlog.StepsOf(m), migrationlog.OriginAdopt, stored.Objects, s.Objects, time.Now())
+			if err != nil {
+				return nil, err
+			}
+			file, err := renderFile(m, led, ledger.Of(snapKey, e))
+			if err != nil {
+				return nil, err
+			}
+			undoEntry, err := recordEntry(log, e, file, s)
 			if err != nil {
 				return nil, err
 			}
@@ -392,10 +404,26 @@ func (env *resolveEnv) target(cl *project.Cluster, db *project.Database, files [
 				undoEntry()
 				return nil, err
 			}
-			return func() error {
+			restore := func() error {
 				undoEntry()
 				return store.Save(cl.Name(), snapKey, &stored)
-			}, nil
+			}
+			if led != nil {
+				if err := recordInLedger(ctx, connect, led, snapKey, e); err != nil {
+					restore()
+					return nil, err
+				}
+				inner := restore
+				restore = func() error {
+					c, err := connect()
+					if err == nil {
+						_, err = c.Exec(ctx, led.Forget(ledger.Of(snapKey, e), ledger.Complete))
+						c.Close(ctx)
+					}
+					return errors.Join(err, inner())
+				}
+			}
+			return restore, nil
 		},
 		NewFile: func(kind, key string) string { return newDeclarationFile(dir, db == nil, kind, key) },
 	}

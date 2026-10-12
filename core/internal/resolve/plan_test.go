@@ -26,15 +26,15 @@ func testTarget(t *testing.T, items ...drift.Item) *Target {
 	saved := &pipeline.Snapshot{}
 	return &Target{
 		Cluster: "prod", Database: "app",
-		Report:       &drift.Report{Items: items},
-		Snapshot:     &pipeline.Snapshot{},
-		SaveSnapshot: func(s *pipeline.Snapshot, sql string) (func() error, error) {
+		Report:   &drift.Report{Items: items},
+		Snapshot: &pipeline.Snapshot{},
+		SaveSnapshot: func(s *pipeline.Snapshot, m pipeline.Migration) (func() error, error) {
 			prev := *saved
 			*saved = *s
 			return func() error { *saved = prev; return nil }, nil
 		},
-		ConfigPath:   cfg,
-		AckPath:      filepath.Join(dir, ".dpg", "acknowledged", "prod", "app.json"),
+		ConfigPath: cfg,
+		AckPath:    filepath.Join(dir, ".dpg", "acknowledged", "prod", "app.json"),
 	}
 }
 

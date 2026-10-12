@@ -78,6 +78,7 @@ type RootConfig struct {
 	Fmt        FmtConfig        `toml:"fmt"`
 	Snapshots  SnapshotsConfig  `toml:"snapshots"`
 	Migrations MigrationsConfig `toml:"migrations"`
+	Ledger     LedgerConfig     `toml:"ledger"`
 	NameMaps   NameMapsConfig   `toml:"namemaps"`
 	Ignore     IgnoreConfig     `toml:"ignore"`
 }
@@ -228,6 +229,18 @@ type MigrationsConfig struct {
 	Directory string `toml:"directory"`
 }
 
+// LedgerConfig controls the ledger table each database records the
+// migrations it has run in (RFC Section 16.9).
+type LedgerConfig struct {
+	// Enabled turns the ledger on (the default).
+	Enabled *bool `toml:"enabled"`
+	// Schema is the schema of the ledger table. Default: "dpg".
+	Schema string `toml:"schema"`
+}
+
+// On reports whether the ledger is used.
+func (l LedgerConfig) On() bool { return l.Enabled == nil || *l.Enabled }
+
 // DefaultRootConfig returns a RootConfig populated with the RFC defaults.
 func DefaultRootConfig() RootConfig {
 	return RootConfig{
@@ -249,6 +262,9 @@ func DefaultRootConfig() RootConfig {
 		},
 		Migrations: MigrationsConfig{
 			Directory: ".dpg/migrations",
+		},
+		Ledger: LedgerConfig{
+			Schema: "dpg",
 		},
 	}
 }
@@ -304,6 +320,9 @@ func LoadRoot(dir string) (RootConfig, error) {
 	}
 	if strings.TrimSpace(cfg.Migrations.Directory) == "" {
 		return RootConfig{}, fmt.Errorf("%s: [migrations]: directory can't be empty: the migration log can't be turned off", path)
+	}
+	if strings.TrimSpace(cfg.Ledger.Schema) == "" {
+		return RootConfig{}, fmt.Errorf("%s: [ledger]: schema can't be empty", path)
 	}
 	return cfg, nil
 }

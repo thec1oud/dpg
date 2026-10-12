@@ -84,7 +84,15 @@ func (c *Cluster) EffectiveMinPGVersion(root config.RootConfig) int {
 // EffectiveIgnore returns the [ignore] patterns for this cluster's own
 // objects: the project root's and this cluster's, together.
 func (c *Cluster) EffectiveIgnore(root config.RootConfig) map[string][]string {
-	return mergeIgnore(root.Ignore, c.Config.Ignore)
+	return withLedger(mergeIgnore(root.Ignore, c.Config.Ignore), root)
+}
+
+// withLedger ignores the ledger's schema: DPG keeps its own records there.
+func withLedger(m map[string][]string, root config.RootConfig) map[string][]string {
+	if root.Ledger.On() && root.Ledger.Schema != "" {
+		m["schema"] = append(m["schema"], root.Ledger.Schema)
+	}
+	return m
 }
 
 // Database represents a single PostgreSQL database within a cluster.
@@ -115,7 +123,7 @@ func (d *Database) EffectiveMinPGVersion(cl *Cluster, root config.RootConfig) in
 // project root's, its cluster's and its own, together. cl must be this
 // database's own owning cluster.
 func (d *Database) EffectiveIgnore(cl *Cluster, root config.RootConfig) map[string][]string {
-	return mergeIgnore(root.Ignore, cl.Config.Ignore, d.Config.Ignore)
+	return withLedger(mergeIgnore(root.Ignore, cl.Config.Ignore, d.Config.Ignore), root)
 }
 
 func mergeIgnore(levels ...config.IgnoreConfig) map[string][]string {
