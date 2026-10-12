@@ -22,13 +22,13 @@ type macroStore map[string]MacroDef
 //
 // MACRO declarations are removed from the output. The result is valid DPG
 // source with all spreads inlined.
-func preprocessMacrosWithGlobal(src []byte, global macroStore, keepSpreads bool) ([]byte, error) {
+func preprocessMacrosWithGlobal(src []byte, global macroStore, keepSpreads bool) ([]byte, *sourceMap, error) {
 	if keepSpreads {
 		return expandMacros(src, nil, true)
 	}
 	local, err := collectMacros(src)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var store macroStore
 	if len(global) == 0 {
@@ -44,7 +44,7 @@ func preprocessMacrosWithGlobal(src []byte, global macroStore, keepSpreads bool)
 		}
 	}
 	if err := resolveStoreBodies(store); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	return expandMacros(src, store, false)
 }
@@ -153,8 +153,8 @@ func collectMacros(src []byte) (macroStore, error) {
 // expandMacros replaces ...name occurrences in src with the corresponding macro body.
 // MACRO declarations are removed from the output. With keepSpreads, spreads
 // are written as they are instead.
-func expandMacros(src []byte, store macroStore, keepSpreads bool) ([]byte, error) {
-	var out strings.Builder
+func expandMacros(src []byte, store macroStore, keepSpreads bool) ([]byte, *sourceMap, error) {
+	out := &mapWriter{}
 	p := &macroParser{src: src}
 	// brackets tracks the stack of currently-open '(' / '{' delimiters in
 	// the real source text, so a spread site can be checked against its
@@ -170,18 +170,18 @@ func expandMacros(src []byte, store macroStore, keepSpreads bool) ([]byte, error
 		if p.peek() == '\'' {
 			start := p.pos
 			if err := p.skipSingleQuoted(); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
-			out.Write(src[start:p.pos])
+			out.copy(src, start, p.pos)
 			continue
 		}
 		// Preserve dollar-quoted strings verbatim.
 		if tag, ok := p.peekDollarTag(); ok {
 			start := p.pos
 			if err := p.skipDollarQuoted(tag); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
-			out.Write(src[start:p.pos])
+			out.copy(src, start, p.pos)
 			continue
 		}
 		// Preserve comments verbatim.
@@ -190,7 +190,7 @@ func expandMacros(src []byte, store macroStore, keepSpreads bool) ([]byte, error
 			for !p.eof() && p.peek() != '\n' {
 				p.advance()
 			}
-			out.Write(src[start:p.pos])
+			out.copy(src, start, p.pos)
 			continue
 		}
 		if p.peek() == '/' && p.peekAt(1) == '*' {
@@ -205,7 +205,7 @@ func expandMacros(src []byte, store macroStore, keepSpreads bool) ([]byte, error
 				}
 				p.advance()
 			}
-			out.Write(src[start:p.pos])
+			out.copy(src, start, p.pos)
 			continue
 		}
 
@@ -223,12 +223,12 @@ func expandMacros(src []byte, store macroStore, keepSpreads bool) ([]byte, error
 					case '(':
 						p.advance()
 						if _, err := p.readBalanced('(', ')'); err != nil {
-							return nil, err
+							return nil, nil, err
 						}
 					case '{':
 						p.advance()
 						if _, err := p.readBalanced('{', '}'); err != nil {
-							return nil, err
+							return nil, nil, err
 						}
 					}
 				}
@@ -239,11 +239,11 @@ func expandMacros(src []byte, store macroStore, keepSpreads bool) ([]byte, error
 				}
 				// Keep the declaration's line breaks so every later source
 				// position keeps its original line number.
-				out.WriteString(strings.Repeat("\n", strings.Count(string(src[c:p.pos]), "\n")))
+				out.replace(strings.Repeat("\n", strings.Count(string(src[c:p.pos]), "\n")), c, p.pos, "")
 				continue
 			}
 			// Not MACRO — write the word verbatim.
-			out.Write(src[c:p.pos])
+			out.copy(src, c, p.pos)
 			continue
 		}
 
@@ -253,35 +253,33 @@ func expandMacros(src []byte, store macroStore, keepSpreads bool) ([]byte, error
 			p.advance()
 			p.advance()
 			p.advance()
-			afterDots := p.pos
 			p.skipWS()
 			name := p.readWord()
 			if name == "" {
 				// Not a spread: keep the text skipped above, so line numbers
 				// after it don't shift.
-				out.WriteString("...")
-				out.Write(src[afterDots:p.pos])
+				out.copy(src, spreadStart, p.pos)
 				continue
 			}
 			if keepSpreads {
-				out.Write(src[spreadStart:p.pos])
+				out.copy(src, spreadStart, p.pos)
 				continue
 			}
 			def, ok := store[name]
 			if !ok {
-				return nil, fmt.Errorf("spread ...%s: macro %q is not defined (DPG-E010)", name, name)
+				return nil, nil, fmt.Errorf("spread ...%s: macro %q is not defined (DPG-E010)", name, name)
 			}
 			if len(brackets) > 0 {
 				switch innermost := brackets[len(brackets)-1]; {
 				case def.ParenStyle && innermost == '{':
-					return nil, fmt.Errorf("spread ...%s: paren-body macro %q spread inside a { } block, must be spread inside a ( ) list (DPG-E008)", name, name)
+					return nil, nil, fmt.Errorf("spread ...%s: paren-body macro %q spread inside a { } block, must be spread inside a ( ) list (DPG-E008)", name, name)
 				case !def.ParenStyle && innermost == '(':
-					return nil, fmt.Errorf("spread ...%s: brace-body macro %q spread inside a ( ) list, must be spread inside a { } block (DPG-E009)", name, name)
+					return nil, nil, fmt.Errorf("spread ...%s: brace-body macro %q spread inside a ( ) list, must be spread inside a { } block (DPG-E009)", name, name)
 				}
 			}
 			// The expansion stays on the spread's own line, so later source
 			// positions keep their original line numbers.
-			out.WriteString(oneLine(def.Body))
+			out.replace(oneLine(def.Body), spreadStart, p.pos, name)
 			// Consume optional trailing comma/semicolon that was the spread's separator.
 			// We leave it to the caller to provide correct separators around the spread.
 			continue
@@ -295,10 +293,11 @@ func expandMacros(src []byte, store macroStore, keepSpreads bool) ([]byte, error
 				brackets = brackets[:len(brackets)-1]
 			}
 		}
-		out.WriteByte(src[p.pos])
+		out.copy(src, p.pos, p.pos+1)
 		p.advance()
 	}
-	return []byte(out.String()), nil
+	expanded, smap := out.finish(len(src))
+	return expanded, smap, nil
 }
 
 // oneLine rewrites an expanded macro body onto a single line: line comments

@@ -64,12 +64,12 @@ func (sc *Scanner) AddGlobalMacros(src []byte) error {
 // macros seeded via AddGlobalMacros are available to all files; file-local
 // definitions take precedence over global ones.
 func (sc *Scanner) Scan(path string, src []byte) ([]pipeline.RawObject, error) {
-	expanded, err := preprocessMacrosWithGlobal(src, sc.global, sc.keepSpreads)
+	expanded, smap, err := preprocessMacrosWithGlobal(src, sc.global, sc.keepSpreads)
 	if err != nil {
 		return nil, fmt.Errorf("%s: macro preprocessing: %w", path, err)
 	}
-	s := &state{src: expanded, path: path, line: 1, col: 1}
-	objects, _, err := s.scanBody("", false)
+	s := &state{src: expanded, path: path, line: 1, col: 1, text: &fileText{path: path, smap: smap, lines: newLineIndex(src)}}
+	objects, _, _, err := s.scanBody("", false)
 	return objects, err
 }
 
@@ -82,6 +82,8 @@ type state struct {
 	path string
 	line int
 	col  int
+	// text maps offsets in src (the macro-expanded text) to the original.
+	text *fileText
 }
 
 // cursor captures the full scanner position for save/restore.
@@ -849,9 +851,10 @@ func (s *state) tryReadSchemaAttr() (string, bool, error) {
 //   - the raw schema attribute text for the enclosing SCHEMA's Part2 (only
 //     meaningful when stopAtBrace==true)
 //   - any error
-func (s *state) scanBody(schemaName string, stopAtBrace bool) ([]pipeline.RawObject, string, error) {
+func (s *state) scanBody(schemaName string, stopAtBrace bool) ([]pipeline.RawObject, string, []pipeline.SchemaAttr, error) {
 	var objects []pipeline.RawObject
 	var attrBuf strings.Builder
+	var attrs []pipeline.SchemaAttr
 
 	for {
 		s.skipWS()
@@ -860,16 +863,18 @@ func (s *state) scanBody(schemaName string, stopAtBrace bool) ([]pipeline.RawObj
 		}
 
 		declPos := s.srcPos()
+		declStart := s.pos
 
 		// Inside a schema body, try to read a schema attribute directive first.
 		if stopAtBrace {
 			attr, ok, err := s.tryReadSchemaAttr()
 			if err != nil {
-				return nil, "", err
+				return nil, "", nil, err
 			}
 			if ok {
 				attrBuf.WriteString(attr)
 				attrBuf.WriteByte('\n')
+				attrs = append(attrs, pipeline.SchemaAttr{Text: attr, At: declStart})
 				continue
 			}
 		}
@@ -877,24 +882,31 @@ func (s *state) scanBody(schemaName string, stopAtBrace bool) ([]pipeline.RawObj
 		// Detect the object kind (also enforces no-verb mandate).
 		kind, err := s.detectKind(declPos)
 		if err != nil {
-			return nil, "", err
+			return nil, "", nil, err
 		}
 
 		// SCHEMA is handled specially: recurse into its body.
 		if kind == pipeline.KindSchema {
 			nested, schemaObj, err := s.readSchemaDecl(declPos)
 			if err != nil {
-				return nil, "", err
+				return nil, "", nil, err
 			}
+			schemaObj.DeclSpan = s.span(declStart, s.pos)
 			objects = append(objects, schemaObj)
 			objects = append(objects, nested...)
 			continue
 		}
 
 		// All other objects.
+		part1Start := s.pos
 		part1, err := s.readPart1(kind, declPos)
 		if err != nil {
-			return nil, "", err
+			return nil, "", nil, err
+		}
+		part1Span := s.textSpan(part1Start, s.pos, part1)
+		part1At := part1Start
+		if i := strings.Index(string(s.src[part1Start:s.pos]), part1); i >= 0 {
+			part1At = part1Start + i
 		}
 		// RFC Section 4.5: a ';' immediately before an
 		// immediately-following '{ }' block is forbidden for every kind
@@ -910,27 +922,35 @@ func (s *state) scanBody(schemaName string, stopAtBrace bool) ([]pipeline.RawObj
 		s.skipWS()
 		sawSemi := false
 		var end pipeline.SourcePos
+		endOff := s.pos
 		if s.peek() == ';' {
 			sawSemi = true
 			s.advance()
 			end = s.srcPos()
+			endOff = s.pos
 			s.skipWS()
 		}
 		blockFollows := s.peek() == '{'
 		switch {
 		case sawSemi && blockFollows:
-			return nil, "", pipeline.ErrorfCode(declPos, "DPG-E037",
+			return nil, "", nil, pipeline.ErrorfCode(declPos, "DPG-E037",
 				"unexpected ';' before '{ }' block (Section 4.5): remove it — a semicolon must never appear immediately before a block")
 		case !sawSemi && !blockFollows:
-			return nil, "", pipeline.ErrorfCode(declPos, "DPG-E038",
+			return nil, "", nil, pipeline.ErrorfCode(declPos, "DPG-E038",
 				"missing ';' terminator (Section 4.5): a declaration with no { } block must end with ';'")
 		}
 		part2, hasPart2, err := s.readOptionalPart2()
 		if err != nil {
-			return nil, "", err
+			return nil, "", nil, err
 		}
+		var part2Span pipeline.Span
+		part2At := 0
 		if hasPart2 {
 			end = s.srcPos()
+			endOff = s.pos
+			// part2 is the text between the braces, the '}' just consumed.
+			part2At = s.pos - 1 - len(part2)
+			part2Span = s.span(part2At, s.pos-1)
 		}
 		// Consume an optional trailing ';' after a '{ }' block.
 		s.skipWS()
@@ -939,17 +959,23 @@ func (s *state) scanBody(schemaName string, stopAtBrace bool) ([]pipeline.RawObj
 		}
 
 		objects = append(objects, pipeline.RawObject{
-			Kind:     kind,
-			Part1:    part1,
-			Part2:    part2,
-			HasPart2: hasPart2,
-			Schema:   schemaName,
-			Pos:      declPos,
-			End:      end,
+			Kind:      kind,
+			Part1:     part1,
+			Part2:     part2,
+			HasPart2:  hasPart2,
+			Schema:    schemaName,
+			Pos:       declPos,
+			End:       end,
+			DeclSpan:  s.span(declStart, endOff),
+			Part1Span: part1Span,
+			Part2Span: part2Span,
+			Text:      s.text,
+			Part1At:   part1At,
+			Part2At:   part2At,
 		})
 	}
 
-	return objects, strings.TrimSpace(attrBuf.String()), nil
+	return objects, strings.TrimSpace(attrBuf.String()), attrs, nil
 }
 
 // readSchemaDecl reads a complete SCHEMA name { ... } declaration. The SCHEMA
@@ -989,7 +1015,7 @@ func (s *state) readSchemaDecl(pos pipeline.SourcePos) (nested []pipeline.RawObj
 	s.advance() // consume '{'
 
 	// Recursively scan the schema body.
-	nestedObjs, schemaAttrs, err := s.scanBody(name, true)
+	nestedObjs, schemaAttrs, attrs, err := s.scanBody(name, true)
 	if err != nil {
 		return nil, pipeline.RawObject{}, err
 	}
@@ -1003,11 +1029,13 @@ func (s *state) readSchemaDecl(pos pipeline.SourcePos) (nested []pipeline.RawObj
 	s.advance()
 
 	obj := pipeline.RawObject{
-		Kind:  pipeline.KindSchema,
-		Part1: part1,
-		Part2: schemaAttrs,
-		Pos:   pos,
-		End:   s.srcPos(),
+		Kind:        pipeline.KindSchema,
+		Part1:       part1,
+		Part2:       schemaAttrs,
+		Pos:         pos,
+		End:         s.srcPos(),
+		Text:        s.text,
+		SchemaAttrs: attrs,
 	}
 	return nestedObjs, obj, nil
 }

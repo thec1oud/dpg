@@ -123,6 +123,25 @@ var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 // bytes before tokenizing or parsing them, so that a file's line-ending
 // style and the presence or absence of a BOM never affect scanning, dollar-
 // quoted body content, or emitted SQL.
+// OriginalOffset maps an offset into NormalizeSource(raw) back to the
+// corresponding offset into raw: it adds the BOM's length and one byte for
+// each "\r" removed before it.
+func OriginalOffset(raw []byte, normalized int) int {
+	i := 0
+	if bytes.HasPrefix(raw, utf8BOM) {
+		i = len(utf8BOM)
+	}
+	for n := 0; i < len(raw) && n < normalized; i++ {
+		if raw[i] == '\r' {
+			if i+1 < len(raw) && raw[i+1] == '\n' {
+				continue // "\r\n" became "\n": the "\n" counts
+			}
+		}
+		n++
+	}
+	return i
+}
+
 func NormalizeSource(src []byte) []byte {
 	src = bytes.TrimPrefix(src, utf8BOM)
 	src = bytes.ReplaceAll(src, []byte("\r\n"), []byte("\n"))

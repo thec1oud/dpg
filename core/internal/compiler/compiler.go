@@ -33,6 +33,9 @@ type Options struct {
 	// used for objects with no schema qualifier outside any schema scope.
 	// Empty means "public".
 	DefaultSchema string
+	// Declared, when set, is called with each declaration and each object
+	// built from it, before declarations of the same object are merged.
+	Declared func(raw pipeline.RawObject, obj pipeline.IRObject)
 }
 
 // CompileWith is Compile with explicit Options.
@@ -60,6 +63,14 @@ func CompileWith(files []string, dbDir string, reg *pipeline.Registry, opts Opti
 	resolver, err := pipeline.MustResolve[pipeline.DependencyResolver](reg, pipeline.KeyDependencyResolver)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	declared := func(raw pipeline.RawObject, objs ...pipeline.IRObject) {
+		if opts.Declared != nil {
+			for _, o := range objs {
+				opts.Declared(raw, o)
+			}
+		}
 	}
 
 	var rawObjects []pipeline.RawObject
@@ -201,6 +212,7 @@ func CompileWith(files []string, dbDir string, reg *pipeline.Registry, opts Opti
 				return nil, nil, buildErr
 			}
 			irObjects = append(irObjects, objs...)
+			declared(raw, objs...)
 			continue
 		}
 
@@ -227,6 +239,7 @@ func CompileWith(files []string, dbDir string, reg *pipeline.Registry, opts Opti
 				return nil, nil, buildErr
 			}
 			irObjects = append(irObjects, objs...)
+			declared(raw, objs...)
 			continue
 		}
 
@@ -263,6 +276,7 @@ func CompileWith(files []string, dbDir string, reg *pipeline.Registry, opts Opti
 			return nil, nil, buildErr
 		}
 		irObjects = append(irObjects, obj)
+		declared(raw, obj)
 	}
 	if diags.HasErrors() {
 		return nil, nil, diags

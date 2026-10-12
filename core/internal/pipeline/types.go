@@ -182,7 +182,46 @@ type RawObject struct {
 	// closing '}'. dpg fmt uses it to tell comments inside a declaration
 	// from comments after it on the same line.
 	End SourcePos
+	// DeclSpan covers the whole declaration, kind keyword to terminator;
+	// Part1Span the Part 1 text (as in Part1); Part2Span the text inside
+	// the block's braces (as in Part2), unset when there is no block.
+	DeclSpan, Part1Span, Part2Span Span
+	// Text maps a range of Part1 or Part2 to the original file: Part1 starts
+	// at offset Part1At of the scanned text, Part2 at Part2At. Nil when the
+	// scanner doesn't record it.
+	Text             SourceText
+	Part1At, Part2At int
+	// SchemaAttrs are a SCHEMA block's own directives (OWNER, COMMENT,
+	// GRANTS, ...), each with its text and the offset of the scanned text
+	// at which it starts. Part2 holds them joined.
+	SchemaAttrs []SchemaAttr
 }
+
+// SchemaAttr is one directive of a SCHEMA block (see RawObject.SchemaAttrs).
+type SchemaAttr struct {
+	Text string
+	At   int
+}
+
+// SourceText maps a range [start, end) of the text a file was scanned from,
+// after macro expansion, to a Span of the original file.
+type SourceText interface {
+	Span(start, end int) Span
+}
+
+// Span is a range of source text: byte offsets [Start, End) into the file
+// after scanutil.NormalizeSource (no BOM, LF line endings), with the line and
+// column of Start. Macro names the macro when the range was produced by a
+// ...name spread; Start and End then cover the spread itself.
+type Span struct {
+	File       string
+	Start, End int
+	Line, Col  int
+	Macro      string
+}
+
+// Valid reports whether the span was recorded.
+func (s Span) Valid() bool { return s.Line > 0 }
 
 // Safety classifies the risk of a migration operation (RFC Section 17.2).
 type Safety int

@@ -17,6 +17,7 @@ import (
 	"github.com/thec1oud/dpg/internal/executor"
 	"github.com/thec1oud/dpg/internal/introspect"
 	"github.com/thec1oud/dpg/internal/pipeline"
+	"github.com/thec1oud/dpg/internal/srcindex"
 	"github.com/thec1oud/dpg/internal/testpg"
 )
 
@@ -143,6 +144,10 @@ func TestVerifyDetectsEachChange(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 	snap, _ := store.Load("test", "dpgtest")
+	idx, err := srcindex.Build([]string{f}, dir, pipeline.Default, compiler.Options{})
+	if err != nil {
+		t.Fatalf("index: %v", err)
+	}
 
 	detect := func() []string {
 		t.Helper()
@@ -153,6 +158,19 @@ func TestVerifyDetectsEachChange(t *testing.T) {
 		report, err := drift.Detect(differ, live, snap, drift.Options{Source: source})
 		if err != nil {
 			t.Fatalf("detect: %v", err)
+		}
+		// A changed or missing property the source declares explicitly
+		// must be traceable to the text that declares it
+		// (internal/srcindex), for resolution. One declared only by
+		// omission (an empty WITH list) has no text.
+		for _, it := range report.Items {
+			if it.Group != drift.Drift || it.Property == "" || (it.Change != "changed" && it.Change != "missing") ||
+				it.Snapshot == "" || it.Snapshot == `""` {
+				continue
+			}
+			if len(idx.Spans(it.Object, srcindex.PropertyKey(it.Property))) == 0 {
+				t.Errorf("%s: no source span for %s", it.ID, srcindex.PropertyKey(it.Property))
+			}
 		}
 		var out []string
 		for _, it := range report.Items {
