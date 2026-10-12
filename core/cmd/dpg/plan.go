@@ -262,6 +262,7 @@ func buildPlan(
 		return pipeline.Migration{}, err
 	}
 
+	lintCfg.Snapshot = snap
 	diags := linter.FilterMergeDiagnostics(mergeDiags, lintCfg)
 	if l, ok := pipeline.Resolve[pipeline.Linter](pipeline.Default, pipeline.KeyLinter); ok {
 		lintDiags, lintErr := l.Lint(desired, lintCfg)

@@ -373,6 +373,10 @@ type LinterConfig struct {
 	// this struct, since the same LinterConfig otherwise gets reused across
 	// every cluster/database in a project.
 	MinPGVersion int
+	// Snapshot is the committed snapshot for the database being linted,
+	// for rules that depend on which objects already exist. Nil when none
+	// is loaded; those rules are then skipped.
+	Snapshot *Snapshot
 }
 
 // Conn abstracts a database connection so the pipeline package does not import pgx.

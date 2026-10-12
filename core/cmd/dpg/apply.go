@@ -165,9 +165,16 @@ func runApply(
 		return err
 	}
 
-	diags := linter.FilterMergeDiagnostics(mergeDiags, opts.lintCfg)
+	snap, err := store.Load(cl.Name(), db.Name())
+	if err != nil {
+		return fmt.Errorf("snapshot load: %w", err)
+	}
+
+	lintCfg := opts.lintCfg
+	lintCfg.Snapshot = snap
+	diags := linter.FilterMergeDiagnostics(mergeDiags, lintCfg)
 	if l, ok := pipeline.Resolve[pipeline.Linter](pipeline.Default, pipeline.KeyLinter); ok {
-		lintDiags, lintErr := l.Lint(desired, opts.lintCfg)
+		lintDiags, lintErr := l.Lint(desired, lintCfg)
 		if lintErr != nil {
 			return lintErr
 		}
@@ -180,11 +187,6 @@ func runApply(
 	}
 	if ui.PrintLintDiagnostics(os.Stderr, diags, errColor) {
 		return ui.ErrSilent
-	}
-
-	snap, err := store.Load(cl.Name(), db.Name())
-	if err != nil {
-		return fmt.Errorf("snapshot load: %w", err)
 	}
 
 	ops, err := differ.Diff(desired, snap)

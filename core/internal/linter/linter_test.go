@@ -1,7 +1,9 @@
 package linter
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/thec1oud/dpg/internal/introspect"
@@ -803,5 +805,44 @@ func TestLintMinPGVersionStrictPromotesToError(t *testing.T) {
 	}
 	if diags[0].IsError {
 		t.Error("min-pg-version should be a warning (IsError=false) by default — --strict promotion happens at the CLI layer")
+	}
+}
+
+// TestConcurrentlyNewTable guards RFC Section 7.7: CONCURRENTLY on an index
+// of a table or materialized view not yet in the snapshot warns; on an
+// existing (or renamed-from-existing) one it doesn't; without a snapshot
+// the rule is skipped.
+func TestConcurrentlyNewTable(t *testing.T) {
+	idx := func() []*ir.Index { return []*ir.Index{{Name: "i", Concurrently: true}, {Name: "j"}} }
+	old := "old_t"
+	objs := []pipeline.IRObject{
+		&ir.Table{Schema: "public", Name: "new_t", Indexes: idx()},
+		&ir.Table{Schema: "public", Name: "existing_t", Indexes: idx()},
+		&ir.Table{Schema: "public", Name: "renamed_t", RenamedFrom: &old, Indexes: idx()},
+		&ir.View{Schema: "public", Name: "new_mv", Materialized: true, Indexes: idx()},
+	}
+	snap := &pipeline.Snapshot{Objects: map[string]json.RawMessage{
+		"public.existing_t": nil,
+		"public.old_t":      nil,
+	}}
+	diags, err := New().Lint(objs, pipeline.LinterConfig{Snapshot: snap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, d := range diags {
+		if d.Rule == "concurrently-new-table" {
+			got = append(got, d.Message)
+		}
+	}
+	if len(got) != 2 || !strings.Contains(got[0], "public.new_t") || !strings.Contains(got[1], "public.new_mv") {
+		t.Errorf("got %q, want warnings for public.new_t and public.new_mv only", got)
+	}
+
+	diags, _ = New().Lint(objs, pipeline.LinterConfig{})
+	for _, d := range diags {
+		if d.Rule == "concurrently-new-table" {
+			t.Errorf("rule ran without a snapshot: %s", d.Message)
+		}
 	}
 }

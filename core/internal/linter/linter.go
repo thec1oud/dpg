@@ -75,6 +75,8 @@ func checkObject(obj pipeline.IRObject, cfg pipeline.LinterConfig) []pipeline.Li
 
 	diags = append(diags, checkMinPGVersion(obj, cfg)...)
 
+	diags = append(diags, checkConcurrentlyOnNewRelation(obj, cfg)...)
+
 	switch o := obj.(type) {
 	case *ir.Table:
 		diags = append(diags, checkTable(o, cfg)...)
@@ -169,6 +171,69 @@ func checkMinPGVersion(obj pipeline.IRObject, cfg pipeline.LinterConfig) []pipel
 		}
 	}
 	return diags
+}
+
+// checkConcurrentlyOnNewRelation implements the concurrently-new-table
+// rule (RFC Section 7.7): an index on a table or materialized view that is
+// not yet in the snapshot is created in the same transaction as the
+// relation, so CONCURRENTLY on it has no effect. Skipped without a
+// snapshot.
+func checkConcurrentlyOnNewRelation(obj pipeline.IRObject, cfg pipeline.LinterConfig) []pipeline.LintDiagnostic {
+	if cfg.Snapshot == nil {
+		return nil
+	}
+	var indexes []*ir.Index
+	var oldName string
+	switch o := obj.(type) {
+	case *ir.Table:
+		indexes = o.Indexes
+		if o.RenamedFrom != nil {
+			oldName = qualName(renamedSchema(o.Schema, o.RenamedFromSchema), *o.RenamedFrom)
+		}
+	case *ir.View:
+		if !o.Materialized {
+			return nil
+		}
+		indexes = o.Indexes
+		if o.RenamedFrom != nil {
+			oldName = qualName(renamedSchema(o.Schema, o.RenamedFromSchema), *o.RenamedFrom)
+		}
+	default:
+		return nil
+	}
+	if _, ok := cfg.Snapshot.Objects[obj.QualifiedName()]; ok {
+		return nil
+	}
+	if _, ok := cfg.Snapshot.Objects[oldName]; ok && oldName != "" {
+		return nil
+	}
+	var diags []pipeline.LintDiagnostic
+	for _, idx := range indexes {
+		if !idx.Concurrently {
+			continue
+		}
+		diags = append(diags, pipeline.LintDiagnostic{
+			Pos:  idx.Pos,
+			Rule: "concurrently-new-table",
+			Message: fmt.Sprintf("index %s: CONCURRENTLY has no effect, %s is new and its indexes are created in the same transaction",
+				idx.Name, obj.QualifiedName()),
+		})
+	}
+	return diags
+}
+
+func renamedSchema(schema string, renamedFromSchema *string) string {
+	if renamedFromSchema != nil {
+		return *renamedFromSchema
+	}
+	return schema
+}
+
+func qualName(schema, name string) string {
+	if schema == "" {
+		return name
+	}
+	return schema + "." + name
 }
 
 // hasPrivilege reports whether priv (case-insensitive) appears in any grant

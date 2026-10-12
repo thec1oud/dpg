@@ -141,7 +141,7 @@ Write `CONCURRENTLY` to avoid locking the table during index creation on a large
 CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_email" ON "public"."users" ("email");
 ```
 
-This has no effect on an index declared alongside its own brand-new table — PostgreSQL rejects `CREATE INDEX CONCURRENTLY` inside a transaction block, and a new table's indexes are always emitted transactionally with it, so the compiler silently forces them non-concurrent regardless of this keyword.
+This has no effect on an index declared alongside its own brand-new table — PostgreSQL rejects `CREATE INDEX CONCURRENTLY` inside a transaction block, and a new table's indexes are always emitted transactionally with it, so the compiler forces them non-concurrent regardless of this keyword, and the linter warns (`concurrently-new-table`).
 
 ## Index removal
 

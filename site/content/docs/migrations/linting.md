@@ -211,6 +211,27 @@ warn  [deprecated-reference] foreign key (unnamed) on public.orders references d
 
 Scoped to `FOREIGN KEY` and `TYPE` references only — a `VIEW` query, a function/procedure body, or a `DEFAULT` expression referencing a deprecated object is not covered, since none of those has a real SQL parser in DPG today and a text-scan heuristic risks a false-positive warning. An already-deprecated referencing object never double-fires this rule — its own `deprecated` diagnostic already covers it.
 
+---
+
+## `concurrently-new-table`
+
+**Severity:** Warning — **Config:** always enabled
+
+Warns when an index declares `CONCURRENTLY` on a table or materialized view that isn't in the snapshot yet. A new relation's indexes are created in the same transaction as the relation, and PostgreSQL refuses `CREATE INDEX CONCURRENTLY` inside a transaction, so the keyword has no effect there.
+
+```sql
+TABLE events ( id bigint, at timestamptz )   -- not applied yet
+{
+    INDEXES { CONCURRENTLY idx_events_at (at); }
+}
+```
+
+```
+warn  [concurrently-new-table] index idx_events_at: CONCURRENTLY has no effect, public.events is new and its indexes are created in the same transaction
+```
+
+Checked by `dpg plan` and `dpg apply`, which load the snapshot. `dpg validate` doesn't load one, so it skips this rule.
+
 ## `[linter.rules]` — per-rule severity overrides
 
 Individual rules can be set to `"error"`, `"warning"`, or `"off"`, overriding their own default level:
