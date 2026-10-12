@@ -105,6 +105,21 @@ func TestSort_TypeBeforeTable(t *testing.T) {
 	assertBefore(t, sorted, "app.order_status", "app.orders")
 }
 
+// An introspected column type is format_type()'s text, "cron.state" with
+// no separate schema, for a type outside the search path.
+func TestDependencies_IntrospectedQualifiedColumnType(t *testing.T) {
+	tbl := table("cron", "job")
+	tbl.Columns = []*ir.Column{columnWithType("s", "", "cron.state")}
+	objects := []pipeline.IRObject{tbl, schema("cron"), enumType("cron", "state")}
+	if got := strings.Join(graph.Dependencies(objects)["cron.job"], ","); got != "cron,cron.state" {
+		t.Errorf("dependencies of cron.job: %q", got)
+	}
+	if tbl.Columns[0].Type.Name != "cron.state" || tbl.Columns[0].Type.Schema != "" {
+		t.Errorf("the column's type was modified: %#v", tbl.Columns[0].Type)
+	}
+	assertBefore(t, sortObjects(t, objects), "cron.state", "cron.job")
+}
+
 // TestSort_FunctionBeforeTableTrigger guards a real bug found live-testing a
 // demo project: a table-level trigger's EXECUTE FUNCTION target (Trigger.Function,
 // already a structured field) was never turned into a graph edge — the earlier

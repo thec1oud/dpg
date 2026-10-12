@@ -33,6 +33,161 @@ func (r *Resolver) Sort(objects []pipeline.IRObject) ([]pipeline.IRObject, error
 		return nil, nil
 	}
 
+	edges, idx, diags := buildEdges(objects)
+
+	// Circular FK edges that can be deferred.
+	type deferredFK struct {
+		table *ir.Table
+		fk    *ir.Constraint
+	}
+	var deferred []deferredFK
+
+	if diags.HasErrors() {
+		return nil, diags
+	}
+
+	// Kahn's algorithm.
+	// inDegree[i] = number of objects that must come before i.
+	inDegree := make([]int, n)
+	for i := range edges {
+		for j := range edges[i] {
+			inDegree[j]++
+		}
+	}
+
+	var queue []int
+	for i, d := range inDegree {
+		if d == 0 {
+			queue = append(queue, i)
+		}
+	}
+
+	var sorted []pipeline.IRObject
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		sorted = append(sorted, objects[cur])
+		var newlyReady []int
+		for j := range edges[cur] {
+			inDegree[j]--
+			if inDegree[j] == 0 {
+				newlyReady = append(newlyReady, j)
+			}
+		}
+		// Sort by original position to make the output deterministic and stable
+		// (respects source file order as tiebreaker between independent objects).
+		sort.Ints(newlyReady)
+		queue = append(queue, newlyReady...)
+	}
+
+	if len(sorted) != n {
+		// There is a cycle. Detect DEFERRABLE FKs that could break the cycle.
+		cycle := findCycle(edges, n)
+		if canDefer(objects, cycle, idx) {
+			cycleSet := make(map[int]bool, len(cycle))
+			for _, i := range cycle {
+				cycleSet[i] = true
+			}
+
+			// Remove circular FKs from tables in the cycle, collecting them as deferred.
+			modified := make([]pipeline.IRObject, len(objects))
+			copy(modified, objects)
+
+			removedAny := false
+			for i, obj := range modified {
+				if !cycleSet[i] {
+					continue
+				}
+				tbl, ok := obj.(*ir.Table)
+				if !ok {
+					continue
+				}
+				var keepConstraints []*ir.Constraint
+				for _, cst := range tbl.Constraints {
+					if cst.Type == "FOREIGN KEY" && cst.Deferrable {
+						ref := extractFKRef(cst.Expr)
+						if ref != "" {
+							if j, ok := idx[ref]; ok && cycleSet[j] {
+								deferred = append(deferred, deferredFK{table: tbl, fk: cst})
+								removedAny = true
+								continue
+							}
+						}
+					}
+					keepConstraints = append(keepConstraints, cst)
+				}
+				tblCopy := *tbl
+				tblCopy.Constraints = keepConstraints
+				modified[i] = &tblCopy
+			}
+
+			// Defense in depth, independent of canDefer's own guarantee: if
+			// nothing was actually removed, recursing would hit this exact
+			// cycle again and recurse forever (see canDefer's doc comment,
+			// RFC audit item C.1's infinite-recursion crash). Fall through to
+			// the ordinary "no DEFERRABLE FK" error instead of retrying an
+			// unmodified object set.
+			if !removedAny {
+				members := make([]string, 0, len(cycle))
+				for _, i := range cycle {
+					members = append(members, objects[i].QualifiedName())
+				}
+				return nil, pipeline.ErrorfCode(pipeline.SourcePos{}, "DPG-E017", "circular dependency cycle with no DEFERRABLE FK: %s",
+					strings.Join(members, " → "))
+			}
+
+			reResolved, err := (&Resolver{}).Sort(modified)
+			if err != nil {
+				return objects, nil
+			}
+
+			for _, df := range deferred {
+				for _, obj := range reResolved {
+					if t, ok := obj.(*ir.Table); ok && t.Schema == df.table.Schema && t.Name == df.table.Name {
+						t.Constraints = append(t.Constraints, df.fk)
+						break
+					}
+				}
+			}
+			return reResolved, nil
+		}
+		members := make([]string, 0, len(cycle))
+		for _, i := range cycle {
+			members = append(members, objects[i].QualifiedName())
+		}
+		return nil, pipeline.ErrorfCode(pipeline.SourcePos{}, "DPG-E017", "circular dependency cycle with no DEFERRABLE FK: %s",
+			strings.Join(members, " → "))
+	}
+
+	return sorted, nil
+}
+
+// extractFKRef extracts the referenced table's qualified name from a FK constraint
+// Expr. The Expr looks like `FOREIGN KEY ("col") REFERENCES "schema"."table" ("col2")`.
+// Returns the name in the unquoted form used as index keys (e.g. "schema.table" or "table").
+// Dependencies returns, for each object, the qualified names of the
+// objects among objects it depends on (the edges Sort orders by).
+// Unresolved references are not reported.
+func Dependencies(objects []pipeline.IRObject) map[string][]string {
+	edges, _, _ := buildEdges(objects)
+	out := map[string][]string{}
+	for i := range edges {
+		for j := range edges[i] {
+			// i must come before j: j depends on i.
+			name := objects[j].QualifiedName()
+			out[name] = append(out[name], objects[i].QualifiedName())
+		}
+	}
+	for k := range out {
+		sort.Strings(out[k])
+	}
+	return out
+}
+
+// buildEdges computes the dependency edges between objects (edges[i] holds
+// every j that depends on i) and the index of each object by name.
+func buildEdges(objects []pipeline.IRObject) ([]map[int]bool, map[string]int, pipeline.Diagnostics) {
+	n := len(objects)
 	// Build index: qualifiedName → position. Also record the set of schemas
 	// declared in source — references whose schema is in this set must resolve;
 	// references into schemas not in source (e.g. extension-managed `extensions.geometry`)
@@ -328,13 +483,6 @@ func (r *Resolver) Sort(objects []pipeline.IRObject) ([]pipeline.IRObject, error
 		}
 	}
 
-	// Circular FK edges that can be deferred.
-	type deferredFK struct {
-		table *ir.Table
-		fk    *ir.Constraint
-	}
-	var deferred []deferredFK
-
 	for i, obj := range objects {
 		switch o := obj.(type) {
 		case *ir.Table:
@@ -347,26 +495,32 @@ func (r *Resolver) Sort(objects []pipeline.IRObject) ([]pipeline.IRObject, error
 			for _, col := range o.Columns {
 				checkVirtualTypeCase(col.Type, o.Schema, col.SrcPos,
 					fmt.Sprintf("column %s.%s.%s", o.Schema, o.Name, col.Name))
-				if col.Type.Schema == "pg_catalog" {
+				ct := col.Type
+				if ct.Schema == "" && strings.Contains(ct.Name, ".") {
+					// An introspected column type is format_type()'s text:
+					// "cron.state" for a type outside the search path.
+					ct = ir.ParseTypeText(ct.String())
+				}
+				if ct.Schema == "pg_catalog" {
 					continue
 				}
-				if col.Type.Schema == "" {
+				if ct.Schema == "" {
 					// Unqualified type: could be a built-in or a custom type in the
 					// table's own schema (this is how introspected columns look —
 					// e.g. an enum column reads as "mood", not "public.mood"). Add a
 					// dependency only when a matching custom type is defined; never
 					// error, since built-ins legitimately aren't in the index.
 					if o.Schema != "" {
-						if j, ok := idx[o.Schema+"."+col.Type.Name]; ok {
+						if j, ok := idx[o.Schema+"."+ct.Name]; ok {
 							dependsOn(i, j)
 						}
 					}
 					continue
 				}
-				typeKey := col.Type.Schema + "." + col.Type.Name
+				typeKey := ct.Schema + "." + ct.Name
 				if j, ok := idx[typeKey]; ok {
 					dependsOn(i, j)
-				} else if schemaSet[col.Type.Schema] {
+				} else if schemaSet[ct.Schema] {
 					diags = append(diags, pipeline.Errorf(col.SrcPos,
 						"unresolved type reference %q used by column %s.%s.%s — no such type defined in source",
 						typeKey, o.Schema, o.Name, col.Name))
@@ -690,129 +844,9 @@ func (r *Resolver) Sort(objects []pipeline.IRObject) ([]pipeline.IRObject, error
 		}
 	}
 
-	if diags.HasErrors() {
-		return nil, diags
-	}
-
-	// Kahn's algorithm.
-	// inDegree[i] = number of objects that must come before i.
-	inDegree := make([]int, n)
-	for i := range edges {
-		for j := range edges[i] {
-			inDegree[j]++
-		}
-	}
-
-	var queue []int
-	for i, d := range inDegree {
-		if d == 0 {
-			queue = append(queue, i)
-		}
-	}
-
-	var sorted []pipeline.IRObject
-	for len(queue) > 0 {
-		cur := queue[0]
-		queue = queue[1:]
-		sorted = append(sorted, objects[cur])
-		var newlyReady []int
-		for j := range edges[cur] {
-			inDegree[j]--
-			if inDegree[j] == 0 {
-				newlyReady = append(newlyReady, j)
-			}
-		}
-		// Sort by original position to make the output deterministic and stable
-		// (respects source file order as tiebreaker between independent objects).
-		sort.Ints(newlyReady)
-		queue = append(queue, newlyReady...)
-	}
-
-	if len(sorted) != n {
-		// There is a cycle. Detect DEFERRABLE FKs that could break the cycle.
-		cycle := findCycle(edges, n)
-		if canDefer(objects, cycle, idx) {
-			cycleSet := make(map[int]bool, len(cycle))
-			for _, i := range cycle {
-				cycleSet[i] = true
-			}
-
-			// Remove circular FKs from tables in the cycle, collecting them as deferred.
-			modified := make([]pipeline.IRObject, len(objects))
-			copy(modified, objects)
-
-			removedAny := false
-			for i, obj := range modified {
-				if !cycleSet[i] {
-					continue
-				}
-				tbl, ok := obj.(*ir.Table)
-				if !ok {
-					continue
-				}
-				var keepConstraints []*ir.Constraint
-				for _, cst := range tbl.Constraints {
-					if cst.Type == "FOREIGN KEY" && cst.Deferrable {
-						ref := extractFKRef(cst.Expr)
-						if ref != "" {
-							if j, ok := idx[ref]; ok && cycleSet[j] {
-								deferred = append(deferred, deferredFK{table: tbl, fk: cst})
-								removedAny = true
-								continue
-							}
-						}
-					}
-					keepConstraints = append(keepConstraints, cst)
-				}
-				tblCopy := *tbl
-				tblCopy.Constraints = keepConstraints
-				modified[i] = &tblCopy
-			}
-
-			// Defense in depth, independent of canDefer's own guarantee: if
-			// nothing was actually removed, recursing would hit this exact
-			// cycle again and recurse forever (see canDefer's doc comment,
-			// RFC audit item C.1's infinite-recursion crash). Fall through to
-			// the ordinary "no DEFERRABLE FK" error instead of retrying an
-			// unmodified object set.
-			if !removedAny {
-				members := make([]string, 0, len(cycle))
-				for _, i := range cycle {
-					members = append(members, objects[i].QualifiedName())
-				}
-				return nil, pipeline.ErrorfCode(pipeline.SourcePos{}, "DPG-E017", "circular dependency cycle with no DEFERRABLE FK: %s",
-					strings.Join(members, " → "))
-			}
-
-			reResolved, err := (&Resolver{}).Sort(modified)
-			if err != nil {
-				return objects, nil
-			}
-
-			for _, df := range deferred {
-				for _, obj := range reResolved {
-					if t, ok := obj.(*ir.Table); ok && t.Schema == df.table.Schema && t.Name == df.table.Name {
-						t.Constraints = append(t.Constraints, df.fk)
-						break
-					}
-				}
-			}
-			return reResolved, nil
-		}
-		members := make([]string, 0, len(cycle))
-		for _, i := range cycle {
-			members = append(members, objects[i].QualifiedName())
-		}
-		return nil, pipeline.ErrorfCode(pipeline.SourcePos{}, "DPG-E017", "circular dependency cycle with no DEFERRABLE FK: %s",
-			strings.Join(members, " → "))
-	}
-
-	return sorted, nil
+	return edges, idx, diags
 }
 
-// extractFKRef extracts the referenced table's qualified name from a FK constraint
-// Expr. The Expr looks like `FOREIGN KEY ("col") REFERENCES "schema"."table" ("col2")`.
-// Returns the name in the unquoted form used as index keys (e.g. "schema.table" or "table").
 func extractFKRef(expr string) string {
 	schema, table := extractFKRefParts(expr)
 	if table == "" {
