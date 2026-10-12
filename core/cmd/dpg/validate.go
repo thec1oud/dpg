@@ -65,6 +65,10 @@ Use --format json for machine-readable output.`,
 			}
 
 			lintCfg := linterConfigFrom(proj.RootConfig.Linter)
+			store, err := pipeline.MustResolve[pipeline.SnapshotStore](pipeline.Default, pipeline.KeySnapshotStore)
+			if err != nil {
+				return err
+			}
 
 			hasError := false
 			for _, cl := range clusters {
@@ -75,6 +79,9 @@ Use --format json for machine-readable output.`,
 						ignore.New(cl.EffectiveIgnore(proj.RootConfig)))
 					if err != nil {
 						return err
+					}
+					if err := checkLogOffline(store, proj.MigrationsDir(), cl.Name(), cl.ClusterSnapshotKey(), cl.Name()+" (cluster)"); err != nil {
+						return fmt.Errorf("%s (cluster): %w", cl.Name(), err)
 					}
 					if errored {
 						hasError = true
@@ -92,6 +99,9 @@ Use --format json for machine-readable output.`,
 						ignore.New(db.EffectiveIgnore(cl, proj.RootConfig)))
 					if err != nil {
 						return err
+					}
+					if err := checkLogOffline(store, proj.MigrationsDir(), cl.Name(), db.Name(), cl.Name()+"/"+db.Name()); err != nil {
+						return fmt.Errorf("%s/%s: %w", cl.Name(), db.Name(), err)
 					}
 					if errored {
 						hasError = true

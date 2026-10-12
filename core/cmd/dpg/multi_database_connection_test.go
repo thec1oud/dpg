@@ -81,9 +81,10 @@ func TestMultiDatabaseClusterConnectsToCorrectDatabase(t *testing.T) {
 	dbBOut := filepath.Join(scratchOut, "mdb_b")
 	clusterOut := filepath.Join(scratchOut, "cluster1", "cluster")
 	store := &snapshot.FileStore{Dir: filepath.Join(scratchOut, ".dpg", "snapshots")}
+	migrationsDir := filepath.Join(scratchOut, ".dpg", "migrations")
 
 	// --- dump: each database's dump must contain only its own table ---
-	if err := runDump(cl, dbA, dbAOut, clusterOut, introspect.New(), store, resolver, fmtOpts, true); err != nil {
+	if err := runDump(cl, dbA, dbAOut, clusterOut, introspect.New(), store, resolver, fmtOpts, true, migrationsDir); err != nil {
 		t.Fatalf("runDump mdb_a: %v", err)
 	}
 	schemaA, err := os.ReadFile(filepath.Join(dbAOut, "schemas", "public", "schema.dpg"))
@@ -97,7 +98,7 @@ func TestMultiDatabaseClusterConnectsToCorrectDatabase(t *testing.T) {
 		t.Errorf("mdb_a dump must not contain table_b (wrong-database leak), got:\n%s", schemaA)
 	}
 
-	if err := runDump(cl, dbB, dbBOut, clusterOut, introspect.New(), store, resolver, fmtOpts, true); err != nil {
+	if err := runDump(cl, dbB, dbBOut, clusterOut, introspect.New(), store, resolver, fmtOpts, true, migrationsDir); err != nil {
 		t.Fatalf("runDump mdb_b: %v", err)
 	}
 	schemaBPath := filepath.Join(dbBOut, "schemas", "public", "schema.dpg")
@@ -160,7 +161,7 @@ func TestMultiDatabaseClusterConnectsToCorrectDatabase(t *testing.T) {
 		t.Fatalf("write extra source: %v", err)
 	}
 	dbB.SourceFiles = []string{schemaBPath, extraFile}
-	if err := runApply(cl, dbB, store, diff.New(), emit.New(), executor.New(), resolver, applyOptions{yes: true, allowDestructive: true}); err != nil {
+	if err := runApply(cl, dbB, store, diff.New(), emit.New(), executor.New(), resolver, applyOptions{yes: true, allowDestructive: true, migrationsDir: migrationsDir}); err != nil {
 		t.Fatalf("runApply mdb_b: %v", err)
 	}
 

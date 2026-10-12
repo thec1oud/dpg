@@ -17,7 +17,31 @@ DPG never requires a live database connection to generate a migration. The prima
                                  migration SQL
 ```
 
-`dpg apply` executes the SQL and updates the snapshot atomically. The snapshot is always the post-apply state.
+`dpg apply` executes the SQL, records it in the migration log and updates the snapshot atomically. The snapshot is always the post-apply state.
+
+## Migration log
+
+The snapshot says what state the source has been migrated to; the migration log says how a database gets there. Each migration is `<id>.sql` (the SQL as `dpg plan` prints it) beside `<id>.json`, which names the migration it follows and the snapshot change it made:
+
+```json
+{
+  "format": "1",
+  "id": "20260915T143200Z-4f0c2b9e1d7a",
+  "parent": "20260914T101500Z-9a1b3c5d7e9f",
+  "checksum": "sha256:4f0c…",
+  "snapshot": "sha256:77e1…",
+  "origin": "apply",
+  "set": { "public.users": { "kind": "table", "table": { … } } },
+  "remove": []
+}
+```
+
+There is one snapshot and one log per database, whatever the environment: dev and prod differ only in which commit is deployed to them.
+
+- **Checked offline.** `plan`, `validate`, `apply` and `resolve` replay the log from empty and check it ends exactly at the committed snapshot, so a hand-edited snapshot, a changed `.sql` file or a missing migration is caught without a database (DPG-E046).
+- **One chain.** Two branches that each add a migration produce two migrations after the same one (DPG-E047), and also conflict on the snapshot's `migration` field. Keep the target branch's snapshot and log, delete your branch's migration files, and plan again.
+- **Adoptions are migrations too.** `dpg resolve --adopt` records the adopted change as a migration, so other databases get it; the database it came from already has it.
+- **Starting the log.** A project whose snapshot predates the log runs `dpg apply --baseline` once (DPG-E048 until then). It records the snapshot as the first migration, with the SQL that builds it in an empty database. `dpg dump` starts the log the same way.
 
 ## Migration modes
 
@@ -57,11 +81,12 @@ The `objects` field is a flat map keyed by each object's qualified name (e.g. `"
 
 ```json
 {
-  "dpg_version": "0.1.0",
+  "dpg_version": "0.2.0",
   "cluster": "production",
   "database": "myapp",
   "applied_at": "2025-09-15T14:32:00Z",
   "source_revision": "a3f7c91",
+  "migration": "20260915T143200Z-4f0c2b9e1d7a",
   "objects": {
     "public": {
       "kind": "schema",

@@ -19,6 +19,10 @@ With --dry-run, the migration is computed and printed but never executed.
 With --no-snapshot, the snapshot is not updated after a successful apply.
 With --strict, lint warnings are promoted to errors and block the apply.
 
+Each apply records its migration in the migration log beside the
+snapshot. A project whose snapshot predates the log starts it with
+--baseline, which records the snapshot as the first migration.
+
 ```
 dpg apply [flags]
 ```
@@ -28,6 +32,7 @@ dpg apply [flags]
 ```
       --allow-destructive           allow destructive operations
       --approve-partition-rebuild   acknowledge an instruction-only partition strategy rebuild step
+      --baseline                    start the migration log of a project whose snapshot predates it
       --cluster string              cluster to apply (required when multiple clusters exist)
       --database string             database to apply (required when multiple databases exist)
       --dry-run                     print the migration plan but do not execute or update the snapshot

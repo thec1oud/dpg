@@ -37,7 +37,8 @@ myproject/
     └── migrations/
         └── production/
             └── myapp/
-                └── 20260101T120000Z_a3f7c91.sql  # archived migration SQL (committed)
+                ├── 20260101T120000Z-4f0c2b9e1d7a.sql   # migration log (committed)
+                └── 20260101T120000Z-4f0c2b9e1d7a.json
 ```
 
 **Discovery rules:**
@@ -75,8 +76,8 @@ max_columns_per_table         = 50   # 0 = disabled
 directory = ".dpg/snapshots"
 
 [migrations]
-# Where to archive applied migration SQL files.
-# Set to "" to disable archiving. Default: ".dpg/migrations".
+# Where the migration log lives. Default: ".dpg/migrations".
+# It can't be empty.
 directory = ".dpg/migrations"
 
 [fmt]
@@ -166,8 +167,8 @@ Roles, tablespaces, and custom foreign data wrappers are cluster-level. They are
 
 `.dpg/snapshots/<cluster>/<database>.json` — one file per database. For example: `.dpg/snapshots/production/myapp.json`. Commit this file to version control. `dpg apply` updates it after a successful migration. `dpg plan` reads it to compute the diff without a database connection.
 
-## Migration archive
+## Migration log
 
-After each successful `dpg apply`, the emitted SQL is archived to `.dpg/migrations/<cluster>/<database>/<timestamp>_<short-hash>.sql`. Commit these files. Set `directory = ""` in `[migrations]` to disable archiving.
+Every migration `dpg apply` runs is recorded in `.dpg/migrations/<cluster>/<database>/` as `<id>.sql` and `<id>.json`. Commit these files with the snapshot: together they are the history a database that's behind replays to catch up. See [Snapshots & Diffing](../snapshots/#migration-log).
 
 See [Snapshots & Diffing](../snapshots/) for the snapshot file format and diffing workflow.

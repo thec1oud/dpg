@@ -20,6 +20,7 @@ import (
 	"github.com/thec1oud/dpg/internal/executor"
 	"github.com/thec1oud/dpg/internal/format"
 	"github.com/thec1oud/dpg/internal/ignore"
+	"github.com/thec1oud/dpg/internal/migrationlog"
 	"github.com/thec1oud/dpg/internal/pipeline"
 	"github.com/thec1oud/dpg/internal/project"
 	"github.com/thec1oud/dpg/internal/resolve"
@@ -237,6 +238,13 @@ func loadResolveEnv(f resolveFlags) (*resolveEnv, error) {
 			objs, _, err := compiler.CompileWith(files, dir, pipeline.Default, opts)
 			return objs, err
 		},
+		RenderSQL: func(ops []pipeline.DiffOp) (string, error) {
+			emitter, err := pipeline.MustResolve[pipeline.Emitter](pipeline.Default, pipeline.KeyEmitter)
+			if err != nil {
+				return "", err
+			}
+			return renderSQL(emitter, ops, pipeline.MigrationMeta{GeneratedAt: time.Now().UTC()})
+		},
 	}}
 	env.targets, err = env.load()
 	return env, err
@@ -307,6 +315,9 @@ func (env *resolveEnv) target(cl *project.Cluster, db *project.Database, files [
 	if err != nil {
 		return nil, fmt.Errorf("load snapshot: %w", err)
 	}
+	stored := *snap
+	stored.Objects = copyObjects(snap.Objects)
+	log, logErr := openLog(env.proj.MigrationsDir(), cl.Name(), snapKey, &stored)
 	if err := rules.FilterSnapshot(snap); err != nil {
 		return nil, err
 	}
@@ -369,8 +380,22 @@ func (env *resolveEnv) target(cl *project.Cluster, db *project.Database, files [
 		Source: source, Index: index, SourceFiles: files, SourceDir: dir, CompileOpts: opts,
 		ConfigPath: configPath,
 		AckPath:    ackFile,
-		SaveSnapshot: func(s *pipeline.Snapshot) error {
-			return store.Save(cl.Name(), snapKey, s)
+		LogErr: noBaselineHint(logErr),
+		SaveSnapshot: func(s *pipeline.Snapshot, sql string) (func() error, error) {
+			// The adopted state is recorded as a migration: what other
+			// databases run to get it (the database it came from has it).
+			_, undoEntry, err := recordMigration(log, sql, migrationlog.OriginAdopt, stored.Objects, s)
+			if err != nil {
+				return nil, err
+			}
+			if err := store.Save(cl.Name(), snapKey, s); err != nil {
+				undoEntry()
+				return nil, err
+			}
+			return func() error {
+				undoEntry()
+				return store.Save(cl.Name(), snapKey, &stored)
+			}, nil
 		},
 		NewFile: func(kind, key string) string { return newDeclarationFile(dir, db == nil, kind, key) },
 	}
@@ -631,6 +656,7 @@ func renderResolvePlan(w io.Writer, p *resolve.Plan, root string, color bool) {
 		sort.Strings(keys)
 		if len(keys) > 0 {
 			fmt.Fprintf(w, "\n%s  snapshot: %s\n", ui.Cyan(s.Target.Label(), color), strings.Join(keys, ", "))
+			fmt.Fprintf(w, "  %s\n", ui.Dim("recorded as a migration: other databases run it; this one already has it", color))
 		}
 	}
 	for _, a := range p.Acks {

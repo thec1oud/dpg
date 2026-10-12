@@ -170,6 +170,7 @@ Copyright Notice
     16.5.  Further Object Records
     16.6.  Cluster-Level Snapshot File
     16.7.  Source Revision Detection
+    16.8.  Migration Log
 17. Migration Output Format
     17.1.  Output Structure
     17.2.  Safety Classification
@@ -609,9 +610,8 @@ indent = 4
 keyword_case = "upper"
 
 [migrations]
-# Relative path from the project root where applied migration SQL
-# files are archived after a successful `dpg apply`. Default:
-# ".dpg/migrations". Set to "" to disable archiving entirely.
+# Relative path from the project root of the migration log
+# (Section 16.8). Default: ".dpg/migrations". It can't be empty.
 directory = ".dpg/migrations"
 
 [ignore]
@@ -624,10 +624,9 @@ directory = ".dpg/migrations"
    listed in this section, Section 3.3, or Section 3.4 for that file's
    kind, with error DPG-E001 (unknown configuration key).
 
-   `[fmt]` controls `dpg fmt` (Section 18.8).  `[migrations]` controls where
-   `dpg apply` (Section 18.2) archives applied SQL, one file per successful
-   apply, at `<directory>/<cluster>/<database>/<timestamp>_<short-hash>.sql`;
-   this directory SHOULD be committed to version control.
+   `[fmt]` controls `dpg fmt` (Section 18.8).  `[migrations]` names the
+   directory of the migration log (Section 16.8), which MUST be
+   committed to version control with the snapshots.
 
 ### 3.3. Cluster dpg.toml
 
@@ -4409,11 +4408,12 @@ Phase 10: Emission
 
 ```json
 {
-  "dpg_version":     "0.1.0",
+  "dpg_version":     "0.2.0",
   "cluster":         "production",
   "database":        "myapp",
   "applied_at":      "2025-09-15T14:32:00Z",
   "source_revision": "a3f7c91",
+  "migration":       "20260915T143200Z-4f0c2b9e1d7a",
   "objects": { ... }
 }
 ```
@@ -4425,6 +4425,7 @@ Phase 10: Emission
    | `database` | string | The database name from the database `dpg.toml`. Absent for cluster-level snapshots. |
    | `applied_at` | RFC 3339 string | UTC timestamp of the last successful `dpg apply`. |
    | `source_revision` | string | The git commit hash at apply time, if available. Empty if git is unavailable; see Section 16.7 for the exact detection algorithm. |
+   | `migration` | string | The ID of the last migration in the migration log (Section 16.8). Absent before the log starts. |
    | `objects` | object | Map from `QualifiedName()` to per-object snapshot record. |
 
 ### 16.3. Per-Object Snapshot Schema
@@ -4839,6 +4840,66 @@ Phase 10: Emission
    This needs no `git` binary.  Packed refs and shallow clones get no
    special handling.
 
+### 16.8. Migration Log
+
+   [DPG] Every change to a database's snapshot is recorded as a
+   migration in the database's migration log, at
+   `<migrations directory>/<cluster>/<database>/` (`_cluster` as the
+   database for cluster-level objects).  The snapshot is the state the
+   source has been migrated to; the log is how a database gets there,
+   in order.  A database behind the snapshot reaches it by running the
+   log's migrations it hasn't run.
+
+   A migration is two files: `<id>.sql`, the migration as `dpg plan`
+   prints it, and `<id>.json`:
+
+```json
+{
+  "format": "1",
+  "id": "20260915T143200Z-4f0c2b9e1d7a",
+  "parent": "20260914T101500Z-9a1b3c5d7e9f",
+  "checksum": "sha256:4f0c2b9e1d7a...",
+  "snapshot": "sha256:77e1...",
+  "origin": "apply",
+  "set": { "public.users": { "kind": "table", "table": { ... } } },
+  "remove": ["public.old_table"]
+}
+```
+
+   | Field | Description |
+   |-------|-------------|
+   | `format` | The entry format version. |
+   | `id` | The UTC time the migration was made, and the first 12 hexadecimal digits of its checksum. |
+   | `parent` | The ID of the migration it follows; empty for the first. |
+   | `checksum` | SHA-256 of the `.sql` file. |
+   | `snapshot` | SHA-256 of the snapshot objects after the migration: each object key followed by its value as JSON with sorted keys and no insignificant whitespace, in key order. |
+   | `origin` | `apply` (`dpg apply`), `adopt` (`dpg resolve --adopt`, Section 18.4) or `baseline`. |
+   | `set`, `remove` | The snapshot objects the migration sets (whole) and removes. |
+
+   **Rules:**
+
+   1.  The log is one chain: each migration has a different parent,
+       and every parent is in the log.  Two migrations with the same
+       parent (made on different branches) are error DPG-E047; one
+       branch's migration is made again from the merged source: keep
+       the target branch's snapshot and log, delete the branch's own
+       migration files, and plan again.
+   2.  Replaying the log from an empty snapshot, applying each
+       migration's `set` and `remove` in order, MUST give each
+       migration's `snapshot` hash, and at the end the committed
+       snapshot's objects; the snapshot's `migration` MUST be the last
+       migration.  A `.sql` file that doesn't match its checksum, a
+       missing file, or a replay that doesn't match is error DPG-E046.
+       `dpg plan`, `dpg validate`, `dpg apply` and `dpg resolve` check
+       this without a database.
+   3.  A snapshot with objects and no log (written before the log
+       existed) is error DPG-E048 for `dpg apply` until
+       `dpg apply --baseline` starts the log with a `baseline`
+       migration: the snapshot's objects, and the SQL that creates them
+       in an empty database.  The source must match the snapshot.
+   4.  Files in the directory without a `.json` entry are not part of
+       the log.
+
 
 ---
 
@@ -5133,7 +5194,10 @@ Global options:
 ### 18.1. dpg plan
 
    Computes the migration that would be applied and prints it to
-   stdout.  No database connection is required by default.
+   stdout.  No database connection is required by default.  Without
+   `--live`, the migration log is first checked against the snapshot
+   (Section 16.8); a snapshot that predates its log is noted, not an
+   error.
 
 ```
 dpg plan [options] [<cluster>[/<database>]]
@@ -5226,7 +5290,10 @@ Options:
   --yes / -y                 Skip interactive approval prompt (non-interactive
                              mode; implies --allow-destructive is acknowledged).
   --dry-run                  Compute and print the migration but do not execute.
-  --no-snapshot              Do not update the snapshot after apply.
+  --no-snapshot              Do not update the snapshot or the migration
+                             log after apply.
+  --baseline                 Start the migration log of a snapshot that
+                             predates it (Section 16.8).
   --strict                   Promote linter warnings to errors. Apply is
                              blocked if any lint errors exist.
   --cluster <name>
@@ -5258,10 +5325,16 @@ Options:
    8.  Execute non-transactional ops sequentially. Instruction-only
        steps are never sent to the executor — they are the operator's
        own responsibility outside of `dpg apply`.
-   9.  Update the snapshot atomically (write to a temp file, rename),
-       unless `--no-snapshot` is set.
-   10. Print `Applied` to stdout, including the archived migration
-       file's path, unless `--no-snapshot` was set (noted instead).
+   9.  Unless `--no-snapshot` is set, record the migration in the
+       migration log (Section 16.8), then update the snapshot atomically
+       (write to a temp file, rename) to name it.  If the snapshot can't
+       be written, the log entry is removed.
+   10. Print `Applied` to stdout, with the migration's path, unless
+       `--no-snapshot` was set (noted instead).
+
+   Before step 1, the migration log is checked against the snapshot
+   (Section 16.8).  With `--baseline`, `dpg apply` only starts the log
+   and runs nothing.
 
    If step 7 fails, the transaction is rolled back.  The snapshot is
    not updated.  The error from the database is printed with the
@@ -5403,7 +5476,10 @@ Options:
    object is never reverted: DPG doesn't drop what it doesn't manage.
 
    **adopt** [DPG] edits the source the way the change would have been
-   written, and updates the snapshot entry from the edited source.  Live
+   written, and updates the snapshot entry from the edited source.  The
+   change is recorded as an `adopt` migration (Section 16.8) whose SQL
+   is what a database without the change runs to get it; the database
+   it was adopted from already has it.  Live
    values are written as `dpg dump` writes them (Section 18.5).
 
    -   A changed property: the text declaring it is replaced.
@@ -5537,6 +5613,13 @@ Options:
    this check: it is a derived/managed artifact `dump` is always expected
    to refresh, not hand-authored source.
 
+   The dump starts the database's migration log (Section 16.8) with
+   the snapshot as its `baseline` migration (`<dir>/.dpg/migrations/`
+   with `-o`).  A database whose log has started is not dumped in
+   place; `-o` writes the dump elsewhere.  The cluster snapshot every
+   database's dump writes keeps the log an earlier dump started when it
+   is the same.
+
    `--output`/`-o` sandboxing detail: without `-o`, cluster-scoped output
    (`roles.dpg`) and the snapshot are written to their real, permanent
    project locations — the cluster's own objects directory and the
@@ -5582,7 +5665,8 @@ Options:
 
 ### 18.7. dpg validate
 
-   Compiles and lints `.dpg` source files offline.  No snapshot or
+   Compiles and lints `.dpg` source files offline, and checks each
+   database's migration log against its snapshot (Section 16.8).  No
    database connection required.
 
 ```
@@ -6930,6 +7014,9 @@ WITH NO DATA {
    | DPG-E043 | `nested_scope_directory` | A cluster directory is inside another cluster or database directory, or a database directory is inside another database directory (Section 3.1). |
    | DPG-E044 | `virtual_type_name_conflict` | A `VIRTUAL TYPE` is named after a PostgreSQL built-in type, or its qualified name is already used by a declared type or relation (Section 5.6). |
    | DPG-E045 | `ignored_object_declared` | A declared object matches an `[ignore]` pattern (Section 3.9). |
+   | DPG-E046 | `migration_log_invalid` | The migration log doesn't replay to the snapshot, or one of its files is missing or changed (Section 16.8). |
+   | DPG-E047 | `migration_log_divergent` | Two migrations in the log follow the same migration (Section 16.8). |
+   | DPG-E048 | `migration_log_missing` | The snapshot predates its migration log; `dpg apply --baseline` starts it (Section 16.8). |
 
 ---
 

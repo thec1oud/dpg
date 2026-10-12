@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/thec1oud/dpg/internal/ignore"
 	"github.com/thec1oud/dpg/internal/introspect"
 	"github.com/thec1oud/dpg/internal/ir"
+	"github.com/thec1oud/dpg/internal/migrationlog"
 	"github.com/thec1oud/dpg/internal/pipeline"
 	"github.com/thec1oud/dpg/internal/project"
 	"github.com/thec1oud/dpg/internal/snapshot"
@@ -83,11 +85,15 @@ silently clobbered.`,
 				}
 
 				clusterOut, dumpStore := dumpClusterTargets(cl, store, outputDir)
+				migrationsDir := proj.MigrationsDir()
+				if outputDir != "" {
+					migrationsDir = filepath.Join(outputDir, ".dpg", "migrations")
+				}
 
 				for _, db := range databases {
 					out := dumpDatabaseOutputDir(outputDir, db)
 					dbIntrospector := ignoringIntrospector{introspector, ignore.New(db.EffectiveIgnore(cl, proj.RootConfig))}
-					if err := runDump(cl, db, out, clusterOut, dbIntrospector, dumpStore, secretResolver, fmtOpts, yes); err != nil {
+					if err := runDump(cl, db, out, clusterOut, dbIntrospector, dumpStore, secretResolver, fmtOpts, yes, migrationsDir); err != nil {
 						return fmt.Errorf("%s/%s: %w", cl.Name(), db.Name(), err)
 					}
 				}
@@ -202,9 +208,21 @@ func runDump(
 	secretResolver pipeline.SecretResolver,
 	fmtOpts format.Options,
 	skipConfirm bool,
+	migrationsDir string, // "": no migration log
 ) error {
 	ctx := context.Background()
 	color := ui.IsColorEnabled(os.Stdout)
+	// A dump records the database's state as the start of its migration
+	// log; a database whose log has started is past that.
+	if migrationsDir != "" {
+		l, err := migrationlog.Load(migrationlog.Dir(migrationsDir, cl.Name(), db.Name()))
+		if err != nil {
+			return err
+		}
+		if len(l.Entries) > 0 {
+			return fmt.Errorf("%s/%s has a migration log (%s); dump into another directory with -o", cl.Name(), db.Name(), l.Dir)
+		}
+	}
 
 	conn, err := connectDatabase(ctx, cl, db, secretResolver)
 	if err != nil {
@@ -356,6 +374,9 @@ func runDump(
 		return fmt.Errorf("save snapshot: %w", err)
 	}
 	ui.PrintSuccess(os.Stdout, "DB snapshot written", cl.Name()+"/"+db.Name(), color)
+	if err := dumpBaseline(store, migrationsDir, cl.Name(), db.Name(), dbSnap, dbSnapObjects); err != nil {
+		return err
+	}
 
 	// Build cluster snapshot (roles, tablespaces). These are cluster-global, so
 	// every database dumps identical content — written once per cluster, safe to repeat.
@@ -373,12 +394,54 @@ func runDump(
 		if err := snapshot.Populate(clusterSnap, clusterSnapObjects); err != nil {
 			return fmt.Errorf("build cluster snapshot: %w", err)
 		}
+		if migrationsDir != "" {
+			// Every database's dump writes the same cluster snapshot: a log
+			// a previous database's dump started stays when it matches.
+			l, err := migrationlog.Load(migrationlog.Dir(migrationsDir, cl.Name(), cl.ClusterSnapshotKey()))
+			if err != nil {
+				return err
+			}
+			if len(l.Entries) > 0 {
+				if err := l.Check(l.Head(), clusterSnap.Objects); err != nil {
+					return fmt.Errorf("%s (cluster) has a migration log that doesn't match this dump; dump into another directory with -o", cl.Name())
+				}
+				clusterSnap.Migration = l.Head()
+			}
+		}
 		if err := store.Save(cl.Name(), cl.ClusterSnapshotKey(), clusterSnap); err != nil {
 			return fmt.Errorf("save cluster snapshot: %w", err)
 		}
 		ui.PrintSuccess(os.Stdout, "Cluster snapshot written", cl.Name(), color)
+		if clusterSnap.Migration == "" {
+			if err := dumpBaseline(store, migrationsDir, cl.Name(), cl.ClusterSnapshotKey(), clusterSnap, clusterSnapObjects); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
+}
+
+// dumpBaseline starts the migration log of a dumped database with its
+// snapshot as the baseline.
+func dumpBaseline(store pipeline.SnapshotStore, migrationsDir, cluster, key string, snap *pipeline.Snapshot, objects []pipeline.IRObject) error {
+	if migrationsDir == "" {
+		return nil
+	}
+	differ, err := pipeline.MustResolve[pipeline.Differ](pipeline.Default, pipeline.KeyDiffer)
+	if err != nil {
+		return err
+	}
+	emitter, err := pipeline.MustResolve[pipeline.Emitter](pipeline.Default, pipeline.KeyEmitter)
+	if err != nil {
+		return err
+	}
+	l, err := migrationlog.Load(migrationlog.Dir(migrationsDir, cluster, key))
+	if err != nil {
+		return err
+	}
+	_, err = writeBaseline(l, store, cluster, key, snap, objects, nil, differ, emitter,
+		pipeline.MigrationMeta{GeneratedAt: time.Now().UTC(), Cluster: cluster, Database: key})
+	return err
 }
 
 // mergeExistingVirtualTypes recovers any VIRTUAL TYPE declarations (RFC

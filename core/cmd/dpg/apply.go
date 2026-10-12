@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/thec1oud/dpg/internal/ignore"
 	"github.com/thec1oud/dpg/internal/ir"
 	"github.com/thec1oud/dpg/internal/linter"
+	"github.com/thec1oud/dpg/internal/migrationlog"
 	"github.com/thec1oud/dpg/internal/pipeline"
 	"github.com/thec1oud/dpg/internal/project"
 	snapshotpkg "github.com/thec1oud/dpg/internal/snapshot"
@@ -32,6 +34,7 @@ func newApplyCmd() *cobra.Command {
 		approvePartitionRebuild bool
 		dryRun                  bool
 		noSnapshot              bool
+		baseline                bool
 		strict                  bool
 	)
 
@@ -46,7 +49,11 @@ Partition strategy changes additionally require --approve-partition-rebuild.
 
 With --dry-run, the migration is computed and printed but never executed.
 With --no-snapshot, the snapshot is not updated after a successful apply.
-With --strict, lint warnings are promoted to errors and block the apply.`,
+With --strict, lint warnings are promoted to errors and block the apply.
+
+Each apply records its migration in the migration log beside the
+snapshot. A project whose snapshot predates the log starts it with
+--baseline, which records the snapshot as the first migration.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			proj, err := discoverProject()
 			if err != nil {
@@ -86,6 +93,7 @@ With --strict, lint warnings are promoted to errors and block the apply.`,
 				approvePartitionRebuild: approvePartitionRebuild,
 				dryRun:                  dryRun,
 				noSnapshot:              noSnapshot,
+				baseline:                baseline,
 				strict:                  strict,
 				migrationsDir:           proj.MigrationsDir(),
 				lintCfg:                 linterConfigFrom(proj.RootConfig.Linter),
@@ -128,6 +136,7 @@ With --strict, lint warnings are promoted to errors and block the apply.`,
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the migration plan but do not execute or update the snapshot")
 	cmd.Flags().BoolVar(&noSnapshot, "no-snapshot", false, "skip snapshot update after a successful apply")
 	cmd.Flags().BoolVar(&strict, "strict", false, "treat lint warnings as errors (blocks apply if any exist)")
+	cmd.Flags().BoolVar(&baseline, "baseline", false, "start the migration log of a project whose snapshot predates it")
 
 	return cmd
 }
@@ -138,10 +147,38 @@ type applyOptions struct {
 	approvePartitionRebuild bool
 	dryRun                  bool
 	noSnapshot              bool
+	baseline                bool
 	strict                  bool
 	migrationsDir           string
 	lintCfg                 pipeline.LinterConfig
 	ignore                  *ignore.Rules
+}
+
+// applyBaseline handles dpg apply --baseline for one database.
+func applyBaseline(log *migrationlog.Log, logErr error, store pipeline.SnapshotStore, cluster, key, label string, stored *pipeline.Snapshot,
+	desired []pipeline.IRObject, ops []pipeline.DiffOp, differ pipeline.Differ, emitter pipeline.Emitter, meta pipeline.MigrationMeta, opts applyOptions, color bool) error {
+	if logErr == nil {
+		ui.PrintInfo(os.Stdout, label, "the migration log already started at "+firstID(log), color)
+		return nil
+	}
+	if opts.dryRun {
+		ui.PrintInfo(os.Stdout, "dry-run", label+": would record the snapshot as the baseline migration", color)
+		return nil
+	}
+	e, err := writeBaseline(log, store, cluster, key, stored, desired, ops, differ, emitter, meta)
+	if err != nil {
+		return err
+	}
+	path, _ := log.Paths(e.ID)
+	ui.PrintSuccess(os.Stdout, "Baseline", label+" — migration log started\n         "+ui.Dim(path, color), color)
+	return nil
+}
+
+func firstID(l *migrationlog.Log) string {
+	if len(l.Entries) == 0 {
+		return "(empty)"
+	}
+	return l.Entries[0].ID
 }
 
 // isInstructionOp reports whether op is an instruction-only step (RFC Section
@@ -176,6 +213,12 @@ func runApply(
 	if err != nil {
 		return fmt.Errorf("snapshot load: %w", err)
 	}
+	stored := *snap
+	stored.Objects = copyObjects(snap.Objects)
+	log, logErr := openLog(opts.migrationsDir, cl.Name(), db.Name(), &stored)
+	if logErr != nil && !(opts.baseline && errors.Is(logErr, migrationlog.ErrNoBaseline)) {
+		return noBaselineHint(logErr)
+	}
 	if err := opts.ignore.FilterSnapshot(snap); err != nil {
 		return err
 	}
@@ -202,6 +245,11 @@ func runApply(
 	ops, err := differ.Diff(desired, snap)
 	if err != nil {
 		return err
+	}
+
+	if opts.baseline {
+		return applyBaseline(log, logErr, store, cl.Name(), db.Name(), cl.Name()+"/"+db.Name(), &stored, desired, ops, differ, emitter,
+			pipeline.MigrationMeta{GeneratedAt: time.Now().UTC(), Cluster: cl.Name(), SourceRoot: cl.ProjectRoot, Database: db.Name()}, opts, color)
 	}
 
 	if len(ops) == 0 {
@@ -315,25 +363,27 @@ func runApply(
 		return ui.WrapDB(err)
 	}
 
-	// Archive migration file before updating snapshot.
-	migPath, err := snapshotpkg.SaveMigration(opts.migrationsDir, cl.Name(), db.Name(), plainSQL)
-	if err != nil {
-		ui.PrintInfo(os.Stderr, "warn", "could not archive migration file: "+err.Error(), errColor)
-	}
-
+	// Record the migration in the log, then the snapshot it produced.
+	var migPath string
 	if !opts.noSnapshot {
 		newSnap := &pipeline.Snapshot{}
 		if err := snapshotpkg.Populate(newSnap, desired); err != nil {
 			return fmt.Errorf("build snapshot: %w", err)
 		}
+		e, undo, err := recordMigration(log, plainSQL, migrationlog.OriginApply, stored.Objects, newSnap)
+		if err != nil {
+			return err
+		}
 		if err := store.Save(cl.Name(), db.Name(), newSnap); err != nil {
+			undo()
 			return fmt.Errorf("save snapshot: %w", err)
 		}
+		migPath, _ = log.Paths(e.ID)
 	}
 
 	detail := cl.Name() + "/" + db.Name()
 	if opts.noSnapshot {
-		detail += " — snapshot not updated (--no-snapshot)"
+		detail += " — snapshot and migration log not updated (--no-snapshot)"
 	} else {
 		detail += " — snapshot updated"
 	}
@@ -387,6 +437,12 @@ func runClusterApply(
 	if err != nil {
 		return fmt.Errorf("snapshot load: %w", err)
 	}
+	stored := *snap
+	stored.Objects = copyObjects(snap.Objects)
+	log, logErr := openLog(opts.migrationsDir, cl.Name(), cl.ClusterSnapshotKey(), &stored)
+	if logErr != nil && !(opts.baseline && errors.Is(logErr, migrationlog.ErrNoBaseline)) {
+		return noBaselineHint(logErr)
+	}
 	if err := opts.ignore.FilterSnapshot(snap); err != nil {
 		return err
 	}
@@ -394,6 +450,10 @@ func runClusterApply(
 	ops, err := differ.Diff(desired, snap)
 	if err != nil {
 		return err
+	}
+	if opts.baseline {
+		return applyBaseline(log, logErr, store, cl.Name(), cl.ClusterSnapshotKey(), cl.Name()+" (cluster)", &stored, desired, ops, differ, emitter,
+			pipeline.MigrationMeta{GeneratedAt: time.Now().UTC(), Cluster: cl.Name(), SourceRoot: cl.ProjectRoot, Database: cl.ClusterSnapshotKey()}, opts, color)
 	}
 	if len(ops) == 0 {
 		ui.PrintInfo(os.Stdout, cl.Name()+" (cluster)", "already up to date", color)
@@ -491,24 +551,26 @@ func runClusterApply(
 		return ui.WrapDB(err)
 	}
 
-	migPath, err := snapshotpkg.SaveMigration(opts.migrationsDir, cl.Name(), cl.ClusterSnapshotKey(), sqlBuf.String())
-	if err != nil {
-		ui.PrintInfo(os.Stderr, "warn", "could not archive cluster migration: "+err.Error(), errColor)
-	}
-
+	var migPath string
 	if !opts.noSnapshot {
 		newSnap := &pipeline.Snapshot{}
 		if err := snapshotpkg.Populate(newSnap, desired); err != nil {
 			return fmt.Errorf("build cluster snapshot: %w", err)
 		}
+		e, undo, err := recordMigration(log, sqlBuf.String(), migrationlog.OriginApply, stored.Objects, newSnap)
+		if err != nil {
+			return err
+		}
 		if err := store.Save(cl.Name(), cl.ClusterSnapshotKey(), newSnap); err != nil {
+			undo()
 			return fmt.Errorf("save cluster snapshot: %w", err)
 		}
+		migPath, _ = log.Paths(e.ID)
 	}
 
 	detail := cl.Name() + " (cluster)"
 	if opts.noSnapshot {
-		detail += " — snapshot not updated (--no-snapshot)"
+		detail += " — snapshot and migration log not updated (--no-snapshot)"
 	} else {
 		detail += " — snapshot updated"
 	}

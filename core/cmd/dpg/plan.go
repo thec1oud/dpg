@@ -143,6 +143,9 @@ func newPlanCmd() *cobra.Command {
 					if err != nil {
 						return fmt.Errorf("%s (cluster): snapshot: %w", cl.Name(), err)
 					}
+					if err := checkLogOffline(store, proj.MigrationsDir(), cl.Name(), cl.ClusterSnapshotKey(), cl.Name()+" (cluster)"); err != nil {
+						return fmt.Errorf("%s (cluster): %w", cl.Name(), err)
+					}
 				}
 				clusterLintCfg := lintCfg
 				clusterLintCfg.MinPGVersion = cl.EffectiveMinPGVersion(proj.RootConfig)
@@ -171,6 +174,9 @@ func newPlanCmd() *cobra.Command {
 					snap, err = store.Load(cl.Name(), db.Name())
 					if err != nil {
 						return fmt.Errorf("%s/%s: snapshot: %w", cl.Name(), db.Name(), err)
+					}
+					if err := checkLogOffline(store, proj.MigrationsDir(), cl.Name(), db.Name(), cl.Name()+"/"+db.Name()); err != nil {
+						return fmt.Errorf("%s/%s: %w", cl.Name(), db.Name(), err)
 					}
 				}
 				dbLintCfg := lintCfg

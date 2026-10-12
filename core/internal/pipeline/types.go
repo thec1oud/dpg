@@ -369,12 +369,15 @@ type IRObject interface {
 // Snapshot is the committed state written to .dpg/snapshots/ after each apply.
 // Objects maps each object's QualifiedName to its JSON-encoded IR snapshot form.
 type Snapshot struct {
-	DPGVersion     string                     `json:"dpg_version"`
-	Cluster        string                     `json:"cluster"`
-	Database       string                     `json:"database,omitempty"`
-	AppliedAt      string                     `json:"applied_at"`
-	SourceRevision string                     `json:"source_revision"`
-	Objects        map[string]json.RawMessage `json:"objects,omitempty"`
+	DPGVersion     string `json:"dpg_version"`
+	Cluster        string `json:"cluster"`
+	Database       string `json:"database,omitempty"`
+	AppliedAt      string `json:"applied_at"`
+	SourceRevision string `json:"source_revision"`
+	// Migration is the last migration of the log that produced this
+	// snapshot (RFC Section 16.8); "" before the first.
+	Migration string                     `json:"migration,omitempty"`
+	Objects   map[string]json.RawMessage `json:"objects,omitempty"`
 
 	// Live marks a snapshot built by introspecting the live catalog
 	// (plan --live) rather than loaded from disk. The catalog cannot show

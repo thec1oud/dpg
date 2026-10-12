@@ -15,6 +15,8 @@ type Deps struct {
 	Render func(obj pipeline.IRObject) string
 	// Compile compiles source files (compiler.CompileWith).
 	Compile func(files []string, dir string, opts compiler.Options) ([]pipeline.IRObject, error)
+	// RenderSQL renders ops as a migration file, as dpg apply archives it.
+	RenderSQL func(ops []pipeline.DiffOp) (string, error)
 }
 
 // RevertOps returns the migration operations that restore item it's

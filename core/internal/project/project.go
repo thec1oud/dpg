@@ -26,12 +26,8 @@ func (p *Project) SnapshotDir() string {
 	return filepath.Join(p.RootDir, p.RootConfig.Snapshots.Directory)
 }
 
-// MigrationsDir returns the absolute path to the migrations archive directory.
-// Returns "" when migration archiving is disabled (directory = "").
+// MigrationsDir returns the absolute path to the migration log.
 func (p *Project) MigrationsDir() string {
-	if p.RootConfig.Migrations.Directory == "" {
-		return ""
-	}
 	return filepath.Join(p.RootDir, p.RootConfig.Migrations.Directory)
 }
 

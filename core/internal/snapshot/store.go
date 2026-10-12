@@ -23,7 +23,7 @@ func init() {
 // Version is the snapshot format version written to dpg_version (RFC
 // Section 16.4). Its major component changes when the format changes
 // incompatibly.
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 // Warn reports a problem that doesn't stop the command. Tests replace it.
 var Warn = func(msg string) { fmt.Fprintln(os.Stderr, "warning: "+msg) }

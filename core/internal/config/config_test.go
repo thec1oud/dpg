@@ -731,3 +731,13 @@ tables = ["bad["]
 		t.Errorf("expected an [ignore] pattern error, got %v", err)
 	}
 }
+
+func TestLoadRoot_MigrationsDirectoryCantBeEmpty(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "dpg.toml"), []byte("kind = \"root\"\n\n[migrations]\ndirectory = \"\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.LoadRoot(dir); err == nil || !strings.Contains(err.Error(), "can't be turned off") {
+		t.Errorf("an empty migrations directory must be refused: %v", err)
+	}
+}

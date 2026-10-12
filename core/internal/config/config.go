@@ -220,11 +220,11 @@ type SnapshotsConfig struct {
 	Directory string `toml:"directory"`
 }
 
-// MigrationsConfig controls where applied migration SQL files are archived.
+// MigrationsConfig controls where the migration log is kept.
 type MigrationsConfig struct {
-	// Directory is the path (relative to the project root) where applied
-	// migration SQL files are written. Default: ".dpg/migrations".
-	// Set to "" to disable migration file archiving.
+	// Directory is the path (relative to the project root) of the migration
+	// log. Default: ".dpg/migrations". It can't be empty: the log can't be
+	// turned off.
 	Directory string `toml:"directory"`
 }
 
@@ -301,6 +301,9 @@ func LoadRoot(dir string) (RootConfig, error) {
 	}
 	if err := cfg.Ignore.validate(); err != nil {
 		return RootConfig{}, fmt.Errorf("%s: [ignore]: %w", path, err)
+	}
+	if strings.TrimSpace(cfg.Migrations.Directory) == "" {
+		return RootConfig{}, fmt.Errorf("%s: [migrations]: directory can't be empty: the migration log can't be turned off", path)
 	}
 	return cfg, nil
 }

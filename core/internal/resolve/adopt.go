@@ -68,6 +68,12 @@ func (pl *planner) adoptAll(targets map[string]*Target, decisions []Decision, de
 		return out
 	}
 	for _, t := range order {
+		if t.LogErr != nil {
+			for _, d := range byTarget[t] {
+				pl.problem(d, "adopting changes the snapshot, which needs a migration log: %v", t.LogErr)
+			}
+			continue
+		}
 		var as []adoption
 		for _, d := range byTarget[t] {
 			it, _ := findItem(t.Report, d.ItemID)
@@ -144,7 +150,47 @@ func (pl *planner) adoptAll(targets map[string]*Target, decisions []Decision, de
 				return err
 			}
 		}
+		if err := pl.migrationSQL(t, src, deps); err != nil {
+			return err
+		}
 	}
+	return nil
+}
+
+// migrationSQL sets the SQL of the target's snapshot change: the differ's
+// ops from the stored snapshot to the adopted source, for the objects the
+// change touches only (the source's other pending edits aren't adopted).
+func (pl *planner) migrationSQL(t *Target, src []pipeline.IRObject, deps Deps) error {
+	sc := pl.snaps[t]
+	if sc == nil || deps.RenderSQL == nil {
+		return nil
+	}
+	changed := map[string]bool{}
+	for k, v := range sc.After.Objects {
+		if old, ok := sc.Before.Objects[k]; !ok || !bytes.Equal(old, v) {
+			changed[k] = true
+		}
+	}
+	for k := range sc.Before.Objects {
+		if _, ok := sc.After.Objects[k]; !ok {
+			changed[k] = true
+		}
+	}
+	ops, err := deps.Differ.Diff(src, t.Snapshot)
+	if err != nil {
+		return err
+	}
+	var keep []pipeline.DiffOp
+	for _, op := range ops {
+		if to, ok := op.(pipeline.TargetedOp); ok && (changed[to.Target().Key] || changed[to.Target().From]) {
+			keep = append(keep, op)
+		}
+	}
+	sql, err := deps.RenderSQL(keep)
+	if err != nil {
+		return err
+	}
+	sc.SQL = sql
 	return nil
 }
 
