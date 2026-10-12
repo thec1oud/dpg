@@ -79,6 +79,8 @@ type Item struct {
 	// an acknowledged item doesn't fail dpg verify. Lapsed is an
 	// acknowledgement of the item that no longer applies.
 	Acknowledged, Lapsed *Ack
+	// Grant describes a grant item's privilege (Property has "grant:").
+	Grant *GrantRef
 }
 
 // Report is the result of Detect, sorted by object.
@@ -285,7 +287,10 @@ func Detect(differ pipeline.Differ, live []pipeline.IRObject, stored *pipeline.S
 func grantItems(kind, key string, live, snap reflect.Value, rules *ignore.Rules) []Item {
 	var out []Item
 	for _, g := range objectGrantFindings(kind, live, snap) {
-		it := Item{Group: Drift, Kind: kind, Object: key, Change: g.change}
+		it := Item{Group: Drift, Kind: kind, Object: key, Change: g.change, Grant: &GrantRef{
+			Holder: g.path, Privilege: g.tuple.priv, Parameter: g.tuple.param, Role: g.tuple.role,
+			WithGrant: g.tuple.withGrant, Held: g.held, AllKind: g.kind,
+		}}
 		prop := "grant:" + escapeName(g.tuple.privLabel()) + ":" + escapeName(g.tuple.role)
 		if g.path != "" {
 			prop = g.path + "/" + prop
@@ -580,7 +585,28 @@ func patchProperty(raw json.RawMessage, property string, src map[string]any) (js
 	if inner == nil {
 		return nil, nil
 	}
-	if ek, name, isElem := strings.Cut(property, ":"); isElem && !strings.Contains(property, "/") {
+	patchPath(inner, src, property)
+	outer[innerKey] = inner
+	return json.Marshal(outer)
+}
+
+// patchPath gives dst src's value of property: a plain key ("comment"), a
+// named element ("column:c", replaced whole), a property inside one
+// ("column:c/default"), or a grant ("grant:SELECT:r", "column:c/grant:...":
+// the holder's grants and revocations).
+func patchPath(dst, src map[string]any, property string) {
+	head, rest, nested := strings.Cut(property, "/")
+	if strings.HasPrefix(head, "grant:") {
+		for _, k := range []string{"grants", "revocations"} {
+			if v, ok := src[k]; ok {
+				dst[k] = v
+			} else {
+				delete(dst, k)
+			}
+		}
+		return
+	}
+	if ek, name, isElem := strings.Cut(head, ":"); isElem {
 		name = unescapeName(name)
 		for listKey, kind := range elementKinds {
 			if kind != ek {
@@ -588,18 +614,28 @@ func patchProperty(raw json.RawMessage, property string, src map[string]any) (js
 			}
 			byName, _, ok := namedElements(src[listKey])
 			if !ok {
-				return nil, nil
+				return
 			}
 			e, inSrc := byName[name]
-			inner[listKey] = replaceElement(inner[listKey], name, e, inSrc)
+			if nested && inSrc {
+				if dstByName, _, ok := namedElements(dst[listKey]); ok {
+					if de, ok := dstByName[name].(map[string]any); ok {
+						if se, ok := e.(map[string]any); ok {
+							patchPath(de, se, rest)
+							return
+						}
+					}
+				}
+			}
+			dst[listKey] = replaceElement(dst[listKey], name, e, inSrc)
 		}
-	} else if v, ok := src[property]; ok {
-		inner[property] = v
-	} else {
-		delete(inner, property)
+		return
 	}
-	outer[innerKey] = inner
-	return json.Marshal(outer)
+	if v, ok := src[property]; ok {
+		dst[property] = v
+	} else {
+		delete(dst, property)
+	}
 }
 
 // fillSource sets each item's Source to the source's value of its

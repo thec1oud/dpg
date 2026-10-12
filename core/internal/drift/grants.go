@@ -75,6 +75,28 @@ type grantFinding struct {
 	change  string // "missing", "extra" or "regranted"
 	all     bool   // tuple stands for a declared ALL
 	allList []string
+	kind    string          // the kind whose privileges ALL stands for
+	held    map[string]bool // the role's live privileges (this parameter) → grant option
+}
+
+// GrantRef describes the privilege of a grant item.
+type GrantRef struct {
+	Holder    string // "" for the object, "column:c" for one of its columns
+	Privilege string // "ALL" for a declared ALL
+	Parameter string // the parameter of a parameter privilege
+	Role      string
+	WithGrant bool
+	// Held is what the role holds live on the holder (for Parameter):
+	// privilege → whether with the grant option.
+	Held map[string]bool
+	// AllKind is the kind whose privileges ALL stands for.
+	AllKind string
+}
+
+// AllPrivileges returns the privileges a declared ALL grants on an object
+// of kind.
+func AllPrivileges(kind string) []string {
+	return append([]string(nil), allPrivileges[kind]...)
 }
 
 // grantEntries reads a []ir.Grant / []ir.Revocation / []snapshot.SnapGrant
@@ -233,6 +255,15 @@ func compareGrants(kind, path string, liveGrants, snapGrants, snapRevs reflect.V
 				continue
 			}
 			out = append(out, grantFinding{path: path, change: "extra", tuple: grantTuple{priv: p, param: param, role: r, withGrant: wg}})
+		}
+	}
+	for i := range out {
+		out[i].kind = kind
+		out[i].held = map[string]bool{}
+		for k, wg := range held[out[i].tuple.role] {
+			if p, param := splitPrivKey(k); param == strings.ToLower(out[i].tuple.param) {
+				out[i].held[p] = wg
+			}
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {

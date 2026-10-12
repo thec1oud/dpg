@@ -34,6 +34,7 @@ Source: https://github.com/thec1oud/dpg
 * [dpg init](/docs/cli/dpg_init/)	 - Scaffold a new DPG project
 * [dpg plan](/docs/cli/dpg_plan/)	 - Diff desired state vs snapshot and print the SQL migration
 * [dpg portability](/docs/cli/dpg_portability/)	 - Report PostgreSQL-specific constructs in use
+* [dpg resolve](/docs/cli/dpg_resolve/)	 - Resolve drift: adopt, revert, ignore or acknowledge items
 * [dpg validate](/docs/cli/dpg_validate/)	 - Validate .dpg source files offline without diffing
 * [dpg verify](/docs/cli/dpg_verify/)	 - Check the live database for drift against the snapshot
 

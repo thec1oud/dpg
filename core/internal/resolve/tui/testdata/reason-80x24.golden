@@ -1,0 +1,24 @@
+dpg resolve  12 item(s) · 1 chosen
+────────────────────────────────────────────────────────────────────────────────
+  ▾ prod (cluster) (2, 1 chosen)
+    ▾ drift (1, 1 chosen)
+      ▾ role app (1, 1 chosen)
+›       [ack     ] connection_limit  20 → 50
+    ▾ warning (1)
+      [        ] role reporting  only in the database
+  ▾ prod/app (10)
+    ▾ drift (3)
+      ▾ table public.m (1)
+        [        ] column:updated_at  20 → 50
+      ▾ table public.orders (2)
+        [        ] column:status  20 → 50
+        [        ] index:orders_idx  only in the database: SELECT TO app
+    ▾ conflict (1)
+────────────────────────────────────────────────────────────────────────────────
+role:app/connection_limit  drift
+snapshot: 20 · database: 50
+revert runs: ALTER ROLE "app" CONNECTION LIMIT 20;
+can: adopt, revert, acknowledge
+
+why are these acknowledged (optional):  
+enter next · esc back

@@ -1,0 +1,24 @@
+dpg resolve · keys  12 item(s) · 0 chosen
+────────────────────────────────────────────────────────────────────────────────
+↑ ↓  k j       move              pgup pgdn  page
+home g  end G  first, last
+→ l enter      expand            ← h        collapse
+E  C           expand all, collapse all
+
+space          choose (or unchoose) what is under the cursor
+a              adopt: keep the database's state in the source
+r              revert: put the database back
+i              ignore: add an [ignore] pattern
+n              acknowledge          u  unacknowledge
+x              unchoose             tab  next action
+m              macro parts: inline here / edit the macro
+
+On a group or object, a key applies to every item it allows.
+Adopting an undeclared object chooses what it needs ([adopt +]).
+
+/              filter by item ID (esc clears)
+p              preview the plan, then y to apply
+q              quit
+
+
+any key closes

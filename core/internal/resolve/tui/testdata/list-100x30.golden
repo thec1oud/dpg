@@ -1,0 +1,30 @@
+dpg resolve  12 item(s) · 0 chosen
+────────────────────────────────────────────────────────────────────────────────────────────────────
+› ▾ prod (cluster) (2)
+    ▾ drift (1)
+      ▾ role app (1)
+        [        ] connection_limit  20 → 50
+    ▾ warning (1)
+      [        ] role reporting  only in the database
+  ▾ prod/app (10)
+    ▾ drift (3)
+      ▾ table public.m (1)
+        [        ] column:updated_at  20 → 50
+      ▾ table public.orders (2)
+        [        ] column:status  20 → 50
+        [        ] index:orders_idx  only in the database: SELECT TO app
+    ▾ conflict (1)
+      ▾ view public.v (1)
+        [        ] query  20 → 50
+    ▾ converged (1)
+      ▾ table public.items (1)
+        [        ] column:qty  source and database agree; the snapshot is out of date
+    ▾ unmanaged (3)
+────────────────────────────────────────────────────────────────────────────────────────────────────
+prod (cluster)
+2 item(s): nothing chosen
+
+
+
+
+space choose · a/r/i/n/u · tab cycle · p preview · / filter · ? keys · q quit

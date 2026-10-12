@@ -1,0 +1,10 @@
+dpg resolve  12 item(s) · 0 chosen
+────────────────────────────────────────
+› ▾ prod (cluster) (2)
+    ▾ drift (1)
+      ▾ role app (1)
+        [        ] connection_limit  20…
+    ▾ warning (1)
+      [        ] role reporting  only i…
+
+space choose · a/r/i/n/u · tab cycle · …

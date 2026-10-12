@@ -28,6 +28,17 @@ type Declaration struct {
 	// entry), ... A key with no entry here is declared nowhere in this
 	// declaration (or only as part of "part1").
 	Items map[string][]pipeline.Span
+	// MacroParts locates the parts a macro spread produced (their span is
+	// the spread) inside the spread's expansion.
+	MacroParts map[pipeline.Span]MacroPart
+}
+
+// MacroPart is a part produced by a ...name spread.
+type MacroPart struct {
+	Spread    pipeline.Span // the ...name text
+	Expansion string        // what the spread expanded to
+	Offset    int           // where the part starts in Expansion
+	Len       int
 }
 
 // Index holds the declarations of a compile unit.
@@ -44,23 +55,34 @@ func Build(files []string, dbDir string, reg *pipeline.Registry, opts compiler.O
 			kind = strings.ToLower(raw.Kind.String())
 		}
 		d := Declaration{
-			Key:   obj.QualifiedName(),
-			Kind:  kind,
-			Decl:  raw.DeclSpan,
-			Part1: raw.Part1Span,
-			Block: raw.Part2Span,
-			Items: map[string][]pipeline.Span{},
+			Key:        obj.QualifiedName(),
+			Kind:       kind,
+			Decl:       raw.DeclSpan,
+			Part1:      raw.Part1Span,
+			Block:      raw.Part2Span,
+			Items:      map[string][]pipeline.Span{},
+			MacroParts: map[pipeline.Span]MacroPart{},
 		}
 		if raw.Text != nil {
-			for _, a := range raw.SchemaAttrs {
-				at := a.At
-				indexBlock(d.Items, "", a.Text, func(x, y int) pipeline.Span { return raw.Text.Span(at+x, at+y) })
+			// spanIn maps a range of text (starting at offset at of the
+			// expanded file) to the original, noting macro-produced parts.
+			spanIn := func(text string, at int) func(a, b int) pipeline.Span {
+				return func(a, b int) pipeline.Span {
+					sp := raw.Text.Span(at+a, at+b)
+					if sp.Macro != "" {
+						if mp, ok := macroPart(raw.Text, text, at, a, b); ok {
+							d.MacroParts[sp] = mp
+						}
+					}
+					return sp
+				}
 			}
-			indexPart1(&d, raw)
+			for _, a := range raw.SchemaAttrs {
+				indexBlock(d.Items, "", a.Text, spanIn(a.Text, a.At))
+			}
+			indexPart1(&d, raw, spanIn(raw.Part1, raw.Part1At))
 			if raw.HasPart2 {
-				indexBlock(d.Items, "", raw.Part2, func(a, b int) pipeline.Span {
-					return raw.Text.Span(raw.Part2At+a, raw.Part2At+b)
-				})
+				indexBlock(d.Items, "", raw.Part2, spanIn(raw.Part2, raw.Part2At))
 			}
 		}
 		idx.Decls[d.Key] = append(idx.Decls[d.Key], d)
@@ -78,6 +100,35 @@ func Build(files []string, dbDir string, reg *pipeline.Registry, opts compiler.O
 		})
 	}
 	return idx, nil
+}
+
+// macroPart finds the expansion around the macro-produced range [a, b) of
+// text (at offset at of the expanded file): the run of characters mapping to
+// the same spread.
+func macroPart(st pipeline.SourceText, text string, at, a, b int) (MacroPart, bool) {
+	spread := st.Span(at+a, at+a+1)
+	same := func(i int) bool {
+		sp := st.Span(at+i, at+i+1)
+		return sp.Macro == spread.Macro && sp.Start == spread.Start && sp.MacroAt == spread.MacroAt+(i-a)
+	}
+	if spread.Macro == "" || b <= a {
+		return MacroPart{}, false
+	}
+	start, end := a, b
+	for start > 0 && same(start-1) {
+		start--
+	}
+	for end < len(text) && same(end) {
+		end++
+	}
+	for i := a; i < b; i++ {
+		if !same(i) {
+			return MacroPart{}, false // the part isn't all from this spread
+		}
+	}
+	whole := st.Span(at+start, at+end)
+	whole.MacroAt = 0
+	return MacroPart{Spread: whole, Expansion: text[start:end], Offset: a - start, Len: b - a}, true
 }
 
 // Spans returns every span declaring property of object key, across its
@@ -297,7 +348,11 @@ func indexBlock(items map[string][]pipeline.Span, prefix, text string, span func
 					items[prefix+gk.elem] = append(items[prefix+gk.elem], esp)
 					continue
 				}
-				key := prefix + gk.elem + ":" + escape(identText(e.toks[0]))
+				name := e.toks[0]
+				if gk.elem == "index" {
+					name = indexName(e.toks)
+				}
+				key := prefix + gk.elem + ":" + escape(identText(name))
 				items[key] = append(items[key], esp)
 				if e.group {
 					indexBlock(items, key+"/", sliceText(text, e.bodyAt, lastBrace(text, e)), offsetSpan(span, e.bodyAt))
@@ -307,8 +362,8 @@ func indexBlock(items map[string][]pipeline.Span, prefix, text string, span func
 		}
 		if elem, ok := singleKinds[first]; ok && len(st.toks) > 1 {
 			name := st.toks[1]
-			if elem == "index" && strings.EqualFold(name.Text, "UNIQUE") && len(st.toks) > 2 {
-				name = st.toks[2]
+			if elem == "index" {
+				name = indexName(st.toks[1:])
 			}
 			key := prefix + elem + ":" + escape(identText(name))
 			items[key] = append(items[key], sp)
@@ -358,4 +413,19 @@ func PropertyKey(property string) string {
 		return property[:i] + "grants"
 	}
 	return property
+}
+
+// indexName returns an index entry's name token, after its modifiers:
+// "[UNIQUE] [CONCURRENTLY] [ONLY] name (...)".
+func indexName(ts []tok) tok {
+	for i, t := range ts {
+		switch word(t) {
+		case "UNIQUE", "CONCURRENTLY", "ONLY":
+			if i < len(ts)-1 && t.Type == format.TokKeyword {
+				continue
+			}
+		}
+		return t
+	}
+	return ts[0]
 }

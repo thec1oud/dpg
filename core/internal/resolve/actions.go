@@ -1,4 +1,4 @@
-// Package resolve resolves drift items (RFC Section 18.x, dpg resolve):
+// Package resolve resolves drift items (RFC Section 18.4, dpg resolve):
 // adopting the database's state into the source and snapshot, reverting
 // the database to the declared state, ignoring unmanaged objects, and
 // acknowledging items.

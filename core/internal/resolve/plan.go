@@ -55,9 +55,12 @@ func (t *Target) Label() string {
 
 // Decision is what to do with one item.
 type Decision struct {
-	Target  string // Target.Label()
-	ItemID  string
-	Action  Action
+	Target string // Target.Label()
+	ItemID string
+	Action Action
+	// Macro says how to adopt a part a macro declares: MacroEdit changes the
+	// macro (every use), MacroInline expands this use and changes it there.
+	Macro   MacroMode
 	Reason  string     // acknowledgements
 	Expires *time.Time // acknowledgements
 	By      string     // acknowledgements
@@ -94,6 +97,12 @@ type Problem struct {
 	Reason         string
 }
 
+// Required is an adoption added because a chosen one needs it.
+type Required struct {
+	Target, ItemID string
+	By             string // the item that needs it
+}
+
 // Plan is everything a set of decisions changes.
 type Plan struct {
 	Files      []*FileChange
@@ -102,6 +111,7 @@ type Plan struct {
 	Acks       []*AckChange
 	Problems   []Problem
 	Decisions  []Decision
+	Required   []Required
 }
 
 // Empty reports whether the plan changes nothing.
@@ -217,6 +227,7 @@ func Prepare(targets []*Target, decisions []Decision, now time.Time, deps Deps) 
 			return nil, err
 		}
 	}
+	adopts = withRequired(byLabel, adopts, pl.plan)
 	if err := pl.adoptAll(byLabel, adopts, deps); err != nil {
 		return nil, err
 	}

@@ -1,0 +1,24 @@
+dpg resolve  12 item(s) · 1 chosen
+────────────────────────────────────────────────────────────────────────────────
+  ▾ prod (cluster) (2)
+    ▾ drift (1)
+      ▾ role app (1)
+        [        ] connection_limit  20 → 50
+    ▾ warning (1)
+      [        ] role reporting  only in the database
+  ▾ prod/app (10, 1 chosen)
+    ▾ drift (3, 1 chosen)
+      ▾ table public.m (1, 1 chosen)
+›       [adopt  e] column:updated_at  20 → 50
+      ▾ table public.orders (2)
+        [        ] column:status  20 → 50
+        [        ] index:orders_idx  only in the database: SELECT TO app
+    ▾ conflict (1)
+────────────────────────────────────────────────────────────────────────────────
+table:public.m/column:updated_at  drift
+snapshot: 20 · database: 50
+can: adopt, acknowledge · declared by a macro (m: inline / edit the macro)
+
+
+
+space choose · a/r/i/n/u · tab cycle · p preview · / filter · ? keys · q quit

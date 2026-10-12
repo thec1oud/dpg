@@ -1,0 +1,14 @@
+dpg resolve  12 item(s) · 0 chosen
+────────────────────────────────────────────────────────────
+      [        ] table cron.run  only in the database
+    ▾ warning (1)
+      ▾ table public.orders (1)
+        [        ] grant:SELECT:app  only in the database: …
+    ▾ acknowledged (1)
+      ▾ table public.orders (1)
+›       [        ] comment  acknowledged by dana: known
+────────────────────────────────────────────────────────────
+table:public.orders/comment  acknowledged
+snapshot: 20 · database: 50
+
+space choose · a/r/i/n/u · tab cycle · p preview · / filter…

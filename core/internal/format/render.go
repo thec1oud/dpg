@@ -121,7 +121,7 @@ func renderTable(b *strings.Builder, n *TableNode, opts Options, ind string) {
 	colInd := ind + opts.indent()
 	cols := sortColumns(n.Columns)
 
-	// Column alignment (RFC Section 18.7): pad each genuine column definition's
+	// Column alignment (RFC Section 18.8): pad each genuine column definition's
 	// name to the widest name in the list, so every column's type starts at
 	// the same position. Table-level constraint-clause entries in the same
 	// ( ) list (CONSTRAINT/PRIMARY KEY/UNIQUE/CHECK/EXCLUDE/FOREIGN KEY —
@@ -329,7 +329,7 @@ var constraintClauseLeadWords = map[string]bool{
 // protects a qualified reference from the identical ambiguity; a
 // declaration's own name needs the same protection, which it can only get
 // by being isolated before rekeyword ever runs on it. Used by renderTable's
-// column-alignment pass (RFC Section 18.7) to align only genuine column names
+// column-alignment pass (RFC Section 18.8) to align only genuine column names
 // against each other and leave constraint clauses alone.
 func splitColumnName(rawText string) (name, rest string, isColumnDef bool) {
 	toks := Lex("", []byte(rawText))

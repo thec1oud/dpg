@@ -8,13 +8,12 @@ import (
 // indexPart1 records the parts of a declaration's Part 1: always "part1"
 // (the whole text), and per kind its columns, constraints, option clauses,
 // query or body.
-func indexPart1(d *Declaration, raw pipeline.RawObject) {
+func indexPart1(d *Declaration, raw pipeline.RawObject, span func(a, b int) pipeline.Span) {
 	text := raw.Part1
 	if text == "" || raw.Kind == pipeline.KindSchema {
 		// PARAMETER PRIVILEGES has no Part 1; a schema's is just its name.
 		return
 	}
-	span := func(a, b int) pipeline.Span { return raw.Text.Span(raw.Part1At+a, raw.Part1At+b) }
 	d.Items["part1"] = []pipeline.Span{span(0, len(text))}
 	ts := lex(text)
 	switch raw.Kind {

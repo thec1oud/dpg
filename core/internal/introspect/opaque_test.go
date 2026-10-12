@@ -121,7 +121,7 @@ func TestRecordSkipNoopWithoutSink(t *testing.T) {
 }
 
 // TestRecordSkipAppendsToInstalledSink proves dump's WithSkipWarnings/
-// recordSkip wiring (RFC Section 18.4) actually surfaces a human-readable
+// recordSkip wiring (RFC Section 18.5) actually surfaces a human-readable
 // message for every object introspection silently omits, instead of the
 // prior fully-silent omission that gave the operator no way to know their
 // dump was incomplete.

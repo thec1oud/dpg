@@ -76,6 +76,7 @@ Source: https://github.com/thec1oud/dpg`,
 		planCmd(),
 		applyCmd(),
 		verifyCmd(),
+		resolveCmd(),
 		dumpCmd(),
 		diffCmd(),
 		fmtCmd(),
@@ -150,12 +151,60 @@ manage) and warnings (roles and tablespaces DPG doesn't declare, grants it
 didn't make). Objects matching an [ignore] pattern in dpg.toml are
 not compared.
 
-Exits 0 when there is no drift (unmanaged objects and warnings allowed),
-1 when drift is found, 2 on error.`,
+Items acknowledged with dpg resolve --ack are listed separately and are
+not drift until the drift changes or the acknowledgement expires.
+
+Exits 0 when there is no drift (unmanaged objects, warnings and
+acknowledged items allowed), 1 when drift is found, 2 on error.`,
 	}
 	cmd.Flags().String("cluster", "", "cluster to verify (required when multiple clusters exist)")
 	cmd.Flags().String("database", "", "database to verify (required when multiple databases exist)")
 	cmd.Flags().String("format", "text", "output format: text or json")
+	return cmd
+}
+
+func resolveCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "resolve",
+		Short: "Resolve drift: adopt, revert, ignore or acknowledge items",
+		RunE:  noop,
+		Long: `Resolves the items dpg verify reports. Run in a terminal without
+options, it is interactive: choose items in a tree, preview, apply.
+Otherwise each item is chosen by its ID:
+
+  --adopt ID          bring the database's state into the source and snapshot
+  --revert ID         change the database back to the declared state
+  --ignore ID         add an [ignore] pattern for an object DPG doesn't manage
+  --ack ID            acknowledge the item (with --reason, --expires)
+  --unack ID          remove an item's acknowledgement
+
+--ack and --unack also take an object's ID (kind:object): every item of
+the object is acknowledged, or has its acknowledgement removed.
+
+A part declared by a macro spread is adopted only with --macro: edit
+changes the macro's definition (every use of it), inline replaces this
+spread with the macro's text and changes it there.
+
+Every change is previewed before it is made (--dry-run stops there; --yes
+skips the question). After writing, the source is compiled and drift is
+detected again; if a resolved item is still reported or a new one appears,
+every file, snapshot and acknowledgement change is undone.
+
+Exits 0 when resolved (or nothing to change), 2 on error.`,
+	}
+	cmd.Flags().String("cluster", "", "cluster to resolve (required when multiple clusters exist)")
+	cmd.Flags().String("database", "", "database to resolve (required when multiple databases exist)")
+	cmd.Flags().StringSlice("adopt", nil, "item IDs to adopt")
+	cmd.Flags().StringSlice("revert", nil, "item IDs to revert")
+	cmd.Flags().StringSlice("ignore", nil, "item IDs to ignore")
+	cmd.Flags().StringSlice("ack", nil, "item IDs to acknowledge")
+	cmd.Flags().StringSlice("unack", nil, "item IDs to unacknowledge")
+	cmd.Flags().String("reason", "", "why the items are acknowledged")
+	cmd.Flags().String("expires", "", "acknowledgements lapse on this date (YYYY-MM-DD)")
+	cmd.Flags().String("macro", "", "adopting a part a macro declares: edit (change the macro, every use) or inline (expand this use)")
+	cmd.Flags().BoolP("yes", "y", false, "skip the confirmation question")
+	cmd.Flags().Bool("dry-run", false, "show the changes without making them")
+	cmd.Flags().Bool("allow-destructive", false, "allow a revert to run DESTRUCTIVE statements")
 	return cmd
 }
 

@@ -1,0 +1,24 @@
+dpg resolve  12 item(s) · 0 chosen
+────────────────────────────────────────────────────────────────────────────────
+        [        ] query  20 → 50
+    ▾ converged (1)
+      ▾ table public.items (1)
+        [        ] column:qty  source and database agree; the snapshot is out o…
+    ▾ unmanaged (3)
+      [        ] schema cron  only in the database
+      [        ] table cron.job  only in the database
+      [        ] table cron.run  only in the database
+    ▾ warning (1)
+      ▾ table public.orders (1)
+        [        ] grant:SELECT:app  only in the database: SELECT TO app
+    ▾ acknowledged (1)
+      ▾ table public.orders (1)
+›       [        ] comment  acknowledged by dana: known
+────────────────────────────────────────────────────────────────────────────────
+table:public.orders/comment  acknowledged
+snapshot: 20 · database: 50
+can: unacknowledge
+acknowledged 2026-10-01 by dana: known
+
+
+space choose · a/r/i/n/u · tab cycle · p preview · / filter · ? keys · q quit

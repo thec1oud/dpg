@@ -18,7 +18,7 @@ import (
 const firstNormalObjectID = 16384
 
 // skipWarningsKey is the context key a caller uses to opt into collecting
-// unreconstructable-object warnings (RFC Section 18.4) — e.g. a COLLATION
+// unreconstructable-object warnings (RFC Section 18.5) — e.g. a COLLATION
 // with no LOCALE PostgreSQL will surface, or an OPERATOR CLASS with no
 // reconstructable member. Without a sink installed via WithSkipWarnings,
 // recordSkip is a no-op: only `dpg dump` (the command that actually loses

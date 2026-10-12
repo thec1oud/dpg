@@ -179,15 +179,16 @@ Copyright Notice
     18.1.  dpg plan
     18.2.  dpg apply
     18.3.  dpg verify
-    18.4.  dpg dump
-    18.5.  dpg diff
-    18.6.  dpg validate
-    18.7.  dpg fmt
-    18.8.  dpg portability
-    18.9.  dpg init
-    18.10. dpg completion
-    18.11. dpg docs
-    18.12. Target Selection
+    18.4.  dpg resolve
+    18.5.  dpg dump
+    18.6.  dpg diff
+    18.7.  dpg validate
+    18.8.  dpg fmt
+    18.9.  dpg portability
+    18.10. dpg init
+    18.11. dpg completion
+    18.12. dpg docs
+    18.13. Target Selection
 19. The Linter
     19.1.  Built-in Rules
     19.2.  Configuration
@@ -623,7 +624,7 @@ directory = ".dpg/migrations"
    listed in this section, Section 3.3, or Section 3.4 for that file's
    kind, with error DPG-E001 (unknown configuration key).
 
-   `[fmt]` controls `dpg fmt` (Section 18.7).  `[migrations]` controls where
+   `[fmt]` controls `dpg fmt` (Section 18.8).  `[migrations]` controls where
    `dpg apply` (Section 18.2) archives applied SQL, one file per successful
    apply, at `<directory>/<cluster>/<database>/<timestamp>_<short-hash>.sql`;
    this directory SHOULD be committed to version control.
@@ -774,7 +775,7 @@ default_schema = "public"
    6.  Validate names: cluster names non-empty and unique project-wide
        (DPG-E032, DPG-E034); database names non-empty and unique within
        their cluster (DPG-E033, DPG-E035).  Reason: `--cluster` and
-       `--database` selection (Section 18.12), snapshot files, the
+       `--database` selection (Section 18.13), snapshot files, the
        migrations archive, and `dpg dump`'s output path are all keyed by
        name, so an empty or repeated name would make one target
        unreachable or make two targets share files.
@@ -5337,13 +5338,168 @@ Options:
 
    `change` is `changed`, `missing` (in the snapshot only), `extra`
    (live only) or `regranted` (a privilege the source revokes is granted
-   live).
+   live).  An item also carries `source`, the source's value of the
+   property when the source declares it, and, once acknowledged
+   (Section 18.4), `acknowledged` (the acknowledgement) or `lapsed`
+   (`true`: an acknowledgement of the item no longer applies).
 
-   Exit codes: 0 = no drift (unmanaged objects and warnings allowed);
-   1 = drift, a conflict or a converged item in at least one targeted
-   cluster or database; 2 = error.
+   An acknowledged item is listed in its own section and doesn't count
+   as drift.  A lapsed acknowledgement is noted on its item.
 
-### 18.4. dpg dump
+   Exit codes: 0 = no drift (unmanaged objects, warnings and
+   acknowledged items allowed); 1 = drift, a conflict or a converged
+   item in at least one targeted cluster or database; 2 = error.
+
+### 18.4. dpg resolve
+
+   Resolves the items `dpg verify` reports (Section 18.3).  Needs a live
+   database connection.
+
+```
+dpg resolve [options]
+
+Options:
+  --cluster <name>     Target a specific cluster (default: all clusters).
+  --database <name>    Target a specific database (default: all databases).
+  --adopt <id>         Make the source and the snapshot match the live
+                       catalog.
+  --revert <id>        Make the live catalog match the declared state.
+  --ignore <id>        Add an [ignore] pattern for the item's object.
+  --ack <id>           Acknowledge the item.
+  --unack <id>         Remove the item's acknowledgement.
+  --reason <text>      Why the items are acknowledged.
+  --expires <date>     The acknowledgements lapse on this date
+                       (YYYY-MM-DD).
+  --macro <mode>       Adopting a part a macro declares: edit or inline.
+  --allow-destructive  Allow a revert to run DESTRUCTIVE statements.
+  --dry-run            Show the changes; change nothing.
+  --yes, -y            Skip the confirmation prompt.
+```
+
+   Without an action option, in a terminal, `dpg resolve` is
+   interactive: the items are shown as a tree (cluster or database,
+   group, object, item), chosen with keys for each action, on an item
+   or on a whole object, group or database, then previewed and
+   applied.  Without a terminal and without an action option it is an
+   error.
+
+   Each action option takes item IDs (Section 18.3) and may be repeated
+   or given a comma-separated list.  An ID must name an item in exactly
+   one targeted cluster or database.  `--ack` and `--unack` also take an
+   object's ID (`<kind>:<object>`), standing for each of its items.
+
+   **Actions per group** [DPG]:
+
+   | Group | adopt | revert | ignore | acknowledge |
+   |-------|-------|--------|--------|-------------|
+   | drift, conflict | yes | when `dpg verify` shows the restoring statements | — | yes |
+   | converged | yes | — | — | yes |
+   | unmanaged | yes | — | yes | yes |
+   | warning: role, tablespace | yes | — | yes | yes |
+   | warning: grant | yes | — | — | yes |
+
+   An acknowledged item can only be unacknowledged.  An unmanaged
+   object is never reverted: DPG doesn't drop what it doesn't manage.
+
+   **adopt** [DPG] edits the source the way the change would have been
+   written, and updates the snapshot entry from the edited source.  Live
+   values are written as `dpg dump` writes them (Section 18.5).
+
+   -   A changed property: the text declaring it is replaced.
+   -   A part the source lacks: a column or table constraint is added at
+       the end of the column list, laid out like its entries; another
+       Part 1 clause at the end of Part 1; a block statement at the end
+       of the block, inside the group it belongs to (`INDEXES { }`,
+       `COLUMNS { c { } }`, `GRANTS { }`, ...), which is created when
+       missing.  A declaration without a `{ }` block gets one.
+   -   A part missing live: its text is removed, with its separator, and
+       so is a group it was the only entry of.
+   -   A live object the source doesn't declare: its declaration is
+       appended to `schemas/<schema>/tables/<table>.dpg` for a table;
+       `views.dpg`, `functions.dpg` (functions, procedures, aggregates),
+       `types.dpg` or `sequences.dpg` in `schemas/<schema>/` for those
+       kinds; `schemas/<schema>/schema.dpg` for a schema and its other
+       objects; `objects.dpg` in the database directory for an object
+       outside a schema; `roles.dpg` or `tablespaces.dpg` in the
+       cluster objects directory.  The undeclared objects it depends on
+       (its schema, the types it uses, the tables its foreign keys
+       reference, and theirs) are adopted with it.
+   -   An object missing live: its declarations are removed.
+   -   A grant: a live grant is added as a `GRANTS` entry; a declared
+       privilege the role doesn't hold is taken out of the entries
+       granting it (a declared `ALL` becomes the privileges the role
+       holds; a missing `WITH GRANT OPTION` leaves the plain privilege);
+       a privilege the source revokes and the role holds is taken out
+       of `REVOKES` and added to `GRANTS`.
+   -   A converged item: only the snapshot changes.
+   -   A part produced by a macro spread (Section 4.7) needs `--macro`:
+       `edit` changes the macro's definition, and so every use of it,
+       and needs the part's text to occur once in the definition;
+       `inline` replaces this spread with the macro's text and changes
+       it there.
+
+   A change adopt can't make is refused with the reason: grants on
+   parameters, default privileges and privileges with column lists, a
+   part from a macro defined outside the database's source, a part
+   declared in different groups in the source and in `dpg dump`'s
+   form.
+
+   **revert** [DPG] runs the statements `dpg verify` shows for the item
+   the way `dpg apply` runs a migration (Section 18.2): the owner
+   membership check, the migration archive, and DESTRUCTIVE statements
+   only with `--allow-destructive`.  The snapshot doesn't change.
+
+   **ignore** [DPG] adds the object's pattern to the `[ignore]` table
+   (Section 3.9) of the database's `dpg.toml`, or the cluster's for a
+   cluster-level object, keeping the file's comments and layout.  A
+   routine's pattern omits its argument list.
+
+   **acknowledge** [DPG] records the item in
+   `.dpg/acknowledged/<cluster>/<database>.json` (`_cluster` as the
+   database for cluster-level objects):
+
+```json
+{
+  "version": 1,
+  "acknowledgements": [
+    {
+      "id": "role:app_service/connection_limit",
+      "fingerprint": "4f0c2b9e1d7a3c55",
+      "reason": "raised during the incident",
+      "by": "Dana Smith",
+      "at": "2026-10-12T12:00:00Z",
+      "expires": "2026-11-01T00:00:00Z"
+    }
+  ]
+}
+```
+
+   `by` is git's `user.name`, else `$USER`.  The fingerprint covers the
+   item's snapshot, live and source values.  An acknowledgement lapses
+   when they change or its expiry date passes; the item is then
+   reported again.  **unacknowledge** removes the item's entry; the
+   file is removed with its last entry.
+
+   **Process** [DPG]:
+
+   1.  Every decision is planned before anything is written.  When one
+       can't be carried out, the reasons are printed and nothing
+       changes.
+   2.  The plan is shown: a diff of each file, the snapshot entries,
+       the revert statements and the acknowledgement changes.  Then
+       confirmation is asked (`--yes` skips it; `--dry-run` stops).
+   3.  Reverts run; then the files, snapshots and acknowledgement
+       files are written.
+   4.  The project is compiled and drift detected again.  If a
+       resolved item is still reported (an acknowledged one isn't
+       acknowledged, an unacknowledged one still is) or a new item
+       appears, every file, snapshot and acknowledgement change is
+       undone.  A revert that ran is not undone.
+
+   Exit codes: 0 = resolved, or nothing to change; 2 = error (an
+   unknown item, a decision that can't be carried out, a failed check).
+
+### 18.5. dpg dump
 
    Introspects a live database catalog and produces an initial `.dpg`
    source tree and snapshot, suitable for bootstrapping a new DPG
@@ -5403,7 +5559,7 @@ Options:
    object by hand. There is no `-- dpg:manual`-style marker comment in
    the generated source itself, only the stderr warning at dump time.
 
-### 18.5. dpg diff
+### 18.6. dpg diff
 
    Diffs two DPG source directories targeting the same logical database,
    without requiring a snapshot or a live database connection.
@@ -5423,7 +5579,7 @@ Options:
    Both directories MUST contain a `dpg.toml` with a `[database]`
    section identifying the same logical database.
 
-### 18.6. dpg validate
+### 18.7. dpg validate
 
    Compiles and lints `.dpg` source files offline.  No snapshot or
    database connection required.
@@ -5482,7 +5638,7 @@ Options:
    `rule` uses hyphen-separated IDs (e.g., `"hardcoded-password"`), per
    Section 19.3.
 
-### 18.7. dpg fmt
+### 18.8. dpg fmt
 
    Reformats `.dpg` source files in place according to a canonical style.
 
@@ -5534,7 +5690,7 @@ Options:
    that changes meaning is a compiler error (see the linter/compiler),
    never something the formatter guesses at or silently corrects.
 
-### 18.8. dpg portability
+### 18.9. dpg portability
 
    Reports all PostgreSQL-specific constructs in use with SQL standard
    alternatives noted where available.
@@ -5556,7 +5712,7 @@ Options:
 
    This command is OPTIONAL; it MUST NOT be a compilation gate.
 
-### 18.9. dpg init
+### 18.10. dpg init
 
    Scaffolds a new project with the standard directory layout and
    `dpg.toml` files.
@@ -5583,7 +5739,7 @@ Options:
 <dir>/.dpg/snapshots/                       snapshot storage
 ```
 
-### 18.10. dpg completion
+### 18.11. dpg completion
 
    Generates shell completion scripts.
 
@@ -5593,7 +5749,7 @@ dpg completion <shell>
 <shell>: bash | zsh | fish | powershell
 ```
 
-### 18.11. dpg docs
+### 18.12. dpg docs
 
    Serves the DPG documentation locally over HTTP.
 
@@ -5611,7 +5767,7 @@ Options:
    A development build (plain `make build`) does not embed the
    documentation; running `dpg docs` from such a build prints an error.
 
-### 18.12. Target Selection
+### 18.13. Target Selection
 
    When `--cluster` or `--database` are not specified, the compiler
    applies the following auto-selection algorithm:

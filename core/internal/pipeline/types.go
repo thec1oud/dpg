@@ -212,12 +212,14 @@ type SourceText interface {
 // Span is a range of source text: byte offsets [Start, End) into the file
 // after scanutil.NormalizeSource (no BOM, LF line endings), with the line and
 // column of Start. Macro names the macro when the range was produced by a
-// ...name spread; Start and End then cover the spread itself.
+// ...name spread; Start and End then cover the spread itself, and MacroAt is
+// where the range starts in the spread's expansion.
 type Span struct {
 	File       string
 	Start, End int
 	Line, Col  int
 	Macro      string
+	MacroAt    int
 }
 
 // Valid reports whether the span was recorded.

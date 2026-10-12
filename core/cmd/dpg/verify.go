@@ -47,8 +47,11 @@ manage) and warnings (roles and tablespaces DPG doesn't declare, grants it
 didn't make). Objects matching an [ignore] pattern in dpg.toml are
 not compared.
 
-Exits 0 when there is no drift (unmanaged objects and warnings allowed),
-1 when drift is found, 2 on error.`,
+Items acknowledged with dpg resolve --ack are listed separately and are
+not drift until the drift changes or the acknowledgement expires.
+
+Exits 0 when there is no drift (unmanaged objects, warnings and
+acknowledged items allowed), 1 when drift is found, 2 on error.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if format != "text" && format != "json" {
 				return &ui.ExitError{Code: 2, Err: fmt.Errorf("--format must be text or json, got %q", format)}

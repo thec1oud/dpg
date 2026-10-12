@@ -141,6 +141,21 @@ func TestIndexSpans(t *testing.T) {
 			t.Errorf("column:created_at: Macro = %q, want audit", sp.Macro)
 		}
 	}
+	// ... and its MacroPart locates it in the expansion.
+	for _, d := range idx.Decls["public.orders"] {
+		for _, sp := range d.Items["column:created_at"] {
+			mp, ok := d.MacroParts[sp]
+			if !ok {
+				t.Fatal("column:created_at: no MacroPart")
+			}
+			if got := mp.Expansion[mp.Offset : mp.Offset+mp.Len]; got != "created_at timestamptz NOT NULL DEFAULT now()" {
+				t.Errorf("MacroPart text %q (expansion %q)", got, mp.Expansion)
+			}
+			if text(mp.Spread) != "...audit" {
+				t.Errorf("MacroPart spread %q", text(mp.Spread))
+			}
+		}
+	}
 	// Line and column of a span's start.
 	for _, sp := range idx.Spans("public.orders", "index:orders_status_idx") {
 		if sp.Line != 18 || sp.Col != 9 {

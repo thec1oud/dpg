@@ -1,0 +1,24 @@
+dpg resolve  3 item(s) · 0 chosen
+────────────────────────────────────────────────────────────────────────────────
+› ▾ prod/δοκιμή (3)
+    ▾ drift (2)
+      ▾ table public."Ünïcödé 表" (1)
+        [        ] column:名前  20 → 50
+      ▾ table public.t (1)
+        [        ] column:very_long_name_very_long_name_very_long_name_very_lon…
+    ▾ unmanaged (1)
+      [        ] table public.very_long_name_very_long_name_very_long_name_very…
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+prod/δοκιμή
+3 item(s): nothing chosen
+
+
+
+
+space choose · a/r/i/n/u · tab cycle · p preview · / filter · ? keys · q quit

@@ -12,7 +12,7 @@ dpg verify --cluster production --database myapp
 dpg verify --format json
 ```
 
-Exit codes: `0` no drift (unmanaged objects and warnings are allowed), `1` drift found, `2` error.
+Exit codes: `0` no drift (unmanaged objects, warnings and acknowledged items are allowed), `1` drift found, `2` error.
 
 ## Reading the report
 
@@ -94,13 +94,49 @@ Objects matching an [`[ignore]`](../../fundamentals/project-structure/#ignoring-
 }
 ```
 
-`change` is `changed`, `missing` (in the snapshot only), `extra` (in the database only) or `regranted`.
+`change` is `changed`, `missing` (in the snapshot only), `extra` (in the database only) or `regranted`. An item also carries `source` (your source's value, when you declare the property), and `acknowledged` or `lapsed` once it has been acknowledged.
 
 ## Resolving drift
 
-- **The change was a mistake:** run the SQL the report shows under the item.
-- **The change was intended:** update your `.dpg` source to match, then apply, so the source and snapshot record it.
-- **The object isn't DPG's to manage:** add it to `[ignore]`.
+Run `dpg resolve` in a terminal to choose interactively: the items are shown as a tree (cluster or database, group, object, item). Move with the arrow keys, choose with `space` (or `a` adopt, `r` revert, `i` ignore, `n` acknowledge, `u` unacknowledge, `tab` to cycle) on an item or a whole object, group or database, filter with `/`, preview with `p` and apply with `y`. `?` lists every key.
+
+In scripts, `dpg resolve` acts on items by their IDs:
+
+```bash
+dpg resolve --adopt table:public.orders/column:status     # keep the database's change
+dpg resolve --revert role:app_service/connection_limit    # undo it in the database
+dpg resolve --ignore table:public.audit_log               # not DPG's to manage
+dpg resolve --ack table:public.orders/index:tmp_idx --reason "load test" --expires 2026-11-01
+dpg resolve --unack table:public.orders/index:tmp_idx
+```
+
+| Action | What it does | For |
+|--------|--------------|-----|
+| `--adopt` | Edits your source to declare what the database has, and updates the snapshot | every group |
+| `--revert` | Runs the SQL the report shows, like `dpg apply` would (archived; `--allow-destructive` for DESTRUCTIVE statements) | drift and conflicts with SQL shown |
+| `--ignore` | Adds the object to `[ignore]` in the database's `dpg.toml` (the cluster's for roles and tablespaces) | unmanaged objects, undeclared roles and tablespaces |
+| `--ack` | Records that you know about the item; `verify` lists it separately and doesn't fail on it | every group |
+| `--unack` | Removes the acknowledgement | acknowledged items |
+
+Unmanaged objects can't be reverted: DPG never drops what it doesn't manage.
+
+Before changing anything, `resolve` shows a diff of every file it will edit, the snapshot entries, any SQL it will run and the acknowledgement changes, and asks for confirmation (`--yes` skips the question, `--dry-run` stops there). Afterwards it compiles your project and checks drift again; if a resolved item is still reported or a new one appears, it puts every file, snapshot and acknowledgement back. SQL a revert already ran stays run.
+
+### Adopting
+
+Adopting edits your source the way you'd have written the change, using the same form as `dpg dump`:
+
+- a changed property is replaced where you declared it;
+- something the source lacks is added where it belongs: a column at the end of the column list, an index in `INDEXES { }`, a column comment in `COLUMNS { name { } }`, creating the group or the `{ }` block if needed;
+- something the database no longer has is removed, with its comma, and with its group if it was the last entry;
+- a new object gets its own declaration (`schemas/<schema>/tables/<table>.dpg` for a table, `views.dpg`, `functions.dpg`, `types.dpg` or `sequences.dpg` for those, `schema.dpg` for the rest of a schema, `roles.dpg` for roles), and its undeclared schema, types and referenced tables come with it;
+- grants are added to `GRANTS { }`, or taken out of the entries that declare them (a declared `ALL` becomes the privileges actually held).
+
+A column that comes from a macro needs `--macro edit` (change the macro, and so every table that uses it) or `--macro inline` (replace `...macro` in this table with its columns, changed).
+
+### Acknowledging
+
+Acknowledgements live in `.dpg/acknowledged/<cluster>/<database>.json` and are meant to be committed. Each records who acknowledged the item (git's `user.name`), when, why, and a fingerprint of the values it saw. If the drift changes, or the `--expires` date passes, the acknowledgement lapses and the item is reported again.
 
 `dpg apply` alone does not undo drift: it plans from the snapshot, not from the database, so it doesn't see changes made outside DPG.
 

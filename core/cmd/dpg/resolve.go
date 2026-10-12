@@ -35,6 +35,7 @@ type resolveFlags struct {
 	ack, unack        []string
 	reason            string
 	expires           string
+	macro             string
 	yes, dryRun       bool
 	allowDestructive  bool
 }
@@ -44,7 +45,9 @@ func newResolveCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "resolve",
 		Short: "Resolve drift: adopt, revert, ignore or acknowledge items",
-		Long: `Resolves the items dpg verify reports. Each item is chosen by its ID:
+		Long: `Resolves the items dpg verify reports. Run in a terminal without
+options, it is interactive: choose items in a tree, preview, apply.
+Otherwise each item is chosen by its ID:
 
   --adopt ID          bring the database's state into the source and snapshot
   --revert ID         change the database back to the declared state
@@ -52,10 +55,19 @@ func newResolveCmd() *cobra.Command {
   --ack ID            acknowledge the item (with --reason, --expires)
   --unack ID          remove an item's acknowledgement
 
+--ack and --unack also take an object's ID (kind:object): every item of
+the object is acknowledged, or has its acknowledgement removed.
+
+A part declared by a macro spread is adopted only with --macro: edit
+changes the macro's definition (every use of it), inline replaces this
+spread with the macro's text and changes it there.
+
 Every change is previewed before it is made (--dry-run stops there; --yes
 skips the question). After writing, the source is compiled and drift is
-detected again; if a resolved item is still reported, every file, snapshot
-and acknowledgement change is undone.`,
+detected again; if a resolved item is still reported or a new one appears,
+every file, snapshot and acknowledgement change is undone.
+
+Exits 0 when resolved (or nothing to change), 2 on error.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			err := runResolve(f, os.Stdin, os.Stdout)
 			if err != nil && !isExitError(err) {
@@ -73,6 +85,7 @@ and acknowledgement change is undone.`,
 	cmd.Flags().StringSliceVar(&f.unack, "unack", nil, "item IDs to unacknowledge")
 	cmd.Flags().StringVar(&f.reason, "reason", "", "why the items are acknowledged")
 	cmd.Flags().StringVar(&f.expires, "expires", "", "acknowledgements lapse on this date (YYYY-MM-DD)")
+	cmd.Flags().StringVar(&f.macro, "macro", "", "adopting a part a macro declares: edit (change the macro, every use) or inline (expand this use)")
 	cmd.Flags().BoolVarP(&f.yes, "yes", "y", false, "skip the confirmation question")
 	cmd.Flags().BoolVar(&f.dryRun, "dry-run", false, "show the changes without making them")
 	cmd.Flags().BoolVar(&f.allowDestructive, "allow-destructive", false, "allow a revert to run DESTRUCTIVE statements")
@@ -93,13 +106,22 @@ func runResolve(f resolveFlags, in io.Reader, out io.Writer) error {
 		}
 		expires = &t
 	}
-	if len(f.adopt)+len(f.revert)+len(f.ignoreIDs)+len(f.ack)+len(f.unack) == 0 {
-		return fmt.Errorf("no items chosen: pass --adopt, --revert, --ignore, --ack or --unack with item IDs (see dpg verify)")
+	switch resolve.MacroMode(f.macro) {
+	case resolve.MacroAsk, resolve.MacroEdit, resolve.MacroInline:
+	default:
+		return fmt.Errorf("--macro: want edit or inline, got %q", f.macro)
+	}
+	interactive := len(f.adopt)+len(f.revert)+len(f.ignoreIDs)+len(f.ack)+len(f.unack) == 0
+	if interactive && !(isTerminal(in) && isTerminal(out)) {
+		return fmt.Errorf("no items chosen: pass --adopt, --revert, --ignore, --ack or --unack with item IDs (see dpg verify), or run dpg resolve in a terminal to choose them interactively")
 	}
 
 	env, err := loadResolveEnv(f)
 	if err != nil {
 		return err
+	}
+	if interactive {
+		return runResolveTUI(env, f)
 	}
 	decisions, err := env.decisions(f, expires)
 	if err != nil {
@@ -110,10 +132,10 @@ func runResolve(f resolveFlags, in io.Reader, out io.Writer) error {
 		return err
 	}
 	color := false
-	if f, ok := out.(*os.File); ok {
-		color = ui.IsColorEnabled(f)
+	if file, ok := out.(*os.File); ok {
+		color = ui.IsColorEnabled(file)
 	}
-	renderResolvePlan(out, plan, color)
+	renderResolvePlan(out, plan, env.proj.RootDir, color)
 	if len(plan.Problems) > 0 {
 		return &ui.ExitError{Code: 2, Err: fmt.Errorf("%d decision(s) can't be carried out", len(plan.Problems))}
 	}
@@ -121,14 +143,8 @@ func runResolve(f resolveFlags, in io.Reader, out io.Writer) error {
 		ui.PrintInfo(out, "", "Nothing to change.", color)
 		return nil
 	}
-	if !f.allowDestructive {
-		for _, m := range plan.Migrations {
-			for _, op := range m.Ops {
-				if op.Safety() == pipeline.Destructive {
-					return fmt.Errorf("DPG-E025: a revert contains destructive operations; re-run with --allow-destructive\n  first: %s", op.SQL())
-				}
-			}
-		}
+	if err := checkDestructive(plan, f.allowDestructive); err != nil {
+		return err
 	}
 	if f.dryRun {
 		ui.PrintInfo(out, "dry-run", "nothing changed", color)
@@ -142,11 +158,47 @@ func runResolve(f resolveFlags, in io.Reader, out io.Writer) error {
 			return nil
 		}
 	}
-	if err := resolve.Execute(plan, func() error { return env.check(decisions) }); err != nil {
+	if err := env.execute(plan); err != nil {
 		return err
 	}
-	ui.PrintSuccess(out, "Resolved", fmt.Sprintf("%d item(s)", len(decisions)), color)
+	ui.PrintSuccess(out, "Resolved", fmt.Sprintf("%d item(s)", len(plan.Decisions)+len(plan.Required)), color)
 	return nil
+}
+
+// checkDestructive refuses a plan whose reverts run DESTRUCTIVE statements
+// unless they are allowed.
+func checkDestructive(plan *resolve.Plan, allowed bool) error {
+	if allowed {
+		return nil
+	}
+	for _, m := range plan.Migrations {
+		for _, op := range m.Ops {
+			if op.Safety() == pipeline.Destructive {
+				return fmt.Errorf("DPG-E025: a revert contains destructive operations; re-run with --allow-destructive\n  first: %s", op.SQL())
+			}
+		}
+	}
+	return nil
+}
+
+// execute carries out a plan, with the round-trip check over its decisions
+// and the adoptions it added.
+func (env *resolveEnv) execute(plan *resolve.Plan) error {
+	decisions := append([]resolve.Decision(nil), plan.Decisions...)
+	for _, r := range plan.Required {
+		decisions = append(decisions, resolve.Decision{Target: r.Target, ItemID: r.ItemID, Action: resolve.Adopt})
+	}
+	return resolve.Execute(plan, func() error { return env.check(decisions) })
+}
+
+// isTerminal reports whether f is a terminal.
+func isTerminal(f any) bool {
+	file, ok := f.(*os.File)
+	if !ok {
+		return false
+	}
+	fi, err := file.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 
 // resolveEnv is the loaded project and its targets.
@@ -350,9 +402,10 @@ func (env *resolveEnv) target(cl *project.Cluster, db *project.Database, files [
 
 // newDeclarationFile is the file a newly adopted declaration goes to,
 // following the project layout: tables in schemas/<s>/tables/<name>.dpg,
-// views, functions, types and sequences in schemas/<s>/<kind>.dpg, other
-// schema objects in schemas/<s>/schema.dpg, objects outside a schema in
-// objects.dpg, and cluster-level objects in roles.dpg / tablespaces.dpg.
+// views, functions, types and sequences in schemas/<s>/<kind>.dpg, a schema
+// and its other objects in schemas/<s>/schema.dpg (as dpg dump writes them),
+// objects outside a schema in objects.dpg, and cluster-level objects in
+// roles.dpg / tablespaces.dpg.
 func newDeclarationFile(dir string, cluster bool, kind, key string) string {
 	if cluster {
 		if kind == "tablespace" {
@@ -360,8 +413,11 @@ func newDeclarationFile(dir string, cluster bool, kind, key string) string {
 		}
 		return filepath.Join(dir, "roles.dpg")
 	}
+	if kind == "schema" {
+		return filepath.Join(dir, "schemas", key, "schema.dpg")
+	}
 	schema, name, qualified := strings.Cut(key, ".")
-	if !qualified || kind == "schema" || kind == "extension" || kind == "fdw" || kind == "server" ||
+	if !qualified || kind == "extension" || kind == "fdw" || kind == "server" ||
 		kind == "user_mapping" || kind == "publication" || kind == "subscription" || kind == "event_trigger" || kind == "cast" {
 		return filepath.Join(dir, "objects.dpg")
 	}
@@ -400,6 +456,23 @@ func (env *resolveEnv) decisions(f resolveFlags, expires *time.Time) ([]resolve.
 					}
 				}
 			}
+			if len(found) == 0 && (a == resolve.Acknowledge || a == resolve.Unacknowledge) {
+				// An object's ID (kind:object) stands for each of its items
+				// the action applies to.
+				n := 0
+				for _, t := range env.targets {
+					for _, it := range t.Report.Items {
+						if strings.HasPrefix(it.ID, id+"/") && resolve.Allowed(it, a) {
+							out = append(out, resolve.Decision{Target: t.Label(), ItemID: it.ID, Action: a,
+								Reason: f.reason, Expires: expires, By: by})
+							n++
+						}
+					}
+				}
+				if n > 0 {
+					continue
+				}
+			}
 			switch len(found) {
 			case 0:
 				return fmt.Errorf("%s: no such item (see dpg verify)", id)
@@ -407,7 +480,8 @@ func (env *resolveEnv) decisions(f resolveFlags, expires *time.Time) ([]resolve.
 			default:
 				return fmt.Errorf("%s: found in %d clusters/databases; choose one with --cluster/--database", id, len(found))
 			}
-			out = append(out, resolve.Decision{Target: found[0].Label(), ItemID: id, Action: a, Reason: f.reason, Expires: expires, By: by})
+			out = append(out, resolve.Decision{Target: found[0].Label(), ItemID: id, Action: a,
+				Macro: resolve.MacroMode(f.macro), Reason: f.reason, Expires: expires, By: by})
 		}
 		return nil
 	}
@@ -424,18 +498,16 @@ func (env *resolveEnv) decisions(f resolveFlags, expires *time.Time) ([]resolve.
 
 // check is the round trip after writing: the source compiles, every
 // resolved item is gone (acknowledged ones are acknowledged, unacknowledged
-// ones aren't), and no new failing item appeared.
+// ones aren't), and no new item appeared.
 func (env *resolveEnv) check(decisions []resolve.Decision) error {
 	before := map[string]map[string]bool{}
 	for _, t := range env.targets {
 		before[t.Label()] = map[string]bool{}
 		for _, it := range t.Report.Items {
-			if it.Failing() {
-				before[t.Label()][it.ID] = true
-			}
+			before[t.Label()][it.ID] = true
 		}
 	}
-	// An unacknowledged item is expected to fail again.
+	// An unacknowledged item is expected to be reported again.
 	for _, d := range decisions {
 		if d.Action == resolve.Unacknowledge && before[d.Target] != nil {
 			before[d.Target][d.ItemID] = true
@@ -485,8 +557,8 @@ func (env *resolveEnv) check(decisions []resolve.Decision) error {
 	}
 	for _, t := range after {
 		for _, it := range t.Report.Items {
-			if it.Failing() && !before[t.Label()][it.ID] {
-				problems = append(problems, "new drift: "+it.ID)
+			if it.Acknowledged == nil && !before[t.Label()][it.ID] {
+				problems = append(problems, fmt.Sprintf("new %s item: %s", it.Group, it.ID))
 			}
 		}
 	}
@@ -508,7 +580,16 @@ func gitUserName() string {
 }
 
 // renderResolvePlan prints what a plan changes.
-func renderResolvePlan(w io.Writer, p *resolve.Plan, color bool) {
+func renderResolvePlan(w io.Writer, p *resolve.Plan, root string, color bool) {
+	rel := func(path string) string {
+		if r, err := filepath.Rel(root, path); err == nil && !strings.HasPrefix(r, "..") {
+			return r
+		}
+		return path
+	}
+	for _, r := range p.Required {
+		fmt.Fprintf(w, "%s %s  %s is adopted too: %s needs it\n", ui.Cyan("note", color), ui.Cyan(r.Target, color), r.ItemID, r.By)
+	}
 	for _, pr := range p.Problems {
 		fmt.Fprintf(w, "%s %s  %s: %s\n", ui.Red("error", color), ui.Cyan(pr.Target, color), pr.ItemID, pr.Reason)
 	}
@@ -520,7 +601,7 @@ func renderResolvePlan(w io.Writer, p *resolve.Plan, color bool) {
 	}
 	for _, fc := range p.Files {
 		fmt.Fprintln(w)
-		diff := strings.TrimSuffix(resolve.UnifiedDiff(fc.Path, string(fc.Before), string(fc.After)), "\n")
+		diff := strings.TrimSuffix(resolve.UnifiedDiff(rel(fc.Path), string(fc.Before), string(fc.After)), "\n")
 		for _, line := range strings.Split(diff, "\n") {
 			switch {
 			case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
@@ -553,6 +634,6 @@ func renderResolvePlan(w io.Writer, p *resolve.Plan, color bool) {
 		}
 	}
 	for _, a := range p.Acks {
-		fmt.Fprintf(w, "\n%s  acknowledgements: %d → %d (%s)\n", ui.Cyan(a.Target.Label(), color), len(a.Before), len(a.After), a.Target.AckPath)
+		fmt.Fprintf(w, "\n%s  acknowledgements: %d → %d (%s)\n", ui.Cyan(a.Target.Label(), color), len(a.Before), len(a.After), rel(a.Target.AckPath))
 	}
 }

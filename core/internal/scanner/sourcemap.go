@@ -83,19 +83,20 @@ func (m *sourceMap) find(e int, end bool) (segment, bool) {
 	return m.segs[i], true
 }
 
-// start maps an expanded offset at which a range starts.
-func (m *sourceMap) start(e int) (int, string) {
+// start maps an expanded offset at which a range starts; in a replaced
+// range, it also returns the offset within the replacement.
+func (m *sourceMap) start(e int) (int, string, int) {
 	if e >= m.expLen {
-		return m.origLen, ""
+		return m.origLen, "", 0
 	}
 	s, ok := m.find(e, false)
 	if !ok {
-		return m.origLen, ""
+		return m.origLen, "", 0
 	}
 	if s.copied {
-		return s.orig + (e - s.exp), ""
+		return s.orig + (e - s.exp), "", 0
 	}
-	return s.orig, s.macro
+	return s.orig, s.macro, e - s.exp
 }
 
 // end maps an expanded offset at which a range ends.
@@ -143,7 +144,7 @@ type fileText struct {
 
 // Span maps the expanded range [a, b) to a Span over the original text.
 func (f *fileText) Span(a, b int) pipeline.Span {
-	start, m1 := f.smap.start(a)
+	start, m1, at := f.smap.start(a)
 	end, m2 := f.smap.end(b)
 	if end < start {
 		end = start
@@ -153,7 +154,7 @@ func (f *fileText) Span(a, b int) pipeline.Span {
 	if macro == "" {
 		macro = m2
 	}
-	return pipeline.Span{File: f.path, Start: start, End: end, Line: line, Col: col, Macro: macro}
+	return pipeline.Span{File: f.path, Start: start, End: end, Line: line, Col: col, Macro: macro, MacroAt: at}
 }
 
 func (s *state) span(a, b int) pipeline.Span { return s.text.Span(a, b) }
