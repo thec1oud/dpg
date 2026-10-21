@@ -109,6 +109,7 @@ type Engine struct {
 	differ pipeline.Differ
 	// warnings are the problems Open found that don't stop it.
 	warnings []string
+	root     string // the project's root directory
 }
 
 // Open discovers the project, compiles and lints the database's source, and
@@ -140,7 +141,7 @@ func Open(cfg Config) (*Engine, error) {
 	}
 	lintCfg := apply.LinterConfig(proj.RootConfig.Linter)
 	lintCfg.MinPGVersion = db.EffectiveMinPGVersion(cl, proj.RootConfig)
-	e := &Engine{cfg: cfg, differ: differ, opts: apply.Options{
+	e := &Engine{cfg: cfg, differ: differ, root: proj.RootDir, opts: apply.Options{
 		Preflight:     true,
 		DPGDir:        proj.DPGDir(),
 		MigrationsDir: proj.MigrationsDir(),
@@ -189,6 +190,10 @@ func pick(proj *project.Project, cluster, database string) (*project.Cluster, *p
 // a snapshot written in another format version; dpg prints them as
 // warnings.
 func (e *Engine) Warnings() []string { return e.warnings }
+
+// Root is the project's root directory, which Open discovered from
+// Config.Dir (relative when Dir is): the paths in Warnings are in it.
+func (e *Engine) Root() string { return e.root }
 
 // Close closes the connection the engine opened from DSN.
 func (e *Engine) Close(ctx context.Context) error {

@@ -72,9 +72,13 @@ func TestOpenNeedsTheDatabaseNamedWhenThereAreSeveral(t *testing.T) {
 }
 
 func TestAnEngineWithoutAConnectionOnlyPlansOffline(t *testing.T) {
-	e, err := Open(Config{Dir: projectOf(t, nil)})
+	root := projectOf(t, nil)
+	e, err := Open(Config{Dir: filepath.Join(root, "c", "app")})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if e.Root() != root {
+		t.Errorf("root %q, want %q", e.Root(), root)
 	}
 	ctx := context.Background()
 	if _, err := e.Status(ctx); !errors.Is(err, ErrNoConnection) {
