@@ -733,6 +733,7 @@ func TestEngineRebuildsAnIndexWhoseBuildWasCancelledLive(t *testing.T) {
 	if !errors.As(err, &se) || !strings.HasPrefix(se.SQL, `CREATE INDEX CONCURRENTLY "t_x"`) || !errors.Is(se, context.Canceled) {
 		t.Errorf("the failed statement: %#v", se)
 	}
+	stopBuilds(t, watch)
 	if err := tx.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -1070,4 +1071,23 @@ func planned(t *testing.T, e *Engine) map[string]string {
 		out[s.ID] = s.SQL
 	}
 	return out
+}
+
+// stopBuilds cancels the CREATE INDEX CONCURRENTLY running in conn's
+// database, and waits for it to stop. A cancelled context only stops the
+// client waiting for it: pgx closes the connection rather than send the
+// server a cancel request, so the build may go on (the case the engine's
+// docs describe); a test of a build cancelled part way stops it on the
+// server too, as a statement timeout or a person would.
+func stopBuilds(t *testing.T, conn *pgx.Conn) {
+	t.Helper()
+	const builds = `FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND query LIKE 'CREATE INDEX CONCURRENTLY%' AND state = 'active'`
+	query(t, conn, `SELECT count(pg_cancel_backend(pid))::text `+builds)
+	deadline := time.Now().Add(30 * time.Second)
+	for query(t, conn, `SELECT count(*)::text `+builds) != "0" {
+		if time.Now().After(deadline) {
+			t.Fatal("the index build didn't stop")
+		}
+		time.Sleep(5 * time.Millisecond) // a poll interval, not synchronization
+	}
 }
