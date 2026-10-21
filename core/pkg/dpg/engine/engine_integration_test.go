@@ -743,6 +743,9 @@ func TestEngineRebuildsAnIndexWhoseBuildWasCancelledLive(t *testing.T) {
 	if s := status(t, e); s.State != Pending {
 		t.Fatalf("status with the index to rebuild: %+v", s)
 	}
+	if steps := planned(t, e); se != nil && steps[se.Step] != se.SQL {
+		t.Errorf("the failed statement is step %q, whose SQL is %q", se.Step, steps[se.Step])
+	}
 	if _, err := e.Apply(ctx, ApplyOptions{MaxSafety: Caution}); err != nil {
 		t.Fatalf("finishing: %v", err)
 	}
@@ -968,4 +971,18 @@ func TestEngineRefusesToFinishOverAnIndexOfAnotherTableLive(t *testing.T) {
 	if s := status(t, e); s.State != Pending {
 		t.Errorf("status: %+v", s)
 	}
+}
+
+// planned maps the IDs of the steps e's plan has to their SQL.
+func planned(t *testing.T, e *Engine) map[string]string {
+	t.Helper()
+	p, err := e.Plan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	for _, s := range p.Steps {
+		out[s.ID] = s.SQL
+	}
+	return out
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -179,7 +180,7 @@ func TestLoadRejects(t *testing.T) {
 			t.Errorf("step %+v: %v", st, err)
 		}
 	}
-	if got := (stepOp{Step{Safety: "BENIGN"}}).Safety(); got != pipeline.Destructive {
+	if got := (stepOp{s: Step{Safety: "BENIGN"}}).Safety(); got != pipeline.Destructive {
 		t.Errorf("an unknown safety is %s", got)
 	}
 
@@ -252,4 +253,33 @@ func TestChainAndRemove(t *testing.T) {
 	if err := Remove(dir, "absent"); err != nil {
 		t.Errorf("removing an absent entry: %v", err)
 	}
+}
+
+func TestAMigrationsStatementsKnowTheirSteps(t *testing.T) {
+	target := &pipeline.Target{Kind: "table", Key: "public.t"}
+	e := &Entry{ID: "m", Steps: []Step{
+		{SQL: "CHECK", Safety: "SAFE", Stage: StageCheck},
+		{SQL: "ALTER", Safety: "SAFE", Stage: StageTransaction, Target: target},
+		{SQL: "CREATE INDEX", Safety: "CAUTION", Stage: StageAfter, Target: target},
+	}}
+	m := e.Migration(pipeline.MigrationMeta{}, false, true)
+	got := map[string][]string{}
+	for _, op := range allOps(m) {
+		id, ok := op.(pipeline.IdentifiedOp)
+		if !ok {
+			t.Fatalf("%s isn't an IdentifiedOp", op.SQL())
+		}
+		got[op.SQL()] = append(got[op.SQL()], id.StepID())
+	}
+	want := map[string][]string{"CHECK": {"m/1", "m/1"}, "ALTER": {"m/2"}, "CREATE INDEX": {"m/3"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("step IDs %v, want %v", got, want)
+	}
+	if tg := m.NonTransactional[0].(interface{ StepTarget() *pipeline.Target }).StepTarget(); tg != target {
+		t.Errorf("target %v", tg)
+	}
+}
+
+func allOps(m pipeline.Migration) []pipeline.DiffOp {
+	return append(append(append([]pipeline.DiffOp(nil), m.PreTransactional...), m.Transactional...), m.NonTransactional...)
 }

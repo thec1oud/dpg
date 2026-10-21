@@ -327,3 +327,24 @@ func TestResolveDatabaseConfigMalformedConnStrErrors(t *testing.T) {
 		t.Fatal("expected parse error for a malformed connection string")
 	}
 }
+
+// stepOp is a statement of the migration log's, which knows its step ID.
+type stepOp struct{ testOp }
+
+func (stepOp) StepID() string { return "m/2" }
+
+func TestApplyFailedStatementNamesItsStep(t *testing.T) {
+	for _, c := range []struct {
+		op   pipeline.DiffOp
+		step string
+	}{
+		{stepOp{testOp{"BAD SQL", true}}, "m/2"},
+		{testOp{"BAD SQL", true}, ""}, // one of DPG's own
+	} {
+		err := New().Apply(context.Background(), pipeline.Migration{Transactional: []pipeline.DiffOp{c.op}}, &errExecConn{})
+		var se *StatementError
+		if !errors.As(err, &se) || se.Step != c.step || se.SQL != "BAD SQL" || se.Err == nil {
+			t.Errorf("%T: %#v", c.op, se)
+		}
+	}
+}

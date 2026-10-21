@@ -24,10 +24,12 @@
 // It never prompts, prints or exits: everything it has to say is in its
 // results, its errors and Warnings. Its own messages name steps, never
 // their SQL (RefusedError), but a statement that failed is a
-// *StatementError, whose message quotes the statement, as dpg apply's
-// errors do: a caller that keeps SQL out of its logs finds it with
-// errors.As and names the statement by the Step whose SQL it is, or as
-// one of DPG's own (its ledger's records, its guards) when no Step's is.
+// *StatementError, and a statement dpg apply's own checks refuse a
+// *GateError, whose messages quote the statement, as dpg apply's errors
+// do: a caller that keeps SQL out of its logs finds them with errors.As
+// and names the statement by its Step field, the ID of the Step it is,
+// or as one of DPG's own (its ledger's records, its guards) when that is
+// empty.
 // Every call
 // stops when its context ends. An Engine is not safe for concurrent use.
 package engine
@@ -81,9 +83,15 @@ type Config struct {
 	DSN  string
 }
 
-// StatementError is a statement that failed: SQL is the statement, as a
-// Step has it, and Err why it failed.
+// StatementError is a statement that failed: Step is the ID of the Step
+// it is ("" for one of DPG's own), SQL the statement, as a Step has it,
+// and Err why it failed.
 type StatementError = executor.StatementError
+
+// GateError is a statement dpg apply's own checks of safety refuse, which
+// Apply's refusals (RefusedError) leave none to: Reason says why, without
+// the statement, and Step is the ID of the Step it is.
+type GateError = apply.GateError
 
 // ErrNoConnection is returned by the calls that need a database when the
 // Config gave none.

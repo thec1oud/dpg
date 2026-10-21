@@ -1,6 +1,12 @@
 package apply
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/thec1oud/dpg/internal/pipeline"
+)
 
 func TestTheIndexBuildsToPrepareAreTheDiffersConcurrentOnes(t *testing.T) {
 	for _, c := range []struct{ sql, name, table string }{
@@ -29,5 +35,44 @@ func TestTheIndexBuildsToPrepareAreTheDiffersConcurrentOnes(t *testing.T) {
 	}
 	if got := quote(`a"b`); got != `"a""b"` {
 		t.Errorf("quote: %q", got)
+	}
+}
+
+type gateOp struct {
+	safety pipeline.Safety
+	id     string
+}
+
+func (o gateOp) SQL() string             { return "DROP TABLE t;" }
+func (o gateOp) Safety() pipeline.Safety { return o.safety }
+func (gateOp) Pos() pipeline.SourcePos   { return pipeline.SourcePos{} }
+func (gateOp) Mode() pipeline.ExecMode   { return pipeline.ModeTransactional }
+
+type loggedGateOp struct{ gateOp }
+
+func (o loggedGateOp) StepID() string { return o.id }
+
+func TestGateRefusesWithATypedError(t *testing.T) {
+	for _, c := range []struct {
+		op   pipeline.DiffOp
+		opts Options
+		code string
+		step string
+	}{
+		{loggedGateOp{gateOp{pipeline.Destructive, "m/3"}}, Options{}, "DPG-E025: migration m contains destructive operations", "m/3"},
+		{gateOp{pipeline.Caution, ""}, Options{RefuseCaution: true}, "migration m contains CAUTION operations", ""},
+	} {
+		err := Gate([]pipeline.DiffOp{gateOp{pipeline.Safe, ""}, c.op}, c.opts, "migration m")
+		var ge *GateError
+		if !errors.As(err, &ge) || !strings.HasPrefix(ge.Reason, c.code) || strings.Contains(ge.Reason, "DROP") || ge.Step != c.step || ge.SQL != "DROP TABLE t;" {
+			t.Errorf("%#v", ge)
+			continue
+		}
+		if want := ge.Reason + "\n  first: DROP TABLE t;"; err.Error() != want {
+			t.Errorf("message %q, want %q", err.Error(), want)
+		}
+	}
+	if err := Gate([]pipeline.DiffOp{gateOp{pipeline.Destructive, ""}}, Options{AllowDestructive: true}, "m"); err != nil {
+		t.Errorf("allowed: %v", err)
 	}
 }

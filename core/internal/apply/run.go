@@ -23,22 +23,44 @@ import (
 
 // Gate refuses statements the options don't allow: DESTRUCTIVE ones without
 // --allow-destructive, a DESTRUCTIVE manual step without
-// --approve-partition-rebuild, and CAUTION ones under RefuseCaution.
+// --approve-partition-rebuild, and CAUTION ones under RefuseCaution. The
+// refusal is a *GateError.
 func Gate(ops []pipeline.DiffOp, opts Options, what string) error {
 	for _, op := range ops {
 		instruction := op.Mode() == pipeline.ModeInstructionOnly
-		if op.Safety() == pipeline.Destructive && !instruction && !opts.AllowDestructive {
-			return fmt.Errorf("DPG-E025: %s contains destructive operations; re-run with --allow-destructive to proceed\n  first: %s", what, op.SQL())
+		var reason string
+		switch {
+		case op.Safety() == pipeline.Destructive && !instruction && !opts.AllowDestructive:
+			reason = fmt.Sprintf("DPG-E025: %s contains destructive operations; re-run with --allow-destructive to proceed", what)
+		case op.Safety() == pipeline.Destructive && instruction && !opts.ApprovePartitionRebuild:
+			reason = fmt.Sprintf("%s requires a manual partition strategy rebuild;\nre-run with --approve-partition-rebuild to acknowledge and proceed", what)
+		case op.Safety() == pipeline.Caution && !instruction && opts.RefuseCaution:
+			reason = fmt.Sprintf("%s contains CAUTION operations, which aren't allowed here", what)
+		default:
+			continue
 		}
-		if op.Safety() == pipeline.Destructive && instruction && !opts.ApprovePartitionRebuild {
-			return fmt.Errorf("%s requires a manual partition strategy rebuild;\nre-run with --approve-partition-rebuild to acknowledge and proceed\n  first: %s", what, op.SQL())
+		e := &GateError{Reason: reason, SQL: op.SQL()}
+		if id, ok := op.(pipeline.IdentifiedOp); ok {
+			e.Step = id.StepID()
 		}
-		if op.Safety() == pipeline.Caution && !instruction && opts.RefuseCaution {
-			return fmt.Errorf("%s contains CAUTION operations, which aren't allowed here\n  first: %s", what, op.SQL())
-		}
+		return e
 	}
 	return nil
 }
+
+// GateError is Gate's refusal. Its message quotes the first statement
+// refused; a caller that keeps SQL out of its logs uses Reason and Step.
+type GateError struct {
+	// Reason is the message, without the statement.
+	Reason string
+	// Step is the statement's step ID ("<migration>/<n>"), or "" for a
+	// statement of the source's change, not yet in the migration log.
+	Step string
+	// SQL is the statement.
+	SQL string
+}
+
+func (e *GateError) Error() string { return e.Reason + "\n  first: " + e.SQL }
 
 func allOps(m pipeline.Migration) []pipeline.DiffOp {
 	return append(append(append([]pipeline.DiffOp(nil), m.PreTransactional...), m.Transactional...), m.NonTransactional...)

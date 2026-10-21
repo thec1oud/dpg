@@ -325,6 +325,15 @@ type Target struct {
 	From      string // the old key, for EffectRename
 }
 
+// IdentifiedOp is a DiffOp that is a step of a migration in the log, and
+// knows the step's ID: "<migration>/<n>", n counting the migration's steps
+// from 1. Statements DPG adds around a migration's (its ledger's records,
+// its guards) aren't.
+type IdentifiedOp interface {
+	DiffOp
+	StepID() string
+}
+
 // TargetedOp is a DiffOp that knows its object. Every op the built-in
 // differ emits is one.
 type TargetedOp interface {

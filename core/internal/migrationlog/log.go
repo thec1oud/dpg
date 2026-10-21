@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -428,7 +429,10 @@ func writeAtomic(path string, data []byte) error {
 }
 
 // stepOp is a logged step run again (settling a database that hasn't it).
-type stepOp struct{ s Step }
+type stepOp struct {
+	s  Step
+	id string // the step's ID: "<migration>/<n>", n counting from 1
+}
 
 func (o stepOp) SQL() string { return o.s.SQL }
 func (o stepOp) Safety() pipeline.Safety {
@@ -442,6 +446,14 @@ func (o stepOp) Safety() pipeline.Safety {
 	return pipeline.Destructive
 }
 func (o stepOp) Pos() pipeline.SourcePos { return pipeline.SourcePos{} }
+
+// StepID is the step's ID (pipeline.IdentifiedOp).
+func (o stepOp) StepID() string { return o.id }
+
+// StepTarget is the object the step changes, as the log records it (nil
+// for a guard). The op isn't a pipeline.TargetedOp: the log already
+// recorded it.
+func (o stepOp) StepTarget() *pipeline.Target { return o.s.Target }
 func (o stepOp) Mode() pipeline.ExecMode {
 	switch o.s.Stage {
 	case StageBefore:
@@ -466,13 +478,14 @@ func (o stepOp) ExecSQL(r pipeline.SecretResolver) (string, error) {
 // --allow-drift).
 func (e *Entry) Migration(meta pipeline.MigrationMeta, withInstructions, withChecks bool) pipeline.Migration {
 	m := pipeline.Migration{Meta: meta}
-	for _, s := range e.Steps {
-		op := stepOp{s}
+	for i, s := range e.Steps {
+		id := e.ID + "/" + strconv.Itoa(i+1)
+		op := stepOp{s, id}
 		switch s.Stage {
 		case StageCheck:
 			if withChecks {
-				m.PreTransactional = append(m.PreTransactional, stepOp{Step{SQL: s.SQL, Safety: s.Safety, Stage: StageBefore}})
-				m.Transactional = append(m.Transactional, stepOp{Step{SQL: s.SQL, Safety: s.Safety, Stage: StageTransaction}})
+				m.PreTransactional = append(m.PreTransactional, stepOp{Step{SQL: s.SQL, Safety: s.Safety, Stage: StageBefore}, id})
+				m.Transactional = append(m.Transactional, stepOp{Step{SQL: s.SQL, Safety: s.Safety, Stage: StageTransaction}, id})
 			}
 		case StageBefore:
 			m.PreTransactional = append(m.PreTransactional, op)

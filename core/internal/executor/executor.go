@@ -48,10 +48,10 @@ func (e *PgxExecutor) Apply(ctx context.Context, m pipeline.Migration, conn pipe
 	for _, op := range m.PreTransactional {
 		text, err := execText(op)
 		if err != nil {
-			return &StatementError{SQL: op.SQL(), Err: err}
+			return statementError(op, err)
 		}
 		if _, err := conn.Exec(ctx, text); err != nil {
-			return &StatementError{SQL: op.SQL(), Err: err}
+			return statementError(op, err)
 		}
 	}
 
@@ -65,14 +65,14 @@ func (e *PgxExecutor) Apply(ctx context.Context, m pipeline.Migration, conn pipe
 			text, err := execText(op)
 			if err != nil {
 				_ = tx.Rollback(ctx)
-				return &StatementError{SQL: op.SQL(), Err: err}
+				return statementError(op, err)
 			}
 			if _, err := tx.Exec(ctx, text); err != nil {
 				_ = tx.Rollback(ctx)
 				// Always op.SQL() (the placeholder/reference form), never
 				// text (which may hold a resolved secret) — see
 				// pipeline.SecretBearingOp's doc comment.
-				return &StatementError{SQL: op.SQL(), Err: err}
+				return statementError(op, err)
 			}
 		}
 		if err := tx.Commit(ctx); err != nil {
@@ -84,10 +84,10 @@ func (e *PgxExecutor) Apply(ctx context.Context, m pipeline.Migration, conn pipe
 	for _, op := range m.NonTransactional {
 		text, err := execText(op)
 		if err != nil {
-			return &AfterCommitError{&StatementError{SQL: op.SQL(), Err: err}}
+			return &AfterCommitError{statementError(op, err)}
 		}
 		if _, err := conn.Exec(ctx, text); err != nil {
-			return &AfterCommitError{&StatementError{SQL: op.SQL(), Err: err}}
+			return &AfterCommitError{statementError(op, err)}
 		}
 	}
 	return nil
@@ -99,11 +99,24 @@ type AfterCommitError struct{ Err error }
 
 // StatementError is a statement that failed, and why. Its message quotes
 // the statement, as dpg's output always has; a caller that keeps SQL out
-// of its logs names the statement by SQL, which is the step's as the
-// migration log records it, with secret references unresolved.
+// of its logs names the statement by Step instead.
 type StatementError struct {
+	// Step is the ID of the migration log's step the statement is
+	// ("<migration>/<n>", pipeline.IdentifiedOp), or "" for a statement
+	// DPG adds around a migration's (its ledger's records, its guards).
+	Step string
+	// SQL is the statement, as the migration log records it: with its
+	// secret references unresolved.
 	SQL string
 	Err error
+}
+
+func statementError(op pipeline.DiffOp, err error) *StatementError {
+	e := &StatementError{SQL: op.SQL(), Err: err}
+	if id, ok := op.(pipeline.IdentifiedOp); ok {
+		e.Step = id.StepID()
+	}
+	return e
 }
 
 func (e *StatementError) Error() string { return "executor: " + e.SQL + ": " + e.Err.Error() }
