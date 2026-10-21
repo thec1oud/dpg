@@ -4992,7 +4992,15 @@ CREATE TABLE IF NOT EXISTS "dpg".objects (     -- fingerprints (Section 16.10)
    -   A last migration the log doesn't contain is refused (DPG-E050).
    -   A `committed` row (a step after the transaction failed) is
        refused (DPG-E049) until `dpg apply --resume` runs the
-       migration's `after` steps.  A `started` row of a migration that
+       migration's `after` steps.  Before running a
+       `CREATE INDEX CONCURRENTLY` again, it drops an invalid index of
+       that name on the table (`DROP INDEX CONCURRENTLY IF EXISTS`, which
+       isn't in the migration's file), and takes a valid one defined as
+       the migration's as built.  A valid one defined otherwise is
+       refused (DPG-E058), as is an index of that name on another table
+       (DPG-E057): neither is DPG's to drop.  The index still to be built
+       isn't drift to the preflight (Section 16.10), unless it is there,
+       valid, and defined otherwise.  A `started` row of a migration that
        isn't in the log (its transaction never committed) is removed.
    -   With `[ledger] enabled = false`, `dpg apply` runs only the
        source's change, as if every database were at the log's last
@@ -7286,6 +7294,8 @@ WITH NO DATA {
    | DPG-E054 | `fingerprint_missing` | A migration changes an object DPG has no fingerprint of in the database, or one taken on another PostgreSQL major version (Section 16.10). |
    | DPG-E055 | `fingerprint_changed` | A migration changes an object that changed since DPG last saw it (Section 16.10). |
    | DPG-E056 | `unrecorded_changes` | The source has changes the migration log doesn't record (`dpg plan --check`, Section 18.1). |
+   | DPG-E057 | `finish_index_elsewhere` | Finishing a migration would build an index whose name an index on another table has (Section 16.9). |
+   | DPG-E058 | `finish_index_differs` | Finishing a migration would build an index whose name a valid index on its table, defined otherwise, has (Section 16.9). |
 
 ---
 

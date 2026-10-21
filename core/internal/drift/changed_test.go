@@ -37,3 +37,15 @@ func TestChangedPropertiesAndTouches(t *testing.T) {
 		t.Error("a created object is changed as a whole")
 	}
 }
+
+func TestElementPropertyIsAsItemsNameIt(t *testing.T) {
+	before := json.RawMessage(`{"kind":"table","table":{"name":"t","indexes":[{"name":"t x/y:z","columns":["x"]}]}}`)
+	after := json.RawMessage(`{"kind":"table","table":{"name":"t","indexes":[{"name":"t x/y:z","columns":["y"]}]}}`)
+	got, err := ChangedProperties(before, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := ElementProperty("index", "t x/y:z"); len(got) != 1 || !got[p] {
+		t.Errorf("ElementProperty %q, changed %v", p, got)
+	}
+}

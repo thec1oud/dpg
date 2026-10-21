@@ -366,7 +366,11 @@ const (
 	// transaction has committed, and the next Apply runs them all again.
 	// A CREATE INDEX CONCURRENTLY is made safe to run again then: an
 	// index of its name that is invalid (a build that was cancelled or
-	// failed) is dropped first, and a valid one is taken as built. The
+	// failed) is dropped first, and a valid one is taken as built when it
+	// is the index the statement builds, or refused when it isn't
+	// (DPG-E058), as an index of its name on another table is (DPG-E057).
+	// The drop isn't in the plan, nor its fingerprint. A build cancelled
+	// may go on for a while on the server; the drop waits for it. The
 	// rest are not changed: a grant repeats harmlessly, but a CREATE
 	// SUBSCRIPTION that ran, or an ALTER TABLE ... DETACH PARTITION ...
 	// CONCURRENTLY that was cancelled part way, still needs a person.

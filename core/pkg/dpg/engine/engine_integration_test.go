@@ -23,6 +23,7 @@ import (
 	"github.com/thec1oud/dpg/internal/project"
 	snapshotpkg "github.com/thec1oud/dpg/internal/snapshot"
 	"github.com/thec1oud/dpg/internal/testpg"
+	"github.com/thec1oud/dpg/internal/ui"
 )
 
 const tFile = "c/app/schemas/public/tables/t.dpg"
@@ -962,14 +963,94 @@ func TestEngineRefusesToFinishOverAnIndexOfAnotherTableLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := e.Apply(ctx, ApplyOptions{MaxSafety: Caution})
-	if err == nil || !strings.Contains(err.Error(), "an index of that name is on o") {
+	if err == nil || !strings.Contains(err.Error(), "DPG-E057: ") || !strings.Contains(err.Error(), "an index of that name is on o") {
 		t.Fatalf("finishing: %v", err)
+	}
+	if db := (*ui.DBError)(nil); errors.As(err, &db) {
+		t.Errorf("a refusal of DPG's is a database error: %v", err)
 	}
 	if got := query(t, conn, `SELECT indrelid::regclass::text FROM pg_index WHERE indexrelid = 'public.t_x'::regclass`); got != "o" {
 		t.Errorf("t_x is on %s", got)
 	}
 	if s := status(t, e); s.State != Pending {
 		t.Errorf("status: %+v", s)
+	}
+}
+
+// TestEngineRefusesToFinishOverAnIndexDefinedOtherwiseLive: a valid index
+// of the name the migration builds, on its table but made by hand with
+// another definition, is neither taken as built nor dropped; once a person
+// drops it, finishing builds the migration's.
+func TestEngineRefusesToFinishOverAnIndexDefinedOtherwiseLive(t *testing.T) {
+	root, old := indexed(t)
+	conn := connect(t, testpg.Database(t))
+	ctx := context.Background()
+	if _, err := open(t, old, conn).Apply(ctx, ApplyOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	e := open(t, root, conn)
+	afterCommit := errors.New("failed after the commit")
+	if _, err := e.Apply(ctx, ApplyOptions{MaxSafety: Caution, Hook: failAfterCommit(afterCommit)}); !errors.Is(err, afterCommit) {
+		t.Fatalf("apply: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `CREATE INDEX t_x ON t (x DESC)`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := e.Apply(ctx, ApplyOptions{MaxSafety: Caution})
+	if err == nil || !strings.Contains(err.Error(), "DPG-E058: ") {
+		t.Fatalf("finishing: %v", err)
+	}
+	if got := query(t, conn, `SELECT pg_get_indexdef('public.t_x'::regclass)`); !strings.Contains(got, "(x DESC)") {
+		t.Errorf("t_x is now %s", got)
+	}
+	if s := status(t, e); s.State != Pending {
+		t.Errorf("status: %+v", s)
+	}
+	if _, err := conn.Exec(ctx, `DROP INDEX t_x`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Apply(ctx, ApplyOptions{MaxSafety: Caution}); err != nil {
+		t.Fatalf("finishing once it's dropped: %v", err)
+	}
+	if got := query(t, conn, `SELECT pg_get_indexdef('public.t_x'::regclass)`); !strings.HasSuffix(got, "(x)") {
+		t.Errorf("t_x is %s", got)
+	}
+	if s := status(t, e); s.State != UpToDate {
+		t.Errorf("status: %+v", s)
+	}
+}
+
+// TestEngineFinishesAnIndexWhoseNameNeedsEscapingThenTheNextLive: the
+// index being finished is named with a space, which drift's item IDs
+// escape; it is still not drift to a later migration on its table.
+func TestEngineFinishesAnIndexWhoseNameNeedsEscapingThenTheNextLive(t *testing.T) {
+	root := newProject(t, v1)
+	dev := testpg.Database(t)
+	record(t, root, dev)
+	old := copyProject(t, root)
+	writeFile(t, root, tFile, "TABLE t (id int PRIMARY KEY, x int) { INDEXES { CONCURRENTLY \"t x\" (x); } }\n")
+	record(t, root, dev)
+	conn := connect(t, testpg.Database(t))
+	ctx := context.Background()
+	if _, err := open(t, old, conn).Apply(ctx, ApplyOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	afterCommit := errors.New("failed after the commit")
+	if _, err := open(t, root, conn).Apply(ctx, ApplyOptions{MaxSafety: Caution, Hook: failAfterCommit(afterCommit)}); !errors.Is(err, afterCommit) {
+		t.Fatalf("apply: %v", err)
+	}
+	newer := copyProject(t, root)
+	writeFile(t, newer, tFile, "TABLE t (id int PRIMARY KEY, x int, note text) { INDEXES { CONCURRENTLY \"t x\" (x); } }\n")
+	record(t, newer, dev)
+	e := open(t, newer, conn)
+	if _, err := e.Apply(ctx, ApplyOptions{MaxSafety: Caution}); err != nil {
+		t.Fatalf("finishing, then the next migration: %v", err)
+	}
+	if s := status(t, e); s.State != UpToDate {
+		t.Errorf("status: %+v", s)
+	}
+	if got := query(t, conn, `SELECT indisvalid::text FROM pg_index WHERE indexrelid = 'public."t x"'::regclass`); got != "true" {
+		t.Errorf(`"t x" valid=%s`, got)
 	}
 }
 

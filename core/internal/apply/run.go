@@ -277,9 +277,9 @@ func (t *Target) Run(ctx context.Context, opts Options, p Printer) error {
 		mctx, done := opts.observe(ctx, e.ID)
 		if e == resume {
 			m := e.Migration(t.Meta, false, false)
-			after, err := prepareFinish(mctx, conn, m.NonTransactional)
+			after, err := prepareFinish(mctx, conn, m.NonTransactional, t.builtAt(conn, e.ID))
 			if err != nil {
-				err = fmt.Errorf("finishing migration %s: %w", e.ID, ui.WrapDB(err))
+				err = fmt.Errorf("finishing migration %s: %w", e.ID, err)
 				done(err)
 				return err
 			}
@@ -551,14 +551,9 @@ func (e *PreflightError) Unwrap() error { return e.Err }
 // depending on an object they drop or recreate, no grant made outside DPG
 // on an object they recreate. Drift elsewhere is a note. head is the
 // database's position in the log.
-func (t *Target) preflight(ctx context.Context, conn *executor.PgxConn, head string, resume *migrationlog.Entry, toRun []*migrationlog.Entry, opts Options, p Printer) (map[string]string, error) {
-	// The state the database should be in: the log at its position. A
-	// migration being finished has committed its transaction, so the
-	// database is at it, less what its statements after the transaction
-	// add, which are reported but don't block.
-	if resume != nil {
-		head = resume.ID
-	}
+// driftAt compares the database with the state the migration log has at
+// migration head ("" for none): the state, and the drift.
+func (t *Target) driftAt(ctx context.Context, conn *executor.PgxConn, head string) (map[string]json.RawMessage, *drift.Report, error) {
 	var expected map[string]json.RawMessage
 	atHead := head == t.Log.Head()
 	switch {
@@ -569,22 +564,60 @@ func (t *Target) preflight(ctx context.Context, conn *executor.PgxConn, head str
 	default:
 		var err error
 		if expected, err = t.Log.Replay(head); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	snap := &pipeline.Snapshot{Objects: expected}
 	if err := t.Rules.FilterSnapshot(snap); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	live, err := t.Live(ctx, conn)
 	if err != nil {
-		return nil, ui.WrapDB(err)
+		return nil, nil, ui.WrapDB(err)
 	}
 	var source []pipeline.IRObject
 	if atHead {
 		source = t.Desired // the source is the database's next state only at the log's end
 	}
 	report, err := drift.Detect(t.Differ, live, snap, drift.Options{Ignore: t.Rules, Source: source})
+	if err != nil {
+		return nil, nil, err
+	}
+	return expected, report, nil
+}
+
+// builtAt is prepareFinish's builtFunc for a migration being finished:
+// whether the index is defined as the log has it at the migration,
+// compared as drift is (no item on the index itself; one on its comment,
+// say, is the preflight's).
+func (t *Target) builtAt(conn *executor.PgxConn, id string) builtFunc {
+	var report *drift.Report
+	return func(ctx context.Context, table, name string) (bool, error) {
+		if report == nil {
+			var err error
+			if _, report, err = t.driftAt(ctx, conn, id); err != nil {
+				return false, err
+			}
+		}
+		prop := drift.ElementProperty("index", name)
+		for _, it := range report.Items {
+			if it.Object == table && it.Property == prop {
+				return false, nil
+			}
+		}
+		return true, nil
+	}
+}
+
+func (t *Target) preflight(ctx context.Context, conn *executor.PgxConn, head string, resume *migrationlog.Entry, toRun []*migrationlog.Entry, opts Options, p Printer) (map[string]string, error) {
+	// The state the database should be in: the log at its position. A
+	// migration being finished has committed its transaction, so the
+	// database is at it, less what its statements after the transaction
+	// add, which are reported but don't block.
+	if resume != nil {
+		head = resume.ID
+	}
+	expected, report, err := t.driftAt(ctx, conn, head)
 	if err != nil {
 		return nil, err
 	}
@@ -653,15 +686,23 @@ func (t *Target) preflight(ctx context.Context, conn *executor.PgxConn, head str
 	}
 
 	// The indexes a migration being finished builds after its transaction
-	// are in the state expected, but not built yet, or half built.
-	building := map[string]bool{}
+	// are in the state expected, but may not be built yet, or be half
+	// built: an index missing, or there but invalid (finishing drops and
+	// builds it again), isn't drift. A valid one of that name that differs
+	// is, as is any other item on the object.
+	type build struct{ name, table string }
+	building := map[string]build{}
 	if resume != nil {
 		for _, s := range resume.Steps {
 			if s.Stage != migrationlog.StageAfter {
 				continue
 			}
 			if m := createIndexConcurrently.FindStringSubmatch(strings.TrimSpace(s.SQL)); m != nil {
-				building[snapshotKey(m[2])+"\x00index:"+unquote(m[1])] = true
+				key := snapshotKey(m[2])
+				if s.Target != nil && s.Target.Key != "" {
+					key = s.Target.Key
+				}
+				building[key+"\x00"+drift.ElementProperty("index", unquote(m[1]))] = build{unquote(m[1]), m[2]}
 			}
 		}
 	}
@@ -669,13 +710,30 @@ func (t *Target) preflight(ctx context.Context, conn *executor.PgxConn, head str
 	destructive := false
 	for _, it := range report.Items {
 		tc := touched[it.Object]
-		if prop, _, _ := strings.Cut(it.Property, "/"); building[it.Object+"\x00"+prop] {
-			// Finishing the migration builds it; the rest of the
-			// object is checked as usual.
-			if it.Failing() {
-				notes = append(notes, it.ID)
+		prop, sub, _ := strings.Cut(it.Property, "/")
+		if b, ok := building[it.Object+"\x00"+prop]; ok {
+			exempt := it.Change == "missing" && sub == ""
+			if !exempt {
+				st, err := indexState(ctx, conn, b.name, b.table)
+				if err != nil {
+					return nil, ui.WrapDB(err)
+				}
+				if st.found && st.valid && sub == "" && it.Change == "changed" {
+					return nil, fmt.Errorf("DPG-E058: migration %s builds index %s, but the table has a valid index of that name defined otherwise (%s); drop or rename it, then apply again", resume.ID, quote(b.name), it.ID)
+				}
+				exempt = st.found && !st.valid
 			}
-			continue
+			if exempt {
+				// Finishing the migration builds it.
+				if it.Failing() {
+					notes = append(notes, it.ID)
+				}
+				continue
+			}
+			if tc == nil {
+				// The migration being finished changes it.
+				tc = &touch{}
+			}
 		}
 		switch {
 		case tc == nil:

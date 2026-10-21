@@ -273,6 +273,11 @@ func subtract(a, b []string) []string {
 	return out
 }
 
+// ElementProperty is the property an item names a table's element by
+// (an index, a column, a constraint): ElementProperty("index", "t x") is
+// "index:t%20x".
+func ElementProperty(kind, name string) string { return kind + ":" + escapeName(name) }
+
 // ChangedProperties names the properties that differ between two snapshot
 // entries of an object as items name them ("comment", "column:email",
 // "grants"). A created or dropped object (one side nil) changes as a whole:
