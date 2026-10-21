@@ -27,6 +27,7 @@ make test      # runs all tests
 core/                  Go module (github.com/thec1oud/dpg)
   cmd/dpg/             CLI commands (plan, apply, verify, dump, diff, portability)
   internal/
+    apply/             The apply flow the CLI and pkg/dpg/engine share
     ast/               Abstract syntax tree types
     blockparser/       DPG { } block parser
     compiler/          Orchestrates scan → parse → IR build pipeline
@@ -50,6 +51,7 @@ core/                  Go module (github.com/thec1oud/dpg)
     ui/                Terminal output helpers
     version/           Build-time version metadata
   examples/            Runnable pipeline examples (also serve as integration tests)
+  pkg/dpg/engine/      Provisional library API: status, plan, apply, verify
 lang/                  Language tooling
   grammar/             Tree-sitter grammar (tree-sitter-dpg)
   lsp/                 Language server (dpg-lsp)
@@ -77,6 +79,7 @@ site/                  Hugo documentation site
    make test
    make vet
    ```
+   Integration tests (`//go:build integration`) need a live server: `go test -tags integration ./...` starts Postgres containers, and a test that asks `testpg.Database` for a database of its own creates it on the server `DPG_TEST_POSTGRES` names instead, when it is set (a superuser's connection string).
 
 4. **Commit messages** should be concise and written in the imperative mood (`add support for X`, `fix Y when Z`). Reference issues where applicable (`fixes #42`).
 

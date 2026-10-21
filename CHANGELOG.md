@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Provisional library engine (pkg/dpg/engine): status, plan, apply with a safety gate and a transaction hook, verify
+
 ## [0.6.0-alpha.1] — 2026-10-12
 
 ### Added
