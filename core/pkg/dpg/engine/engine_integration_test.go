@@ -728,6 +728,10 @@ func TestEngineRebuildsAnIndexWhoseBuildWasCancelledLive(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "the next apply finishes it") || strings.Contains(err.Error(), "--resume") {
 		t.Fatalf("the cancelled apply: %v", err)
 	}
+	var se *StatementError
+	if !errors.As(err, &se) || !strings.HasPrefix(se.SQL, `CREATE INDEX CONCURRENTLY "t_x"`) || !errors.Is(se, context.Canceled) {
+		t.Errorf("the failed statement: %#v", se)
+	}
 	if err := tx.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}

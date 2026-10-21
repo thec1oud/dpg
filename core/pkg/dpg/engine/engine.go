@@ -23,10 +23,11 @@
 //
 // It never prompts, prints or exits: everything it has to say is in its
 // results, its errors and Warnings. Its own messages name steps, never
-// their SQL (RefusedError), but the error of a statement that failed, or
-// of a check DPG makes before running one, can quote the statement, as dpg
-// apply's errors do: a caller that keeps SQL out of its logs replaces each
-// Step's SQL in them (Galleon's adapter replaces it with the step's ID).
+// their SQL (RefusedError), but a statement that failed is a
+// *StatementError, whose message quotes the statement, as dpg apply's
+// errors do: a caller that keeps SQL out of its logs finds it with
+// errors.As and names the statement by the Step whose SQL it is, or as
+// one of DPG's own (its ledger's records, its guards) when no Step's is.
 // Every call
 // stops when its context ends. An Engine is not safe for concurrent use.
 package engine
@@ -79,6 +80,10 @@ type Config struct {
 	Conn *pgx.Conn
 	DSN  string
 }
+
+// StatementError is a statement that failed: SQL is the statement, as a
+// Step has it, and Err why it failed.
+type StatementError = executor.StatementError
 
 // ErrNoConnection is returned by the calls that need a database when the
 // Config gave none.

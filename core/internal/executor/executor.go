@@ -48,10 +48,10 @@ func (e *PgxExecutor) Apply(ctx context.Context, m pipeline.Migration, conn pipe
 	for _, op := range m.PreTransactional {
 		text, err := execText(op)
 		if err != nil {
-			return fmt.Errorf("executor: %s: %w", op.SQL(), err)
+			return &StatementError{SQL: op.SQL(), Err: err}
 		}
 		if _, err := conn.Exec(ctx, text); err != nil {
-			return fmt.Errorf("executor: %s: %w", op.SQL(), err)
+			return &StatementError{SQL: op.SQL(), Err: err}
 		}
 	}
 
@@ -65,14 +65,14 @@ func (e *PgxExecutor) Apply(ctx context.Context, m pipeline.Migration, conn pipe
 			text, err := execText(op)
 			if err != nil {
 				_ = tx.Rollback(ctx)
-				return fmt.Errorf("executor: %s: %w", op.SQL(), err)
+				return &StatementError{SQL: op.SQL(), Err: err}
 			}
 			if _, err := tx.Exec(ctx, text); err != nil {
 				_ = tx.Rollback(ctx)
 				// Always op.SQL() (the placeholder/reference form), never
 				// text (which may hold a resolved secret) — see
 				// pipeline.SecretBearingOp's doc comment.
-				return fmt.Errorf("executor: %s: %w", op.SQL(), err)
+				return &StatementError{SQL: op.SQL(), Err: err}
 			}
 		}
 		if err := tx.Commit(ctx); err != nil {
@@ -84,10 +84,10 @@ func (e *PgxExecutor) Apply(ctx context.Context, m pipeline.Migration, conn pipe
 	for _, op := range m.NonTransactional {
 		text, err := execText(op)
 		if err != nil {
-			return &AfterCommitError{fmt.Errorf("executor: %s: %w", op.SQL(), err)}
+			return &AfterCommitError{&StatementError{SQL: op.SQL(), Err: err}}
 		}
 		if _, err := conn.Exec(ctx, text); err != nil {
-			return &AfterCommitError{fmt.Errorf("executor: %s: %w", op.SQL(), err)}
+			return &AfterCommitError{&StatementError{SQL: op.SQL(), Err: err}}
 		}
 	}
 	return nil
@@ -96,6 +96,18 @@ func (e *PgxExecutor) Apply(ctx context.Context, m pipeline.Migration, conn pipe
 // AfterCommitError is a failure in the steps after the migration's
 // transaction committed: the database has the transaction's changes.
 type AfterCommitError struct{ Err error }
+
+// StatementError is a statement that failed, and why. Its message quotes
+// the statement, as dpg's output always has; a caller that keeps SQL out
+// of its logs names the statement by SQL, which is the step's as the
+// migration log records it, with secret references unresolved.
+type StatementError struct {
+	SQL string
+	Err error
+}
+
+func (e *StatementError) Error() string { return "executor: " + e.SQL + ": " + e.Err.Error() }
+func (e *StatementError) Unwrap() error { return e.Err }
 
 func (e *AfterCommitError) Error() string { return e.Err.Error() }
 func (e *AfterCommitError) Unwrap() error { return e.Err }
