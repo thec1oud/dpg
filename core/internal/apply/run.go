@@ -630,10 +630,31 @@ func (t *Target) preflight(ctx context.Context, conn *executor.PgxConn, head str
 		e.Apply(state)
 	}
 
+	// The indexes a migration being finished builds after its transaction
+	// are in the state expected, but not built yet, or half built.
+	building := map[string]bool{}
+	if resume != nil {
+		for _, s := range resume.Steps {
+			if s.Stage != migrationlog.StageAfter {
+				continue
+			}
+			if m := createIndexConcurrently.FindStringSubmatch(strings.TrimSpace(s.SQL)); m != nil {
+				building[snapshotKey(m[2])+"\x00index:"+unquote(m[1])] = true
+			}
+		}
+	}
 	var blocks, notes []string
 	destructive := false
 	for _, it := range report.Items {
 		tc := touched[it.Object]
+		if prop, _, _ := strings.Cut(it.Property, "/"); building[it.Object+"\x00"+prop] {
+			// Finishing the migration builds it; the rest of the
+			// object is checked as usual.
+			if it.Failing() {
+				notes = append(notes, it.ID)
+			}
+			continue
+		}
 		switch {
 		case tc == nil:
 			if it.Failing() {

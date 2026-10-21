@@ -22,6 +22,11 @@ func TestTheIndexBuildsToPrepareAreTheDiffersConcurrentOnes(t *testing.T) {
 	if got := unquote(`"a""b"`); got != `a"b` {
 		t.Errorf("unquote: %q", got)
 	}
+	for rel, want := range map[string]string{`"public"."t"`: "public.t", `"t"`: "t", `"a.b"."c""d"`: `a.b.c"d`} {
+		if got := snapshotKey(rel); got != want {
+			t.Errorf("snapshotKey(%s) = %q, want %q", rel, got, want)
+		}
+	}
 	if got := quote(`a"b`); got != `"a""b"` {
 		t.Errorf("quote: %q", got)
 	}

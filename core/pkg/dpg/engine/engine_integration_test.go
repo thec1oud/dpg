@@ -717,7 +717,7 @@ func TestEngineRebuildsAnIndexWhoseBuildWasCancelledLive(t *testing.T) {
 	}()
 	watch := connect(t, url)
 	deadline := time.Now().Add(30 * time.Second)
-	for query(t, watch, `SELECT count(*)::text FROM pg_stat_activity WHERE query LIKE 'CREATE INDEX CONCURRENTLY%' AND wait_event_type = 'Lock'`) == "0" {
+	for query(t, watch, `SELECT count(*)::text FROM pg_stat_activity WHERE datname = current_database() AND query LIKE 'CREATE INDEX CONCURRENTLY%' AND wait_event_type = 'Lock'`) == "0" {
 		if time.Now().After(deadline) {
 			t.Fatal("the index build never waited for the lock")
 		}
@@ -901,5 +901,71 @@ func TestEngineRunsAsTheDatabasesOwnerLive(t *testing.T) {
 		if f.Failing {
 			t.Errorf("finding %+v", f)
 		}
+	}
+}
+
+// TestEngineFinishesAMigrationThenRunsTheNextOnTheSameTableLive: a
+// migration whose index wasn't built yet is finished, and a later
+// migration that changes the same table runs after it: the index still
+// to be built isn't drift on the table.
+func TestEngineFinishesAMigrationThenRunsTheNextOnTheSameTableLive(t *testing.T) {
+	root, old := indexed(t)
+	conn := connect(t, testpg.Database(t))
+	ctx := context.Background()
+	if _, err := open(t, old, conn).Apply(ctx, ApplyOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	afterCommit := errors.New("failed after the commit")
+	if _, err := open(t, root, conn).Apply(ctx, ApplyOptions{MaxSafety: Caution, Hook: failAfterCommit(afterCommit)}); !errors.Is(err, afterCommit) {
+		t.Fatalf("apply: %v", err)
+	}
+	newer := copyProject(t, root)
+	writeFile(t, newer, tFile, "TABLE t (id int PRIMARY KEY, x int, note text) { INDEXES { CONCURRENTLY t_x (x); } }\n")
+	record(t, newer, testpg.Database(t))
+	e := open(t, newer, conn)
+	if s := status(t, e); s.State != Pending || len(s.Pending) != 2 {
+		t.Fatalf("status: %+v", s)
+	}
+	if _, err := e.Apply(ctx, ApplyOptions{MaxSafety: Caution}); err != nil {
+		t.Fatalf("finishing, then the next migration: %v", err)
+	}
+	if s := status(t, e); s.State != UpToDate {
+		t.Errorf("status: %+v", s)
+	}
+	if got := columns(t, conn); got != "id,x,note" {
+		t.Errorf("columns %s", got)
+	}
+	if got := query(t, conn, `SELECT indisvalid::text FROM pg_index WHERE indexrelid = 'public.t_x'::regclass`); got != "true" {
+		t.Errorf("t_x valid=%s", got)
+	}
+}
+
+// TestEngineRefusesToFinishOverAnIndexOfAnotherTableLive: an index of the
+// name the migration builds is on another table; finishing neither drops
+// it nor takes it as built.
+func TestEngineRefusesToFinishOverAnIndexOfAnotherTableLive(t *testing.T) {
+	root, old := indexed(t)
+	conn := connect(t, testpg.Database(t))
+	ctx := context.Background()
+	if _, err := open(t, old, conn).Apply(ctx, ApplyOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	e := open(t, root, conn)
+	afterCommit := errors.New("failed after the commit")
+	if _, err := e.Apply(ctx, ApplyOptions{MaxSafety: Caution, Hook: failAfterCommit(afterCommit)}); !errors.Is(err, afterCommit) {
+		t.Fatalf("apply: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `CREATE TABLE o (x int); CREATE INDEX t_x ON o (x)`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := e.Apply(ctx, ApplyOptions{MaxSafety: Caution})
+	if err == nil || !strings.Contains(err.Error(), "an index of that name is on o") {
+		t.Fatalf("finishing: %v", err)
+	}
+	if got := query(t, conn, `SELECT indrelid::regclass::text FROM pg_index WHERE indexrelid = 'public.t_x'::regclass`); got != "o" {
+		t.Errorf("t_x is on %s", got)
+	}
+	if s := status(t, e); s.State != Pending {
+		t.Errorf("status: %+v", s)
 	}
 }
