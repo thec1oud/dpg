@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/thec1oud/dpg/internal/pipeline"
 )
 
 func objs(kv ...string) map[string]json.RawMessage {
@@ -157,6 +159,28 @@ func TestLoadRejects(t *testing.T) {
 	os.WriteFile(entryPath, []byte(strings.Replace(string(data), "SELECT a;", "DROP TABLE x;", 1)), 0o644)
 	if _, err := Load(dir); code(err) != "DPG-E046" || !strings.Contains(err.Error(), "steps") {
 		t.Errorf("edited steps: %v", err)
+	}
+
+	// A safety or a stage of a newer dpg.
+	for _, st := range []Step{
+		{SQL: "SELECT 1;", Safety: "BENIGN", Stage: StageTransaction},
+		{SQL: "SELECT 1;", Safety: "", Stage: StageTransaction},
+		{SQL: "SELECT 1;", Safety: "SAFE", Stage: "eventually"},
+	} {
+		dir := t.TempDir()
+		e, err := New("", []Step{st}, OriginApply, map[string]json.RawMessage{}, s1, t0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := (&Log{Dir: dir}).Write(e, "-- x\n"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(dir); code(err) != "DPG-E046" || !strings.Contains(err.Error(), "which this dpg doesn't know") {
+			t.Errorf("step %+v: %v", st, err)
+		}
+	}
+	if got := (stepOp{Step{Safety: "BENIGN"}}).Safety(); got != pipeline.Destructive {
+		t.Errorf("an unknown safety is %s", got)
 	}
 
 	// Missing SQL.

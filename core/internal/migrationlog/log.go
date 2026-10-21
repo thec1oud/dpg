@@ -269,6 +269,20 @@ func LoadEntries(dir string) ([]*Entry, error) {
 		if StepsChecksum(e.Steps) != e.StepsChecksum {
 			return nil, errorf("DPG-E046", "%s: its steps were changed after it was written (checksum mismatch)", f)
 		}
+		// A safety or stage of a newer dpg is refused, never taken for a
+		// safe statement in the transaction.
+		for i, st := range e.Steps {
+			switch st.Safety {
+			case "SAFE", "CAUTION", "DESTRUCTIVE":
+			default:
+				return nil, errorf("DPG-E046", "%s: step %d has safety %q, which this dpg doesn't know", f, i+1, st.Safety)
+			}
+			switch st.Stage {
+			case StageBefore, StageTransaction, StageAfter, StageInstruction, StageCheck:
+			default:
+				return nil, errorf("DPG-E046", "%s: step %d has stage %q, which this dpg doesn't know", f, i+1, st.Stage)
+			}
+		}
 		ep := e
 		out = append(out, &ep)
 	}
@@ -421,10 +435,11 @@ func (o stepOp) Safety() pipeline.Safety {
 	switch o.s.Safety {
 	case "CAUTION":
 		return pipeline.Caution
-	case "DESTRUCTIVE":
-		return pipeline.Destructive
+	case "SAFE":
+		return pipeline.Safe
 	}
-	return pipeline.Safe
+	// Load refuses any other; one made otherwise is taken at its worst.
+	return pipeline.Destructive
 }
 func (o stepOp) Pos() pipeline.SourcePos { return pipeline.SourcePos{} }
 func (o stepOp) Mode() pipeline.ExecMode {
