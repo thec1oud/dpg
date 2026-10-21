@@ -340,7 +340,9 @@ const (
 	Destructive
 	// UnknownSafety is a safety the log records that this engine doesn't
 	// know (anything but SAFE, CAUTION or DESTRUCTIVE). It is above
-	// Destructive: Apply never runs such a statement.
+	// Destructive: Apply never runs such a statement. Every call already
+	// refuses a migration log with one when it loads it (DPG-E046), as dpg
+	// does, so it is defensive.
 	UnknownSafety
 )
 
@@ -378,7 +380,9 @@ const (
 	// Instruction steps are for a person to do; DPG never runs them.
 	Instruction
 	// UnknownMode is a stage the log records that this engine doesn't
-	// know. Apply never runs a plan with such a statement.
+	// know. Apply never runs a plan with such a statement. Every call
+	// already refuses a migration log with one when it loads it
+	// (DPG-E046), so it is defensive.
 	UnknownMode
 )
 
