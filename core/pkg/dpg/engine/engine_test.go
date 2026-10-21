@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/thec1oud/dpg/internal/migrationlog"
 )
 
 // projectOf writes a project of the given files beside a root, cluster and
@@ -98,8 +100,8 @@ func TestAnEngineWithoutAConnectionOnlyPlansOffline(t *testing.T) {
 func TestNamesOfStatesSafetiesAndModes(t *testing.T) {
 	for _, c := range []struct{ got, want string }{
 		{UpToDate.String(), "up to date"}, {Pending.String(), "pending"}, {Drifted.String(), "drifted"}, {Ahead.String(), "ahead"}, {State(0).String(), "unknown"},
-		{Safe.String(), "SAFE"}, {Caution.String(), "CAUTION"}, {Destructive.String(), "DESTRUCTIVE"},
-		{InTransaction.String(), "transaction"}, {BeforeTransaction.String(), "before"}, {AfterTransaction.String(), "after"}, {Instruction.String(), "instruction"}, {Mode(9).String(), "unknown"},
+		{Safe.String(), "SAFE"}, {Caution.String(), "CAUTION"}, {Destructive.String(), "DESTRUCTIVE"}, {UnknownSafety.String(), "unknown"}, {Safety(-1).String(), "unknown"},
+		{InTransaction.String(), "transaction"}, {BeforeTransaction.String(), "before"}, {AfterTransaction.String(), "after"}, {Instruction.String(), "instruction"}, {UnknownMode.String(), "unknown"}, {Mode(9).String(), "unknown"},
 	} {
 		if c.got != c.want {
 			t.Errorf("%q, want %q", c.got, c.want)
@@ -111,5 +113,46 @@ func TestARefusalNamesItsStepsNotTheirSQL(t *testing.T) {
 	err := &RefusedError{Steps: []Step{{ID: "m/2", Safety: Destructive, SQL: "DROP TABLE t;"}}, Reason: "above the maximum safety, CAUTION"}
 	if got := err.Error(); got != "engine: refused m/2 (DESTRUCTIVE): above the maximum safety, CAUTION; nothing was applied" {
 		t.Errorf("%q", got)
+	}
+}
+
+// A safety or stage the log records that the engine doesn't know is never
+// taken for Safe or for a statement in the transaction.
+func TestStepsOfMarksWhatItDoesntKnow(t *testing.T) {
+	en := &migrationlog.Entry{ID: "m", Steps: []migrationlog.Step{
+		{SQL: "SELECT 1", Safety: "SAFE", Stage: migrationlog.StageCheck},
+		{SQL: "CREATE TABLE a ();", Safety: "SAFE", Stage: migrationlog.StageTransaction},
+		{SQL: "ALTER TABLE a ...;", Safety: "CAUTION", Stage: migrationlog.StageBefore},
+		{SQL: "DROP TABLE b;", Safety: "DESTRUCTIVE", Stage: migrationlog.StageAfter},
+		{SQL: "-- rebuild", Safety: "DESTRUCTIVE", Stage: migrationlog.StageInstruction},
+		{SQL: "x", Safety: "", Stage: migrationlog.StageTransaction},
+		{SQL: "y", Safety: "safe", Stage: migrationlog.StageTransaction},
+		{SQL: "z", Safety: "SAFE", Stage: "later"},
+		{SQL: "w", Safety: "SAFE", Stage: ""},
+	}}
+	want := []Step{
+		{ID: "m/2", Migration: "m", Safety: Safe, Mode: InTransaction, SQL: "CREATE TABLE a ();"},
+		{ID: "m/3", Migration: "m", Safety: Caution, Mode: BeforeTransaction, SQL: "ALTER TABLE a ...;"},
+		{ID: "m/4", Migration: "m", Safety: Destructive, Mode: AfterTransaction, SQL: "DROP TABLE b;"},
+		{ID: "m/5", Migration: "m", Safety: Destructive, Mode: Instruction, SQL: "-- rebuild"},
+		{ID: "m/6", Migration: "m", Safety: UnknownSafety, Mode: InTransaction, SQL: "x"},
+		{ID: "m/7", Migration: "m", Safety: UnknownSafety, Mode: InTransaction, SQL: "y"},
+		{ID: "m/8", Migration: "m", Safety: Safe, Mode: UnknownMode, SQL: "z"},
+		{ID: "m/9", Migration: "m", Safety: Safe, Mode: UnknownMode, SQL: "w"},
+	}
+	got := stepsOf(en, false)
+	if len(got) != len(want) {
+		t.Fatalf("%+v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("step %d: %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	if after := stepsOf(en, true); len(after) != 1 || after[0].ID != "m/4" {
+		t.Errorf("the steps after the transaction: %+v", after)
+	}
+	if max := (Plan{Steps: got}).MaxSafety(); max != UnknownSafety {
+		t.Errorf("max safety %s", max)
 	}
 }

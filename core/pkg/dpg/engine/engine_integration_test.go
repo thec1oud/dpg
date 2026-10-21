@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -409,10 +410,9 @@ func TestEngineHookRunsInEachTransactionAndBeforeEachStatementOutsideOneLive(t *
 // Pending, the plan is the statements after the transaction, and the next
 // Apply runs them.
 func TestEngineFinishesAMigrationWhoseStepsAfterItsTransactionFailedLive(t *testing.T) {
-	// The second migration only adds an index CONCURRENTLY: dpg's
-	// preflight takes a database that is finishing a migration to be at
-	// the migration before it, so what its transaction changed would be
-	// drift.
+	// The second migration only adds an index CONCURRENTLY (see
+	// TestEngineGatesAMigrationBeingFinishedByWhatStillRunsLive for one
+	// whose transaction changes the table too).
 	root := newProject(t, v1)
 	dev := testpg.Database(t)
 	record(t, root, dev)
@@ -656,5 +656,246 @@ func TestEngineKeepsTheCallersConnectionOpenLive(t *testing.T) {
 	}
 	if !used.IsClosed() {
 		t.Error("Close left the engine's own connection open")
+	}
+}
+
+// withIndex is v1 with an index on x, made CONCURRENTLY after the
+// migration's transaction.
+const withIndex = "TABLE t (id int PRIMARY KEY, x int) { INDEXES { CONCURRENTLY t_x (x); } }\n"
+
+// indexed returns a project whose log records v1 then withIndex, and its
+// older build that records only v1.
+func indexed(t *testing.T) (root, old string) {
+	t.Helper()
+	root = newProject(t, v1)
+	dev := testpg.Database(t)
+	record(t, root, dev)
+	old = copyProject(t, root)
+	writeFile(t, root, tFile, withIndex)
+	record(t, root, dev)
+	return root, old
+}
+
+// failAfterCommit is a hook that fails once the migration's transaction
+// has committed, so the statements after it don't run.
+func failAfterCommit(errAfter error) func(context.Context, pgx.Tx) error {
+	return func(ctx context.Context, tx pgx.Tx) error {
+		var committed bool
+		err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM dpg.migrations WHERE status = 'committed')`).Scan(&committed)
+		if err == nil && committed {
+			return errAfter
+		}
+		return err
+	}
+}
+
+// TestEngineRebuildsAnIndexWhoseBuildWasCancelledLive: an apply cancelled
+// while CREATE INDEX CONCURRENTLY waits (another transaction holds a lock
+// on the table) leaves the index behind, invalid, and its migration
+// committed; the next Apply drops the index and builds it again.
+func TestEngineRebuildsAnIndexWhoseBuildWasCancelledLive(t *testing.T) {
+	root, old := indexed(t)
+	url := testpg.Database(t)
+	ctx := context.Background()
+	if _, err := open(t, old, connect(t, url)).Apply(ctx, ApplyOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	blocker := connect(t, url)
+	tx, err := blocker.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, "LOCK TABLE t IN ROW EXCLUSIVE MODE"); err != nil {
+		t.Fatal(err)
+	}
+	actx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := open(t, root, connect(t, url)).Apply(actx, ApplyOptions{MaxSafety: Caution})
+		done <- err
+	}()
+	watch := connect(t, url)
+	deadline := time.Now().Add(30 * time.Second)
+	for query(t, watch, `SELECT count(*)::text FROM pg_stat_activity WHERE query LIKE 'CREATE INDEX CONCURRENTLY%' AND wait_event_type = 'Lock'`) == "0" {
+		if time.Now().After(deadline) {
+			t.Fatal("the index build never waited for the lock")
+		}
+		time.Sleep(5 * time.Millisecond) // a poll interval, not synchronization
+	}
+	cancel()
+	err = <-done
+	if err == nil || !strings.Contains(err.Error(), "the next apply finishes it") || strings.Contains(err.Error(), "--resume") {
+		t.Fatalf("the cancelled apply: %v", err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := query(t, watch, `SELECT indisvalid::text FROM pg_index WHERE indexrelid = 'public.t_x'::regclass`); got != "false" {
+		t.Fatalf("the cancelled build left the index valid=%s", got)
+	}
+
+	e := open(t, root, connect(t, url))
+	if s := status(t, e); s.State != Pending {
+		t.Fatalf("status with the index to rebuild: %+v", s)
+	}
+	if _, err := e.Apply(ctx, ApplyOptions{MaxSafety: Caution}); err != nil {
+		t.Fatalf("finishing: %v", err)
+	}
+	if got := query(t, watch, `SELECT string_agg(indisvalid::text, ',') FROM pg_index WHERE indexrelid = 'public.t_x'::regclass`); got != "true" {
+		t.Errorf("after finishing, t_x valid=%s", got)
+	}
+	if s := status(t, e); s.State != UpToDate {
+		t.Errorf("status after finishing: %+v", s)
+	}
+}
+
+// TestEngineTakesAValidIndexAsBuiltWhenFinishingLive: the index was built
+// (here by hand) but the migration wasn't recorded as finished; finishing
+// it doesn't build the index again.
+func TestEngineTakesAValidIndexAsBuiltWhenFinishingLive(t *testing.T) {
+	root, old := indexed(t)
+	conn := connect(t, testpg.Database(t))
+	ctx := context.Background()
+	if _, err := open(t, old, conn).Apply(ctx, ApplyOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	e := open(t, root, conn)
+	afterCommit := errors.New("failed after the commit")
+	if _, err := e.Apply(ctx, ApplyOptions{MaxSafety: Caution, Hook: failAfterCommit(afterCommit)}); !errors.Is(err, afterCommit) {
+		t.Fatalf("apply: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `CREATE INDEX t_x ON t (x)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Apply(ctx, ApplyOptions{MaxSafety: Caution}); err != nil {
+		t.Fatalf("finishing: %v", err)
+	}
+	if s := status(t, e); s.State != UpToDate {
+		t.Errorf("status after finishing: %+v", s)
+	}
+	if got := query(t, conn, `SELECT count(*)::text FROM pg_indexes WHERE tablename = 't' AND indexname LIKE 't_x%'`); got != "1" {
+		t.Errorf("%s indexes like t_x", got)
+	}
+}
+
+// TestEngineGatesAMigrationBeingFinishedByWhatStillRunsLive: a migration
+// that dropped a column (Destructive) in its transaction, which committed,
+// has only its CREATE INDEX CONCURRENTLY (Caution) left to run: the plan
+// and Apply both judge it Caution, and the preflight takes the database to
+// be at the migration, without the column.
+func TestEngineGatesAMigrationBeingFinishedByWhatStillRunsLive(t *testing.T) {
+	root := newProject(t, v2)
+	dev := testpg.Database(t)
+	record(t, root, dev)
+	old := copyProject(t, root)
+	// v3 drops y, and here adds an index too.
+	writeFile(t, root, tFile, "TABLE t (id int PRIMARY KEY, x int) { INDEXES { CONCURRENTLY t_x (x); CONCURRENTLY t_x_id (x, id); } }\n")
+	record(t, root, dev)
+
+	conn := connect(t, testpg.Database(t))
+	ctx := context.Background()
+	if _, err := open(t, old, conn).Apply(ctx, ApplyOptions{MaxSafety: Caution}); err != nil {
+		t.Fatal(err)
+	}
+	e := open(t, root, conn)
+	p, err := e.Plan(ctx)
+	if err != nil || p.MaxSafety() != Destructive {
+		t.Fatalf("the plan before: %v, %v", p.MaxSafety(), err)
+	}
+	afterCommit := errors.New("failed after the commit")
+	if _, err := e.Apply(ctx, ApplyOptions{MaxSafety: Destructive, Hook: failAfterCommit(afterCommit)}); !errors.Is(err, afterCommit) {
+		t.Fatalf("apply: %v", err)
+	}
+	p, err = e.Plan(ctx)
+	if err != nil || p.MaxSafety() != Caution || len(p.Steps) != 1 || p.Steps[0].Mode != AfterTransaction {
+		t.Fatalf("the plan to finish: %+v, %v", p.Steps, err)
+	}
+	if _, err := e.Apply(ctx, ApplyOptions{MaxSafety: Safe}); !errors.As(err, new(*RefusedError)) {
+		t.Fatalf("finishing above the maximum safety: %v", err)
+	}
+	if _, err := e.Apply(ctx, ApplyOptions{MaxSafety: Caution}); err != nil {
+		t.Fatalf("finishing under Caution: %v", err)
+	}
+	if s := status(t, e); s.State != UpToDate {
+		t.Errorf("status after finishing: %+v", s)
+	}
+}
+
+// TestEngineReportsWarningsLive: a snapshot of another format version is
+// a warning the engine returns, not one it prints.
+func TestEngineReportsWarningsLive(t *testing.T) {
+	root := build(t, v1)
+	p := filepath.Join(root, ".dpg", "snapshots", "c", "app.json")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b = []byte(strings.Replace(string(b), `"dpg_version": "`+snapshotpkg.Version+`"`, `"dpg_version": "9.0.0"`, 1))
+	if err := os.WriteFile(p, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e, err := Open(Config{Dir: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := e.Warnings(); len(w) != 1 || !strings.Contains(w[0], "format 9.0.0") {
+		t.Errorf("warnings %q", w)
+	}
+}
+
+// TestEngineRunsAsTheDatabasesOwnerLive: no superuser is needed; the
+// database's owner, with no other privilege, applies and verifies.
+func TestEngineRunsAsTheDatabasesOwnerLive(t *testing.T) {
+	root := build(t, v1, withIndex)
+	url := testpg.Database(t)
+	admin := connect(t, url)
+	ctx := context.Background()
+	role := "dpg_owner_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	db := query(t, admin, "SELECT current_database()")
+	for _, s := range []string{
+		"CREATE ROLE " + role + " LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE",
+		"ALTER DATABASE " + db + " OWNER TO " + role,
+		"ALTER SCHEMA public OWNER TO " + role,
+	} {
+		if _, err := admin.Exec(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// testpg.Database drops the database WITH (FORCE) after the test; the
+	// role can go once it owns nothing.
+	t.Cleanup(func() {
+		conn, err := pgx.Connect(context.Background(), url)
+		if err != nil {
+			return
+		}
+		defer conn.Close(context.Background())
+		_, _ = conn.Exec(context.Background(), "REASSIGN OWNED BY "+role+" TO CURRENT_USER; DROP OWNED BY "+role+"; DROP ROLE "+role)
+	})
+	cfg, err := pgx.ParseConfig(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.User, cfg.Password = role, ""
+	conn, err := pgx.ConnectConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	e := open(t, root, conn)
+	if _, err := e.Apply(ctx, ApplyOptions{MaxSafety: Caution}); err != nil {
+		t.Fatalf("apply as the owner: %v", err)
+	}
+	if s := status(t, e); s.State != UpToDate {
+		t.Fatalf("status: %+v", s)
+	}
+	fs, err := e.Verify(ctx)
+	if err != nil {
+		t.Fatalf("verify as the owner: %v", err)
+	}
+	for _, f := range fs {
+		if f.Failing {
+			t.Errorf("finding %+v", f)
+		}
 	}
 }

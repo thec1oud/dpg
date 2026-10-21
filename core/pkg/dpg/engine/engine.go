@@ -22,7 +22,12 @@
 // migrations the database has run.
 //
 // It never prompts, prints or exits: everything it has to say is in its
-// results and errors, and SQL text only ever appears in a Step. Every call
+// results, its errors and Warnings. Its own messages name steps, never
+// their SQL (RefusedError), but the error of a statement that failed, or
+// of a check DPG makes before running one, can quote the statement, as dpg
+// apply's errors do: a caller that keeps SQL out of its logs replaces each
+// Step's SQL in them (Galleon's adapter replaces it with the step's ID).
+// Every call
 // stops when its context ends. An Engine is not safe for concurrent use.
 package engine
 
@@ -87,6 +92,8 @@ type Engine struct {
 	conn   *pgx.Conn
 	owned  bool // conn was opened from DSN: Close closes it
 	differ pipeline.Differ
+	// warnings are the problems Open found that don't stop it.
+	warnings []string
 }
 
 // Open discovers the project, compiles and lints the database's source, and
@@ -128,7 +135,7 @@ func Open(cfg Config) (*Engine, error) {
 	}}
 	// A store of its own: the registry's is shared, and dpg points it at
 	// the project it runs in.
-	store := &snapshotpkg.FileStore{Dir: proj.SnapshotDir()}
+	store := &snapshotpkg.FileStore{Dir: proj.SnapshotDir(), Warn: func(msg string) { e.warnings = append(e.warnings, msg) }}
 	e.t, err = apply.PrepareDatabase(cl, db, apply.Components{Store: store, Differ: differ, Emitter: emitter, Exec: exec}, e.connect, e.opts, apply.Printer{})
 	if err != nil {
 		return nil, fmt.Errorf("engine: %s/%s: %w", cl.Name(), db.Name(), err)
@@ -162,6 +169,11 @@ func pick(proj *project.Project, cluster, database string) (*project.Cluster, *p
 	}
 	return cls[0], dbs[0], nil
 }
+
+// Warnings are the problems Open found that don't stop the engine, such as
+// a snapshot written in another format version; dpg prints them as
+// warnings.
+func (e *Engine) Warnings() []string { return e.warnings }
 
 // Close closes the connection the engine opened from DSN.
 func (e *Engine) Close(ctx context.Context) error {
@@ -313,9 +325,18 @@ const (
 	Caution
 	// Destructive: data can be lost.
 	Destructive
+	// UnknownSafety is a safety the log records that this engine doesn't
+	// know (anything but SAFE, CAUTION or DESTRUCTIVE). It is above
+	// Destructive: Apply never runs such a statement.
+	UnknownSafety
 )
 
-func (s Safety) String() string { return pipeline.Safety(s).String() }
+func (s Safety) String() string {
+	if s < Safe || s > Destructive {
+		return "unknown"
+	}
+	return pipeline.Safety(s).String()
+}
 
 // Mode is how a statement runs.
 type Mode int
@@ -328,13 +349,20 @@ const (
 	BeforeTransaction
 	// AfterTransaction statements run one by one after it commits, since
 	// PostgreSQL refuses them in a transaction (CREATE INDEX
-	// CONCURRENTLY). If one fails, the migration's transaction has
-	// committed, and the next Apply runs them all again. Not every one is
-	// safe to repeat: CREATE INDEX CONCURRENTLY has no IF NOT EXISTS, so
-	// an index a failed build left behind (invalid) must be dropped first.
+	// CONCURRENTLY). If one fails, or the context ends, the migration's
+	// transaction has committed, and the next Apply runs them all again.
+	// A CREATE INDEX CONCURRENTLY is made safe to run again then: an
+	// index of its name that is invalid (a build that was cancelled or
+	// failed) is dropped first, and a valid one is taken as built. The
+	// rest are not changed: a grant repeats harmlessly, but a CREATE
+	// SUBSCRIPTION that ran, or an ALTER TABLE ... DETACH PARTITION ...
+	// CONCURRENTLY that was cancelled part way, still needs a person.
 	AfterTransaction
 	// Instruction steps are for a person to do; DPG never runs them.
 	Instruction
+	// UnknownMode is a stage the log records that this engine doesn't
+	// know. Apply never runs a plan with such a statement.
+	UnknownMode
 )
 
 func (m Mode) String() string {
@@ -390,18 +418,26 @@ func stepsOf(en *migrationlog.Entry, afterOnly bool) []Step {
 		}
 		st := Step{ID: en.ID + "/" + strconv.Itoa(i+1), Migration: en.ID, SQL: s.SQL}
 		switch s.Safety {
+		case "SAFE":
+			st.Safety = Safe
 		case "CAUTION":
 			st.Safety = Caution
 		case "DESTRUCTIVE":
 			st.Safety = Destructive
+		default:
+			st.Safety = UnknownSafety
 		}
 		switch s.Stage {
+		case migrationlog.StageTransaction:
+			st.Mode = InTransaction
 		case migrationlog.StageBefore:
 			st.Mode = BeforeTransaction
 		case migrationlog.StageAfter:
 			st.Mode = AfterTransaction
 		case migrationlog.StageInstruction:
 			st.Mode = Instruction
+		default:
+			st.Mode = UnknownMode
 		}
 		out = append(out, st)
 	}
@@ -512,14 +548,19 @@ func (e *Engine) Apply(ctx context.Context, opts ApplyOptions) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	var above, unacknowledged []Step
+	var unknown, above, unacknowledged []Step
 	for _, s := range planOf(w).Steps {
 		switch {
-		case s.Mode == Instruction && s.Safety == Destructive && !opts.Instructions:
+		case s.Mode == UnknownMode || s.Mode != Instruction && s.Safety == UnknownSafety:
+			unknown = append(unknown, s)
+		case s.Mode == Instruction && s.Safety >= Destructive && !opts.Instructions:
 			unacknowledged = append(unacknowledged, s)
 		case s.Mode != Instruction && s.Safety > opts.MaxSafety:
 			above = append(above, s)
 		}
+	}
+	if len(unknown) > 0 {
+		return Result{}, &RefusedError{Steps: unknown, Reason: "of a safety or stage this engine doesn't know"}
 	}
 	if len(above) > 0 {
 		return Result{}, &RefusedError{Steps: above, Reason: "above the maximum safety, " + opts.MaxSafety.String()}
