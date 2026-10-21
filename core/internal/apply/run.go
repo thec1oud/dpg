@@ -544,13 +544,6 @@ type PreflightError struct {
 func (e *PreflightError) Error() string { return e.Err.Error() }
 func (e *PreflightError) Unwrap() error { return e.Err }
 
-// preflight checks the database against what the migrations about to run
-// expect (RFC Section 16.10): no drift, conflict or converged item on an
-// object they change (an acknowledged one only on a property they don't
-// change), no object they create already there, nothing DPG doesn't manage
-// depending on an object they drop or recreate, no grant made outside DPG
-// on an object they recreate. Drift elsewhere is a note. head is the
-// database's position in the log.
 // driftAt compares the database with the state the migration log has at
 // migration head ("" for none): the state, and the drift.
 func (t *Target) driftAt(ctx context.Context, conn *executor.PgxConn, head string) (map[string]json.RawMessage, *drift.Report, error) {
@@ -588,8 +581,10 @@ func (t *Target) driftAt(ctx context.Context, conn *executor.PgxConn, head strin
 
 // builtAt is prepareFinish's builtFunc for a migration being finished:
 // whether the index is defined as the log has it at the migration,
-// compared as drift is (no item on the index itself; one on its comment,
-// say, is the preflight's).
+// compared as drift is: no item on the index itself. Its comment is part
+// of it (drift.ChangedProperties folds an element's comment into
+// index:<name>), so one changed by hand is a difference, refused
+// (DPG-E058), as a definition changed by hand is.
 func (t *Target) builtAt(conn *executor.PgxConn, id string) builtFunc {
 	var report *drift.Report
 	return func(ctx context.Context, table, name string) (bool, error) {
@@ -609,6 +604,15 @@ func (t *Target) builtAt(conn *executor.PgxConn, id string) builtFunc {
 	}
 }
 
+// preflight checks the database against what the migrations about to run
+// expect (RFC Section 16.10): no drift, conflict or converged item on an
+// object they change (an acknowledged one only on a property they don't
+// change), no object they create already there, nothing DPG doesn't manage
+// depending on an object they drop or recreate, no grant made outside DPG
+// on an object they recreate, and no valid index defined otherwise where a
+// migration being finished builds one (DPG-E058, which --allow-drift
+// doesn't pass). Drift elsewhere is a note. head is the database's
+// position in the log.
 func (t *Target) preflight(ctx context.Context, conn *executor.PgxConn, head string, resume *migrationlog.Entry, toRun []*migrationlog.Entry, opts Options, p Printer) (map[string]string, error) {
 	// The state the database should be in: the log at its position. A
 	// migration being finished has committed its transaction, so the
@@ -698,16 +702,13 @@ func (t *Target) preflight(ctx context.Context, conn *executor.PgxConn, head str
 				continue
 			}
 			if m := createIndexConcurrently.FindStringSubmatch(strings.TrimSpace(s.SQL)); m != nil {
-				key := snapshotKey(m[2])
-				if s.Target != nil && s.Target.Key != "" {
-					key = s.Target.Key
-				}
+				key := targetKey(s.Target, m[2])
 				building[key+"\x00"+drift.ElementProperty("index", unquote(m[1]))] = build{unquote(m[1]), m[2]}
 			}
 		}
 	}
 	var blocks, notes []string
-	destructive := false
+	destructive, differs := false, false
 	for _, it := range report.Items {
 		tc := touched[it.Object]
 		prop, sub, _ := strings.Cut(it.Property, "/")
@@ -719,7 +720,9 @@ func (t *Target) preflight(ctx context.Context, conn *executor.PgxConn, head str
 					return nil, ui.WrapDB(err)
 				}
 				if st.found && st.valid && sub == "" && it.Change == "changed" {
-					return nil, fmt.Errorf("DPG-E058: migration %s builds index %s, but the table has a valid index of that name defined otherwise (%s); drop or rename it, then apply again", resume.ID, quote(b.name), it.ID)
+					differs = true
+					blocks = append(blocks, fmt.Sprintf("%s: migration %s builds this index, but a valid index of that name is there defined otherwise; drop or rename it", it.ID, resume.ID))
+					continue
 				}
 				exempt = st.found && !st.valid
 			}
@@ -806,6 +809,11 @@ func (t *Target) preflight(ctx context.Context, conn *executor.PgxConn, head str
 		for _, b := range blocks {
 			fmt.Fprintf(p.Err, "  %s\n", b)
 		}
+	}
+	if differs {
+		// Not drift --allow-drift passes: finishing would take the index
+		// for the migration's.
+		return nil, &ui.ExitError{Code: 1, Err: &PreflightError{Problems: blocks, Err: fmt.Errorf("DPG-E058: migration %s builds an index whose name a valid index defined otherwise has; drop or rename it, then apply again", resume.ID)}}
 	}
 	if opts.AllowDrift && (!destructive || opts.AllowDestructive) {
 		p.note("warn", "continuing anyway (--allow-drift)")

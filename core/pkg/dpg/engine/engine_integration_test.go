@@ -1000,6 +1000,10 @@ func TestEngineRefusesToFinishOverAnIndexDefinedOtherwiseLive(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "DPG-E058: ") {
 		t.Fatalf("finishing: %v", err)
 	}
+	// The preflight refuses it, with its other problems.
+	if pf := (*apply.PreflightError)(nil); !errors.As(err, &pf) || len(pf.Problems) != 1 || !strings.HasPrefix(pf.Problems[0], "table:public.t/index:t_x: ") {
+		t.Errorf("the preflight's problems: %#v", pf)
+	}
 	if got := query(t, conn, `SELECT pg_get_indexdef('public.t_x'::regclass)`); !strings.Contains(got, "(x DESC)") {
 		t.Errorf("t_x is now %s", got)
 	}

@@ -68,12 +68,21 @@ func prepareFinish(ctx context.Context, q pipeline.Querier, ops []pipeline.DiffO
 type builtFunc func(ctx context.Context, table, name string) (bool, error)
 
 // tableKey is the snapshot key of the table a CREATE INDEX statement
-// builds on: its step's target, or else the table it names.
+// builds on (targetKey), the op a step of the log.
 func tableKey(op pipeline.DiffOp, table string) string {
+	var tg *pipeline.Target
 	if t, ok := op.(interface{ StepTarget() *pipeline.Target }); ok {
-		if tg := t.StepTarget(); tg != nil && tg.Key != "" {
-			return tg.Key
-		}
+		tg = t.StepTarget()
+	}
+	return targetKey(tg, table)
+}
+
+// targetKey is the snapshot key of the table a CREATE INDEX statement
+// builds on: its step's target, or else the table it names, quoted as the
+// differ quotes it.
+func targetKey(tg *pipeline.Target, table string) string {
+	if tg != nil && tg.Key != "" {
+		return tg.Key
 	}
 	return snapshotKey(table)
 }
