@@ -48,6 +48,9 @@ func versionMismatch(v string) string {
 // cluster/database hierarchy of the project layout.
 type FileStore struct {
 	Dir string
+	// Warn, when set, is told of the problems a load finds that don't stop
+	// it, each time; otherwise the package's Warn is, once per snapshot.
+	Warn func(msg string)
 }
 
 // Load implements pipeline.SnapshotStore. It reads and JSON-decodes the snapshot
@@ -71,7 +74,9 @@ func (s *FileStore) Load(cluster, database string) (*pipeline.Snapshot, error) {
 		return nil, fmt.Errorf("snapshot: parsing %s: %w", path, err)
 	}
 	if msg := versionMismatch(snap.DPGVersion); msg != "" {
-		if _, done := warned.LoadOrStore(path, true); !done {
+		if s.Warn != nil {
+			s.Warn(path + ": " + msg)
+		} else if _, done := warned.LoadOrStore(path, true); !done {
 			Warn(path + ": " + msg)
 		}
 	}
