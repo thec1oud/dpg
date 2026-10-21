@@ -345,10 +345,12 @@ func introspectRoleSecurityLabels(ctx context.Context, conn pipeline.Querier, ro
 	if len(idx) == 0 {
 		return nil
 	}
+	// pg_roles, not pg_authid: only a superuser may read pg_authid, and
+	// a database's owner must be able to introspect it.
 	const q = `
 SELECT r.rolname, sl.provider, sl.label
 FROM   pg_shseclabel sl
-JOIN   pg_authid r ON r.oid = sl.objoid
+JOIN   pg_roles r ON r.oid = sl.objoid
 WHERE  sl.classoid = 'pg_authid'::regclass
 ORDER  BY r.rolname, sl.provider`
 
