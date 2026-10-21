@@ -50,7 +50,8 @@ func (gateOp) Mode() pipeline.ExecMode   { return pipeline.ModeTransactional }
 
 type loggedGateOp struct{ gateOp }
 
-func (o loggedGateOp) StepID() string { return o.id }
+func (o loggedGateOp) StepID() string    { return o.id }
+func (loggedGateOp) MigrationID() string { return "m" }
 
 func TestGateRefusesWithATypedError(t *testing.T) {
 	for _, c := range []struct {

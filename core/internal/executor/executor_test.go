@@ -331,7 +331,8 @@ func TestResolveDatabaseConfigMalformedConnStrErrors(t *testing.T) {
 // stepOp is a statement of the migration log's, which knows its step ID.
 type stepOp struct{ testOp }
 
-func (stepOp) StepID() string { return "m/2" }
+func (stepOp) StepID() string      { return "m/2" }
+func (stepOp) MigrationID() string { return "m" }
 
 func TestApplyFailedStatementNamesItsStep(t *testing.T) {
 	for _, c := range []struct {
@@ -343,7 +344,7 @@ func TestApplyFailedStatementNamesItsStep(t *testing.T) {
 	} {
 		err := New().Apply(context.Background(), pipeline.Migration{Transactional: []pipeline.DiffOp{c.op}}, &errExecConn{})
 		var se *StatementError
-		if !errors.As(err, &se) || se.Step != c.step || se.SQL != "BAD SQL" || se.Err == nil {
+		if !errors.As(err, &se) || se.Step != c.step || se.Migration != strings.TrimSuffix(c.step, "/2") || se.SQL != "BAD SQL" || se.Err == nil {
 			t.Errorf("%T: %#v", c.op, se)
 		}
 	}

@@ -99,12 +99,15 @@ type AfterCommitError struct{ Err error }
 
 // StatementError is a statement that failed, and why. Its message quotes
 // the statement, as dpg's output always has; a caller that keeps SQL out
-// of its logs names the statement by Step instead.
+// of its logs names the statement by Step and Migration instead.
 type StatementError struct {
 	// Step is the ID of the migration log's step the statement is
 	// ("<migration>/<n>", pipeline.IdentifiedOp), or "" for a statement
-	// DPG adds around a migration's (its ledger's records, its guards).
+	// DPG adds around a migration's (its guards, its ledger's records).
 	Step string
+	// Migration is the ID of the migration whose step or guard the
+	// statement is, or "" for one of the ledger's records.
+	Migration string
 	// SQL is the statement, as the migration log records it: with its
 	// secret references unresolved.
 	SQL string
@@ -114,7 +117,7 @@ type StatementError struct {
 func statementError(op pipeline.DiffOp, err error) *StatementError {
 	e := &StatementError{SQL: op.SQL(), Err: err}
 	if id, ok := op.(pipeline.IdentifiedOp); ok {
-		e.Step = id.StepID()
+		e.Step, e.Migration = id.StepID(), id.MigrationID()
 	}
 	return e
 }

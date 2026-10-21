@@ -269,9 +269,13 @@ func TestAMigrationsStatementsKnowTheirSteps(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s isn't an IdentifiedOp", op.SQL())
 		}
+		if id.MigrationID() != "m" {
+			t.Errorf("%s is of migration %q", op.SQL(), id.MigrationID())
+		}
 		got[op.SQL()] = append(got[op.SQL()], id.StepID())
 	}
-	want := map[string][]string{"CHECK": {"m/1", "m/1"}, "ALTER": {"m/2"}, "CREATE INDEX": {"m/3"}}
+	// A guard's copies are no step of their own.
+	want := map[string][]string{"CHECK": {"", ""}, "ALTER": {"m/2"}, "CREATE INDEX": {"m/3"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("step IDs %v, want %v", got, want)
 	}

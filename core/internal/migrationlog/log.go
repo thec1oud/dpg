@@ -430,8 +430,9 @@ func writeAtomic(path string, data []byte) error {
 
 // stepOp is a logged step run again (settling a database that hasn't it).
 type stepOp struct {
-	s  Step
-	id string // the step's ID: "<migration>/<n>", n counting from 1
+	s         Step
+	migration string // the migration's ID
+	id        string // the step's ID, "<migration>/<n>" (n from 1); "" for a guard's copy
 }
 
 func (o stepOp) SQL() string { return o.s.SQL }
@@ -447,8 +448,10 @@ func (o stepOp) Safety() pipeline.Safety {
 }
 func (o stepOp) Pos() pipeline.SourcePos { return pipeline.SourcePos{} }
 
-// StepID is the step's ID (pipeline.IdentifiedOp).
-func (o stepOp) StepID() string { return o.id }
+// MigrationID and StepID are the op's migration's ID and its step's
+// (pipeline.IdentifiedOp).
+func (o stepOp) MigrationID() string { return o.migration }
+func (o stepOp) StepID() string      { return o.id }
 
 // StepTarget is the object the step changes, as the log records it (nil
 // for a guard). The op isn't a pipeline.TargetedOp: the log already
@@ -480,12 +483,13 @@ func (e *Entry) Migration(meta pipeline.MigrationMeta, withInstructions, withChe
 	m := pipeline.Migration{Meta: meta}
 	for i, s := range e.Steps {
 		id := e.ID + "/" + strconv.Itoa(i+1)
-		op := stepOp{s, id}
+		op := stepOp{s, e.ID, id}
 		switch s.Stage {
 		case StageCheck:
 			if withChecks {
-				m.PreTransactional = append(m.PreTransactional, stepOp{Step{SQL: s.SQL, Safety: s.Safety, Stage: StageBefore}, id})
-				m.Transactional = append(m.Transactional, stepOp{Step{SQL: s.SQL, Safety: s.Safety, Stage: StageTransaction}, id})
+				// A guard runs twice, so neither copy is its step.
+				m.PreTransactional = append(m.PreTransactional, stepOp{Step{SQL: s.SQL, Safety: s.Safety, Stage: StageBefore}, e.ID, ""})
+				m.Transactional = append(m.Transactional, stepOp{Step{SQL: s.SQL, Safety: s.Safety, Stage: StageTransaction}, e.ID, ""})
 			}
 		case StageBefore:
 			m.PreTransactional = append(m.PreTransactional, op)

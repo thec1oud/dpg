@@ -28,10 +28,10 @@
 // *GateError, whose messages quote the statement, as dpg apply's errors
 // do: a caller that keeps SQL out of its logs finds them with errors.As
 // and names the statement by its Step field, the ID of the Step it is,
-// or as one of DPG's own (its ledger's records, its guards) when that is
-// empty.
-// Every call
-// stops when its context ends. An Engine is not safe for concurrent use.
+// or, when that is empty, as a guard of the migration its Migration field
+// names, or as one of DPG's own (its ledger's records) when that is empty
+// too. Every call stops when its context ends. An Engine is not safe for
+// concurrent use.
 package engine
 
 import (
@@ -84,8 +84,10 @@ type Config struct {
 }
 
 // StatementError is a statement that failed: Step is the ID of the Step
-// it is ("" for one of DPG's own), SQL the statement, as a Step has it,
-// and Err why it failed.
+// it is ("" for one of DPG's own), Migration the migration whose step or
+// guard it is ("" for the ledger's records), SQL the statement, as a Step
+// has it, and Err why it failed. A guard (a check Step) runs twice, before
+// and in its migration's transaction, so its Step is "" too.
 type StatementError = executor.StatementError
 
 // GateError is a statement dpg apply's own checks of safety refuse, which
