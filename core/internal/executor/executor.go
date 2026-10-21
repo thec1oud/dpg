@@ -107,7 +107,12 @@ var _ pipeline.ApplyExecutor = (*PgxExecutor)(nil)
 // PgxConn wraps a *pgx.Conn to implement pipeline.Conn.
 type PgxConn struct {
 	conn *pgx.Conn
+	// borrowed: the connection's owner closes it, not Close.
+	borrowed bool
 }
+
+// Borrow wraps a connection its owner keeps: Close leaves it open.
+func Borrow(conn *pgx.Conn) *PgxConn { return &PgxConn{conn: conn, borrowed: true} }
 
 // Connect opens a pgx connection to connStr and returns a PgxConn.
 func Connect(ctx context.Context, connStr string) (*PgxConn, error) {
@@ -165,6 +170,9 @@ func (c *PgxConn) Begin(ctx context.Context) (pipeline.Tx, error) {
 }
 
 func (c *PgxConn) Close(ctx context.Context) error {
+	if c.borrowed {
+		return nil
+	}
 	return c.conn.Close(ctx)
 }
 
