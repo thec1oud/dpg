@@ -155,4 +155,10 @@ func TestStepsOfMarksWhatItDoesntKnow(t *testing.T) {
 	if max := (Plan{Steps: got}).MaxSafety(); max != UnknownSafety {
 		t.Errorf("max safety %s", max)
 	}
+	if max := (Plan{Steps: []Step{{Safety: Safe}, {Safety: Safe, Mode: UnknownMode}}}).MaxSafety(); max != UnknownSafety {
+		t.Errorf("max safety with an unknown stage %s", max)
+	}
+	if max := (Plan{Steps: []Step{{Safety: Destructive, Mode: Instruction}, {Safety: Caution}}}).MaxSafety(); max != Caution {
+		t.Errorf("max safety beside an instruction %s", max)
+	}
 }

@@ -404,10 +404,14 @@ type Plan struct {
 }
 
 // MaxSafety is the most dangerous of the plan's statements that DPG runs
-// (Safe when there are none).
+// (Safe when there are none); a statement of a stage the engine doesn't
+// know is UnknownSafety.
 func (p Plan) MaxSafety() Safety {
 	max := Safe
 	for _, s := range p.Steps {
+		if s.Mode == UnknownMode {
+			return UnknownSafety
+		}
 		if s.Mode != Instruction && s.Safety > max {
 			max = s.Safety
 		}
