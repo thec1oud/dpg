@@ -170,7 +170,14 @@ func (t *Target) Run(ctx context.Context, opts Options, p Printer) error {
 		return err
 	}
 	for _, e := range toRun {
-		if err := Gate(allOps(e.Migration(t.Meta, true, false)), opts, "migration "+e.ID); err != nil {
+		m := e.Migration(t.Meta, true, false)
+		ops := allOps(m)
+		if e == resume {
+			// Its transaction has committed: only the statements after it
+			// run, so only they need allowing.
+			ops = m.NonTransactional
+		}
+		if err := Gate(ops, opts, "migration "+e.ID); err != nil {
 			return err
 		}
 	}
@@ -208,7 +215,7 @@ func (t *Target) Run(ctx context.Context, opts Options, p Printer) error {
 		if err := connect(); err != nil {
 			return err
 		}
-		if verified, err = t.preflight(ctx, conn, head, toRun, opts, p); err != nil {
+		if verified, err = t.preflight(ctx, conn, head, resume, toRun, opts, p); err != nil {
 			return err
 		}
 	}
@@ -248,7 +255,13 @@ func (t *Target) Run(ctx context.Context, opts Options, p Printer) error {
 		mctx, done := opts.observe(ctx, e.ID)
 		if e == resume {
 			m := e.Migration(t.Meta, false, false)
-			finish := led.Finished(pipeline.Migration{Meta: t.Meta, NonTransactional: m.NonTransactional}, ledger.Of(t.Key, e))
+			after, err := prepareFinish(mctx, conn, m.NonTransactional)
+			if err != nil {
+				err = fmt.Errorf("finishing migration %s: %w", e.ID, ui.WrapDB(err))
+				done(err)
+				return err
+			}
+			finish := led.Finished(pipeline.Migration{Meta: t.Meta, NonTransactional: after}, ledger.Of(t.Key, e))
 			if err := t.Exec.Apply(mctx, finish, w); err != nil {
 				err = fmt.Errorf("finishing migration %s: %w", e.ID, ui.WrapDB(err))
 				done(err)
@@ -259,7 +272,7 @@ func (t *Target) Run(ctx context.Context, opts Options, p Printer) error {
 			continue
 		}
 		if err := t.Exec.Apply(mctx, led.Wrap(e.Migration(t.Meta, false, checks), ledger.Of(t.Key, e)), w); err != nil {
-			err = afterCommitHint(e.ID, err)
+			err = afterCommitHint(e.ID, err, opts.FinishHint)
 			done(err)
 			return err
 		}
@@ -306,17 +319,20 @@ func (t *Target) Run(ctx context.Context, opts Options, p Printer) error {
 		return fmt.Errorf("save snapshot: %w", err)
 	}
 	if runErr != nil {
-		return afterCommitHint(next.ID, runErr)
+		return afterCommitHint(next.ID, runErr, opts.FinishHint)
 	}
 	path, _ := t.Log.Paths(next.ID)
 	p.success("Applied", t.Label+" — snapshot updated\n         "+ui.Dim(path, p.Color))
 	return nil
 }
 
-func afterCommitHint(id string, err error) error {
+func afterCommitHint(id string, err error, hint string) error {
 	var after *executor.AfterCommitError
 	if errors.As(err, &after) {
-		return fmt.Errorf("migration %s: its transaction committed, then a step after it failed: %w\n  dpg apply --resume finishes it", id, ui.WrapDB(after.Err))
+		if hint == "" {
+			hint = "the next apply finishes it"
+		}
+		return fmt.Errorf("migration %s: its transaction committed, then a step after it failed: %w\n  %s", id, ui.WrapDB(after.Err), hint)
 	}
 	return fmt.Errorf("migration %s: %w", id, ui.WrapDB(err))
 }
@@ -513,8 +529,14 @@ func (e *PreflightError) Unwrap() error { return e.Err }
 // depending on an object they drop or recreate, no grant made outside DPG
 // on an object they recreate. Drift elsewhere is a note. head is the
 // database's position in the log.
-func (t *Target) preflight(ctx context.Context, conn *executor.PgxConn, head string, toRun []*migrationlog.Entry, opts Options, p Printer) (map[string]string, error) {
-	// The state the database should be in: the log at its position.
+func (t *Target) preflight(ctx context.Context, conn *executor.PgxConn, head string, resume *migrationlog.Entry, toRun []*migrationlog.Entry, opts Options, p Printer) (map[string]string, error) {
+	// The state the database should be in: the log at its position. A
+	// migration being finished has committed its transaction, so the
+	// database is at it, less what its statements after the transaction
+	// add, which are reported but don't block.
+	if resume != nil {
+		head = resume.ID
+	}
 	var expected map[string]json.RawMessage
 	atHead := head == t.Log.Head()
 	switch {
@@ -561,6 +583,9 @@ func (t *Target) preflight(ctx context.Context, conn *executor.PgxConn, head str
 	changed := map[string]map[string]bool{}
 	state := CopyObjects(expected)
 	for _, e := range toRun {
+		if e == resume {
+			continue // expected already has its changes
+		}
 		for _, s := range e.Steps {
 			if s.Target == nil || s.Target.Key == "" || s.Target.Kind == "ledger" {
 				continue

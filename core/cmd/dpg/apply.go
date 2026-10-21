@@ -196,6 +196,7 @@ func (o applyOptions) run() apply.Options {
 		Ignore:                  o.ignore,
 		Ledger:                  o.ledger,
 		Revision:                rev,
+		FinishHint:              "dpg apply --resume finishes it",
 	}
 }
 

@@ -87,6 +87,10 @@ type Options struct {
 	// Observe is told as each migration starts, and returns the context it
 	// runs in and the function to call with its outcome; nil for none.
 	Observe func(ctx context.Context, id string) (context.Context, func(error))
+	// FinishHint says how the caller finishes a migration whose steps
+	// after its transaction failed (dpg apply --resume); empty says the
+	// next apply does.
+	FinishHint string
 }
 
 // LedgerFor is the project's ledger, or nil when [ledger] turns it off.
