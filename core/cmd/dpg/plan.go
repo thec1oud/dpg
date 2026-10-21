@@ -10,12 +10,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/thec1oud/dpg/internal/apply"
 	"github.com/thec1oud/dpg/internal/compiler"
-	"github.com/thec1oud/dpg/internal/config"
 	"github.com/thec1oud/dpg/internal/emit"
 	"github.com/thec1oud/dpg/internal/executor"
 	"github.com/thec1oud/dpg/internal/ignore"
-	"github.com/thec1oud/dpg/internal/linter"
 	"github.com/thec1oud/dpg/internal/pipeline"
 	"github.com/thec1oud/dpg/internal/project"
 	snapshotpkg "github.com/thec1oud/dpg/internal/snapshot"
@@ -40,41 +39,6 @@ type opJSON struct {
 	Line   int    `json:"line,omitempty"`
 }
 
-// linterConfigFrom converts a config.LinterConfig (from dpg.toml) to the
-// pipeline.LinterConfig used by Linter.Lint.
-func linterConfigFrom(c config.LinterConfig) pipeline.LinterConfig {
-	return pipeline.LinterConfig{
-		WarnOnDeprecated:         c.WarnOnDeprecated,
-		RequireColumnComments:    c.RequireColumnComments,
-		ForbidHardcodedPasswords: c.ForbidHardcodedPasswords,
-		MaxColumnsPerTable:       c.MaxColumnsPerTable,
-		Rules:                    normalizeLinterRuleKeys(c.Rules),
-	}
-}
-
-// normalizeLinterRuleKeys normalizes [linter.rules] TOML keys from
-// snake_case to the actual kebab-case rule IDs (RFC audit item #17):
-// Section 19.3 gives kebab-case (e.g. "security-definer-search-path") as
-// authoritative, matching every real rule ID internal/linter/linter.go
-// emits, but Section 19.2's own worked config example still shows the broken
-// snake_case form ("security_definer_search_path = ...") as if it works.
-// ApplyRuleSeverityOverrides does an exact-string lookup against the rule
-// ID a diagnostic actually carries, so an unnormalized snake_case key
-// never matched anything — silently no-oping the RFC's own documented
-// example. No rule ID mixes hyphens and underscores (confirmed against
-// Section 19.3's complete table), so a blind "_" -> "-" replacement can't
-// collide two distinct keys into one.
-func normalizeLinterRuleKeys(rules map[string]string) map[string]string {
-	if len(rules) == 0 {
-		return rules
-	}
-	out := make(map[string]string, len(rules))
-	for k, v := range rules {
-		out[strings.ReplaceAll(k, "_", "-")] = v
-	}
-	return out
-}
-
 func newPlanCmd() *cobra.Command {
 	var (
 		clusterName  string
@@ -96,7 +60,7 @@ func newPlanCmd() *cobra.Command {
 			return err
 		}
 
-		lintCfg := linterConfigFrom(proj.RootConfig.Linter)
+		lintCfg := apply.LinterConfig(proj.RootConfig.Linter)
 
 		differ, err := pipeline.MustResolve[pipeline.Differ](pipeline.Default, pipeline.KeyDiffer)
 		if err != nil {
@@ -274,7 +238,7 @@ func introspectSnapshot(ctx context.Context, cl *project.Cluster, db *project.Da
 	// Exclude cluster-level objects (roles, tablespaces); the database plan
 	// compares against database-scoped source only.
 	snap := &pipeline.Snapshot{Live: true}
-	if err := snapshotpkg.Populate(snap, excludeClusterScoped(liveObjects)); err != nil {
+	if err := snapshotpkg.Populate(snap, apply.ExcludeClusterScoped(liveObjects)); err != nil {
 		return nil, fmt.Errorf("build live snapshot: %w", err)
 	}
 	return snap, nil
@@ -292,7 +256,7 @@ func buildPlan(
 ) (pipeline.Migration, error) {
 	errColor := ui.IsColorEnabled(os.Stderr)
 
-	desired, mergeDiags, err := compiler.CompileWith(db.SourceFiles, db.Dir, pipeline.Default, dbCompileOptions(db))
+	desired, mergeDiags, err := compiler.CompileWith(db.SourceFiles, db.Dir, pipeline.Default, apply.CompileOptions(db))
 	if err != nil {
 		return pipeline.Migration{}, err
 	}
@@ -308,16 +272,8 @@ func buildPlan(
 	}
 
 	lintCfg.Snapshot = snap
-	diags := linter.FilterMergeDiagnostics(mergeDiags, lintCfg)
-	if l, ok := pipeline.Resolve[pipeline.Linter](pipeline.Default, pipeline.KeyLinter); ok {
-		lintDiags, lintErr := l.Lint(desired, lintCfg)
-		if lintErr != nil {
-			return pipeline.Migration{}, lintErr
-		}
-		diags = append(diags, lintDiags...)
-	}
-	if ui.PrintLintDiagnostics(os.Stderr, diags, errColor) {
-		return pipeline.Migration{}, ui.ErrSilent
+	if err := apply.Lint(desired, mergeDiags, lintCfg, false, apply.Printer{Err: os.Stderr, ErrColor: errColor}); err != nil {
+		return pipeline.Migration{}, err
 	}
 
 	ops, err := differ.Diff(desired, snap)
@@ -389,16 +345,8 @@ func buildClusterPlan(
 		printUndeclared(os.Stderr, cl.Name()+" (cluster)", warn, unmanaged, errColor)
 	}
 
-	diags := linter.FilterMergeDiagnostics(mergeDiags, lintCfg)
-	if l, ok := pipeline.Resolve[pipeline.Linter](pipeline.Default, pipeline.KeyLinter); ok {
-		lintDiags, lintErr := l.Lint(desired, lintCfg)
-		if lintErr != nil {
-			return pipeline.Migration{}, lintErr
-		}
-		diags = append(diags, lintDiags...)
-	}
-	if ui.PrintLintDiagnostics(os.Stderr, diags, errColor) {
-		return pipeline.Migration{}, ui.ErrSilent
+	if err := apply.Lint(desired, mergeDiags, lintCfg, false, apply.Printer{Err: os.Stderr, ErrColor: errColor}); err != nil {
+		return pipeline.Migration{}, err
 	}
 
 	ops, err := differ.Diff(desired, snap)
@@ -452,7 +400,7 @@ func introspectClusterSnapshot(ctx context.Context, cl *project.Cluster, secretR
 	// isClusterScoped routing.
 	var clusterObjects []pipeline.IRObject
 	for _, obj := range allObjects {
-		if isClusterScoped(obj) {
+		if apply.IsClusterScoped(obj) {
 			clusterObjects = append(clusterObjects, obj)
 		}
 	}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/thec1oud/dpg/internal/apply"
 	"github.com/thec1oud/dpg/internal/compiler"
 	"github.com/thec1oud/dpg/internal/drift"
 	"github.com/thec1oud/dpg/internal/emit"
@@ -293,7 +294,7 @@ func (env *resolveEnv) load() ([]*resolve.Target, error) {
 		}
 		for _, db := range databases {
 			rules := ignore.New(db.EffectiveIgnore(cl, proj.RootConfig))
-			t, err := env.target(cl, db, db.SourceFiles, db.Dir, dbCompileOptions(db), rules, store, introspector, secretResolver, emitter)
+			t, err := env.target(cl, db, db.SourceFiles, db.Dir, apply.CompileOptions(db), rules, store, introspector, secretResolver, emitter)
 			if err != nil {
 				return nil, fmt.Errorf("%s/%s: %w", cl.Name(), db.Name(), err)
 			}
@@ -318,8 +319,8 @@ func (env *resolveEnv) target(cl *project.Cluster, db *project.Database, files [
 		return nil, fmt.Errorf("load snapshot: %w", err)
 	}
 	stored := *snap
-	stored.Objects = copyObjects(snap.Objects)
-	log, logErr := openLog(env.proj.MigrationsDir(), cl.Name(), snapKey, &stored)
+	stored.Objects = apply.CopyObjects(snap.Objects)
+	log, logErr := apply.OpenLog(env.proj.MigrationsDir(), cl.Name(), snapKey, &stored)
 	if err := rules.FilterSnapshot(snap); err != nil {
 		return nil, err
 	}
@@ -346,13 +347,13 @@ func (env *resolveEnv) target(cl *project.Cluster, db *project.Database, files [
 		return nil, err
 	}
 	// A database behind the log is compared with the log at its position.
-	at, pending, err := positioned(ctx, conn, logPositionFor(env.proj), cl.Name(), snapKey, &stored)
+	at, pending, err := apply.Positioned(ctx, conn, logPositionFor(env.proj), cl.Name(), snapKey, &stored)
 	if err != nil {
 		conn.Close(ctx)
 		return nil, err
 	}
 	if pending > 0 {
-		at.Objects = copyObjects(at.Objects)
+		at.Objects = apply.CopyObjects(at.Objects)
 		if err := rules.FilterSnapshot(at); err != nil {
 			conn.Close(ctx)
 			return nil, err
@@ -365,7 +366,7 @@ func (env *resolveEnv) target(cl *project.Cluster, db *project.Database, files [
 		return nil, ui.WrapDB(fmt.Errorf("introspect: %w", err))
 	}
 	for _, o := range rules.FilterObjects(all) {
-		if (db == nil) == isClusterScoped(o) {
+		if (db == nil) == apply.IsClusterScoped(o) {
 			live = append(live, o)
 		}
 	}
@@ -379,7 +380,7 @@ func (env *resolveEnv) target(cl *project.Cluster, db *project.Database, files [
 		return nil, err
 	}
 	source = rules.FilterObjects(source)
-	report, err := detectAt(env.deps.Differ, live, snap, rules, source, pending)
+	report, err := apply.DetectAt(env.deps.Differ, live, snap, rules, source, pending)
 	if err != nil {
 		return nil, err
 	}
@@ -396,21 +397,21 @@ func (env *resolveEnv) target(cl *project.Cluster, db *project.Database, files [
 		Source: source, Index: index, SourceFiles: files, SourceDir: dir, CompileOpts: opts,
 		ConfigPath: configPath,
 		AckPath:    ackFile,
-		LogErr:     behindLog(noBaselineHint(logErr), pending),
+		LogErr:     behindLog(apply.NoBaselineHint(logErr), pending),
 		SaveSnapshot: func(s *pipeline.Snapshot, m pipeline.Migration) (func() error, error) {
 			// The adopted state is recorded as a migration: what other
 			// databases run to get it. This database has it: its ledger
 			// records it as complete.
-			led := ledgerFor(env.proj.RootConfig)
-			e, err := migrationlog.New(log.Head(), guardedSteps(m, s.Objects, led, snapKey), migrationlog.OriginAdopt, stored.Objects, s.Objects, time.Now())
+			led := apply.LedgerFor(env.proj.RootConfig)
+			e, err := migrationlog.New(log.Head(), apply.GuardedSteps(m, s.Objects, led, snapKey), migrationlog.OriginAdopt, stored.Objects, s.Objects, time.Now())
 			if err != nil {
 				return nil, err
 			}
-			file, err := renderFile(e, m.Meta, led, snapKey)
+			file, err := apply.RenderFile(e, m.Meta, led, snapKey)
 			if err != nil {
 				return nil, err
 			}
-			undoEntry, err := recordEntry(log, e, file, s)
+			undoEntry, err := apply.RecordEntry(log, e, file, s)
 			if err != nil {
 				return nil, err
 			}

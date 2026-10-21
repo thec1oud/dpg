@@ -7,12 +7,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/thec1oud/dpg/internal/apply"
 	"github.com/thec1oud/dpg/internal/compiler"
 	"github.com/thec1oud/dpg/internal/drift"
 	"github.com/thec1oud/dpg/internal/executor"
@@ -173,7 +173,7 @@ func runVerify(
 	differ pipeline.Differ,
 	secretResolver pipeline.SecretResolver,
 	rules *ignore.Rules,
-	lp logPosition,
+	lp apply.LogPosition,
 ) (*drift.Report, error) {
 	ctx := context.Background()
 
@@ -186,63 +186,20 @@ func runVerify(
 		return nil, err
 	}
 	defer conn.Close(ctx)
-	snap, pending, err := positioned(ctx, conn, lp, cl.Name(), db.Name(), snap)
-	if err != nil {
-		return nil, err
-	}
-	if err := rules.FilterSnapshot(snap); err != nil {
-		return nil, err
-	}
-
-	liveObjects, err := introspector.Introspect(ctx, conn)
-	if err != nil {
-		return nil, ui.WrapDB(fmt.Errorf("introspect: %w", err))
-	}
-
-	source, _, err := compiler.CompileWith(db.SourceFiles, db.Dir, pipeline.Default, dbCompileOptions(db))
-	if err != nil {
-		return nil, err
-	}
-
-	// Cluster-level objects (roles, tablespaces) are verified against the
-	// cluster snapshot, not the database snapshot.
-	live := rules.FilterObjects(excludeClusterScoped(liveObjects))
-	r, err := detectAt(differ, live, snap, rules, source, pending)
-	if err == nil {
-		recordSeen(ctx, conn, lp, db.Name(), snap, r)
-	}
-	return r, err
+	return apply.Verify(ctx, conn, snap, apply.Verification{
+		Cluster: cl.Name(), Key: db.Name(),
+		Introspector: introspector, Differ: differ, Rules: rules, Position: lp,
+		Source: func() ([]pipeline.IRObject, error) {
+			source, _, err := compiler.CompileWith(db.SourceFiles, db.Dir, pipeline.Default, apply.CompileOptions(db))
+			return source, err
+		},
+		Record: true,
+	}, verifyPrinter())
 }
 
-// recordSeen records the fingerprints of the objects verify found as
-// expected (no item at all) in a database that keeps a ledger: the
-// migrations' guards then know DPG has seen them so (RFC Section 16.10).
-// Best effort: a role that can't write gets a note.
-func recordSeen(ctx context.Context, conn *executor.PgxConn, lp logPosition, log string, snap *pipeline.Snapshot, r *drift.Report) {
-	if lp.ledger == nil {
-		return
-	}
-	st, err := lp.ledger.Read(ctx, conn, log)
-	if err != nil || !st.Exists {
-		return
-	}
-	if err := recordFingerprints(ctx, conn, lp.ledger, log, cleanObjects(objectKinds(snap.Objects), r), "verify"); err != nil {
-		fmt.Fprintf(os.Stderr, "note: %v\n", err)
-	}
-}
-
-// detectAt detects drift against the snapshot at the database's position.
-// The source is the next state only of a database at the log's end.
-func detectAt(differ pipeline.Differ, live []pipeline.IRObject, snap *pipeline.Snapshot, rules *ignore.Rules, source []pipeline.IRObject, pending int) (*drift.Report, error) {
-	opts := drift.Options{Ignore: rules}
-	if pending == 0 {
-		opts.Source = rules.FilterObjects(source)
-	}
-	r, err := drift.Detect(differ, live, snap, opts)
-	if r != nil {
-		r.Pending = pending
-	}
-	return r, err
+// verifyPrinter is where verify's notes go.
+func verifyPrinter() apply.Printer {
+	return apply.Printer{Err: os.Stderr, ErrColor: ui.IsColorEnabled(os.Stderr)}
 }
 
 // runVerifyCluster compares cluster-level objects (roles, tablespaces) with
@@ -254,7 +211,7 @@ func runVerifyCluster(
 	differ pipeline.Differ,
 	secretResolver pipeline.SecretResolver,
 	rules *ignore.Rules,
-	lp logPosition,
+	lp apply.LogPosition,
 ) (*drift.Report, error) {
 	ctx := context.Background()
 
@@ -278,102 +235,15 @@ func runVerifyCluster(
 		return nil, ui.WrapDB(withMissingDatabaseHint(err))
 	}
 	defer conn.Close(ctx)
-	snap, pending, err := positioned(ctx, conn, lp, cl.Name(), cl.ClusterSnapshotKey(), snap)
-	if err != nil {
-		return nil, err
-	}
-	if err := rules.FilterSnapshot(snap); err != nil {
-		return nil, err
-	}
-
-	allObjects, err := introspector.Introspect(ctx, conn)
-	if err != nil {
-		return nil, ui.WrapDB(fmt.Errorf("introspect: %w", err))
-	}
-
-	// Only cluster-level objects, matching dump's routing (isClusterScoped):
-	// database-scoped schemaless objects like FDWs and publications belong
-	// to the database.
-	var live []pipeline.IRObject
-	for _, obj := range rules.FilterObjects(allObjects) {
-		if isClusterScoped(obj) {
-			live = append(live, obj)
-		}
-	}
-	source, _, err := compiler.Compile(cl.SourceFiles, cl.ObjectsDir, pipeline.Default)
-	if err != nil {
-		return nil, err
-	}
-	r, err := detectAt(differ, live, snap, rules, source, pending)
-	if err == nil {
-		recordSeen(ctx, conn, lp, cl.ClusterSnapshotKey(), snap, r)
-	}
-	return r, err
-}
-
-// describeItem is the one-line description of an item.
-func describeItem(it drift.Item) string {
-	switch it.Change {
-	case "missing":
-		if it.Property == "" {
-			return "missing from the database"
-		}
-		if it.Snapshot != "" {
-			return "missing: " + it.Snapshot
-		}
-		return "missing from the database"
-	case "extra":
-		switch {
-		case it.Property == "" && it.Group == drift.Warning:
-			return "exists in the database but is not declared"
-		case it.Property == "":
-			return "exists in the database but is not in the snapshot"
-		case it.Live != "":
-			return "only in the database: " + it.Live
-		}
-		return "only in the database"
-	case "regranted":
-		return "revoked in the source, granted in the database: " + it.Live
-	}
-	if d := objectDifferences(it.Snapshot, it.Live); d != "" {
-		return d
-	}
-	if it.Snapshot != "" || it.Live != "" {
-		return fmt.Sprintf("snapshot %s, database %s", orNone(it.Snapshot), orNone(it.Live))
-	}
-	return "differs from the snapshot"
-}
-
-// objectDifferences describes two JSON objects by the keys the snapshot
-// side records that differ ("default: 'new' → (none)"); keys only the
-// database has are properties the source never declared and are left out.
-// It returns "" when the values aren't both objects.
-func objectDifferences(snapshotJSON, liveJSON string) string {
-	var sm, lm map[string]json.RawMessage
-	if json.Unmarshal([]byte(snapshotJSON), &sm) != nil || json.Unmarshal([]byte(liveJSON), &lm) != nil || sm == nil || lm == nil {
-		return ""
-	}
-	var keys []string
-	for k := range sm {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var parts []string
-	for _, k := range keys {
-		sv, lv := string(sm[k]), string(lm[k])
-		if sv == lv {
-			continue
-		}
-		parts = append(parts, fmt.Sprintf("%s: %s → %s", k, orNone(sv), orNone(lv)))
-	}
-	return strings.Join(parts, "; ")
-}
-
-func orNone(s string) string {
-	if s == "" {
-		return "(none)"
-	}
-	return s
+	return apply.Verify(ctx, conn, snap, apply.Verification{
+		Cluster: cl.Name(), Key: cl.ClusterSnapshotKey(), ClusterLevel: true,
+		Introspector: introspector, Differ: differ, Rules: rules, Position: lp,
+		Source: func() ([]pipeline.IRObject, error) {
+			source, _, err := compiler.Compile(cl.SourceFiles, cl.ObjectsDir, pipeline.Default)
+			return source, err
+		},
+		Record: true,
+	}, verifyPrinter())
 }
 
 // verifyGroups are the report groups in display order, with headings.
@@ -440,7 +310,7 @@ func renderVerifyText(w io.Writer, targets []verifyTarget, color bool) {
 			counts[g.group] += len(items)
 			fmt.Fprintf(w, "  %s\n", g.paint(g.heading, color))
 			for _, it := range items {
-				fmt.Fprintf(w, "    %s  %s\n", it.ID, describeItem(it))
+				fmt.Fprintf(w, "    %s  %s\n", it.ID, apply.Describe(it))
 				switch {
 				case it.Acknowledged != nil:
 					fmt.Fprintf(w, "      %s\n", ui.Dim(describeAck(*it.Acknowledged, it.Group), color))

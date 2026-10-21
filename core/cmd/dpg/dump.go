@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/thec1oud/dpg/internal/apply"
 	"github.com/thec1oud/dpg/internal/compiler"
 	"github.com/thec1oud/dpg/internal/executor"
 	"github.com/thec1oud/dpg/internal/format"
@@ -90,7 +91,7 @@ silently clobbered.`,
 				// The dump starts the migration log; in place, the database's
 				// ledger records it too (a scratch dump under -o doesn't touch
 				// the database's ledger).
-				logOpts := dumpLogOptions{dir: proj.MigrationsDir(), ledger: ledgerFor(proj.RootConfig)}
+				logOpts := dumpLogOptions{dir: proj.MigrationsDir(), ledger: apply.LedgerFor(proj.RootConfig)}
 				if outputDir != "" {
 					logOpts = dumpLogOptions{dir: filepath.Join(outputDir, ".dpg", "migrations")}
 				}
@@ -275,7 +276,7 @@ func runDump(
 			fmt.Fprintf(os.Stderr, "%s  user mapping %s: a password-like OPTIONS value was redacted; replace the placeholder with a {{secret-uri}} reference before applying\n",
 				ui.Yellow("warning", color), um.QualifiedName())
 		}
-		if isClusterScoped(obj) {
+		if apply.IsClusterScoped(obj) {
 			renderObjectDPGWithRoleInheritDefaults(&clusterFile, obj, fmtOpts, roleInheritDefaults)
 			clusterObjects = append(clusterObjects, obj)
 			continue
@@ -365,7 +366,7 @@ func runDump(
 	// what `plan` reads back).
 	dbSnapObjects := dbObjects
 	if len(dpgFiles) > 0 {
-		if compiled, _, compileErr := compiler.CompileWith(dpgFiles, outDir, pipeline.Default, dbCompileOptions(db)); compileErr == nil {
+		if compiled, _, compileErr := compiler.CompileWith(dpgFiles, outDir, pipeline.Default, apply.CompileOptions(db)); compileErr == nil {
 			dbSnapObjects = compiled
 		} else {
 			fmt.Fprintf(os.Stderr, "%s  dumped source did not recompile for %s/%s; snapshot built from live catalog instead: %v\n",
@@ -458,7 +459,7 @@ func dumpBaseline(store pipeline.SnapshotStore, lo dumpLogOptions, cluster, key 
 	if err != nil {
 		return err
 	}
-	e, err := writeBaseline(l, store, cluster, key, snap, objects, nil, differ, emitter,
+	e, err := apply.WriteBaseline(l, store, cluster, key, snap, objects, nil, differ, emitter,
 		pipeline.MigrationMeta{GeneratedAt: time.Now().UTC(), Cluster: cluster, Database: key}, lo.ledger)
 	if err != nil || lo.ledger == nil {
 		return err
@@ -475,7 +476,7 @@ func dumpBaseline(store pipeline.SnapshotStore, lo dumpLogOptions, cluster, key 
 		}
 	}
 	// The database is what the snapshot describes: DPG has seen it so.
-	return recordFingerprints(ctx, conn, lo.ledger, key, objectKinds(snap.Objects), "dump")
+	return apply.RecordFingerprints(ctx, conn, lo.ledger, key, apply.ObjectKinds(snap.Objects), "dump")
 }
 
 // mergeExistingVirtualTypes recovers any VIRTUAL TYPE declarations (RFC
@@ -495,7 +496,7 @@ func mergeExistingVirtualTypes(db *project.Database) []pipeline.IRObject {
 	if len(db.SourceFiles) == 0 {
 		return nil
 	}
-	compiled, _, err := compiler.CompileWith(db.SourceFiles, db.Dir, pipeline.Default, dbCompileOptions(db))
+	compiled, _, err := compiler.CompileWith(db.SourceFiles, db.Dir, pipeline.Default, apply.CompileOptions(db))
 	if err != nil {
 		// Not fatal to the dump itself — the live catalog's own objects are
 		// still valid and worth writing. Surfaced so the loss isn't silent.
@@ -509,34 +510,6 @@ func mergeExistingVirtualTypes(db *project.Database) []pipeline.IRObject {
 		}
 	}
 	return vtypes
-}
-
-// isClusterScoped reports whether obj lives at the cluster level (shared across
-// every database) rather than inside one database. Roles, tablespaces, and
-// PARAMETER PRIVILEGES (RFC Section 11.6 — configuration parameters have no
-// schema and no per-database identity; the RFC's own worked example shows it
-// living at "production/cluster/parameter_privileges.dpg") qualify; all other
-// schemaless objects (FDWs, servers, user mappings, publications, event
-// triggers, casts) are database-scoped.
-func isClusterScoped(obj pipeline.IRObject) bool {
-	switch obj.(type) {
-	case *ir.Role, *ir.Tablespace, *ir.ParameterPrivileges:
-		return true
-	}
-	return false
-}
-
-// excludeClusterScoped returns the objects that belong to a database (i.e. not
-// cluster-scoped), preserving order. Used to build database-level baselines for
-// verify and plan --live so roles/tablespaces are handled only at cluster level.
-func excludeClusterScoped(objs []pipeline.IRObject) []pipeline.IRObject {
-	out := make([]pipeline.IRObject, 0, len(objs))
-	for _, obj := range objs {
-		if !isClusterScoped(obj) {
-			out = append(out, obj)
-		}
-	}
-	return out
 }
 
 // objectSchema returns the schema name for schema-scoped objects.

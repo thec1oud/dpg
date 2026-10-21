@@ -1,28 +1,21 @@
 package main
 
 import (
+	"bufio"
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"os"
-	"path/filepath"
-	"time"
+	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/thec1oud/dpg/internal/compiler"
-	"github.com/thec1oud/dpg/internal/config"
+	"github.com/thec1oud/dpg/internal/apply"
 	"github.com/thec1oud/dpg/internal/executor"
 	"github.com/thec1oud/dpg/internal/ignore"
-	"github.com/thec1oud/dpg/internal/ir"
 	"github.com/thec1oud/dpg/internal/ledger"
-	"github.com/thec1oud/dpg/internal/linter"
-	"github.com/thec1oud/dpg/internal/migrationlog"
 	"github.com/thec1oud/dpg/internal/pipeline"
 	"github.com/thec1oud/dpg/internal/project"
 	"github.com/thec1oud/dpg/internal/ui"
-	"github.com/thec1oud/dpg/internal/version"
 )
 
 func newApplyCmd() *cobra.Command {
@@ -115,8 +108,8 @@ transaction failed.`,
 				dpgDir:                  proj.DPGDir(),
 				strict:                  strict,
 				migrationsDir:           proj.MigrationsDir(),
-				lintCfg:                 linterConfigFrom(proj.RootConfig.Linter),
-				ledger:                  ledgerFor(proj.RootConfig),
+				lintCfg:                 apply.LinterConfig(proj.RootConfig.Linter),
+				ledger:                  apply.LedgerFor(proj.RootConfig),
 			}
 
 			for _, cl := range clusters {
@@ -184,12 +177,40 @@ type applyOptions struct {
 	ledger *ledger.Ledger
 }
 
-// ledgerFor is the project's ledger, or nil when [ledger] turns it off.
-func ledgerFor(root config.RootConfig) *ledger.Ledger {
-	if !root.Ledger.On() {
-		return nil
+// run is the options of the run (apply.Options).
+func (o applyOptions) run() apply.Options {
+	rev, _ := gitRevision()
+	return apply.Options{
+		AllowDestructive:        o.allowDestructive,
+		ApprovePartitionRebuild: o.approvePartitionRebuild,
+		DryRun:                  o.dryRun,
+		NoSnapshot:              o.noSnapshot,
+		Baseline:                o.baseline,
+		Resume:                  o.resume,
+		AllowDrift:              o.allowDrift,
+		Preflight:               o.preflight,
+		DPGDir:                  o.dpgDir,
+		Strict:                  o.strict,
+		MigrationsDir:           o.migrationsDir,
+		LintCfg:                 o.lintCfg,
+		Ignore:                  o.ignore,
+		Ledger:                  o.ledger,
+		Revision:                rev,
 	}
-	return &ledger.Ledger{Schema: root.Ledger.Schema, Version: version.Version}
+}
+
+// printer prints a run to the terminal, and asks before anything runs
+// unless --yes.
+func (o applyOptions) printer() apply.Printer {
+	p := apply.Printer{Out: os.Stdout, Err: os.Stderr, Color: ui.IsColorEnabled(os.Stdout), ErrColor: ui.IsColorEnabled(os.Stderr)}
+	if !o.yes {
+		p.Confirm = func(question string) bool {
+			fmt.Printf("\n%s [y/N] ", ui.Bold(question, p.Color))
+			scanner := bufio.NewScanner(os.Stdin)
+			return scanner.Scan() && strings.EqualFold(strings.TrimSpace(scanner.Text()), "y")
+		}
+	}
+	return p
 }
 
 // isInstructionOp reports whether op is an instruction-only step (RFC Section
@@ -215,6 +236,11 @@ func runApply(
 	return runTarget(t, opts)
 }
 
+// runTarget applies one target (apply.Target.Run).
+func runTarget(t *apply.Target, opts applyOptions) error {
+	return t.Run(context.Background(), opts.run(), opts.printer())
+}
+
 // prepareDBTarget compiles and lints a database's source, loads its
 // snapshot and migration log, and plans the source's change.
 func prepareDBTarget(
@@ -226,75 +252,11 @@ func prepareDBTarget(
 	applyExec pipeline.ApplyExecutor,
 	secretResolver pipeline.SecretResolver,
 	opts applyOptions,
-) (*applyTarget, error) {
-	errColor := ui.IsColorEnabled(os.Stderr)
-
-	desired, mergeDiags, err := compiler.CompileWith(db.SourceFiles, db.Dir, pipeline.Default, dbCompileOptions(db))
-	if err != nil {
-		return nil, err
+) (*apply.Target, error) {
+	connect := func(ctx context.Context) (*executor.PgxConn, error) {
+		return connectDatabase(ctx, cl, db, secretResolver)
 	}
-	if err := opts.ignore.CheckDeclared(desired); err != nil {
-		return nil, err
-	}
-
-	snap, err := store.Load(cl.Name(), db.Name())
-	if err != nil {
-		return nil, fmt.Errorf("snapshot load: %w", err)
-	}
-	stored := *snap
-	stored.Objects = copyObjects(snap.Objects)
-	log, logErr := openLog(opts.migrationsDir, cl.Name(), db.Name(), &stored)
-	if logErr != nil && !(opts.baseline && errors.Is(logErr, migrationlog.ErrNoBaseline)) {
-		return nil, noBaselineHint(logErr)
-	}
-	if err := opts.ignore.FilterSnapshot(snap); err != nil {
-		return nil, err
-	}
-
-	lintCfg := opts.lintCfg
-	lintCfg.Snapshot = snap
-	diags := linter.FilterMergeDiagnostics(mergeDiags, lintCfg)
-	if l, ok := pipeline.Resolve[pipeline.Linter](pipeline.Default, pipeline.KeyLinter); ok {
-		lintDiags, lintErr := l.Lint(desired, lintCfg)
-		if lintErr != nil {
-			return nil, lintErr
-		}
-		diags = append(diags, lintDiags...)
-	}
-	if opts.strict {
-		for i := range diags {
-			diags[i].IsError = true
-		}
-	}
-	if ui.PrintLintDiagnostics(os.Stderr, diags, errColor) {
-		return nil, ui.ErrSilent
-	}
-
-	ops, err := differ.Diff(desired, snap)
-	if err != nil {
-		return nil, err
-	}
-	rev, _ := gitRevision()
-	return &applyTarget{
-		label: cl.Name() + "/" + db.Name(), cluster: cl.Name(), key: db.Name(),
-		store: store, differ: differ, emitter: emitter, exec: applyExec,
-		connect: func(ctx context.Context) (*executor.PgxConn, error) {
-			return connectDatabase(ctx, cl, db, secretResolver)
-		},
-		live:    liveObjects(opts.ignore, false),
-		rules:   opts.ignore,
-		ackFile: ackFileFor(opts.dpgDir, cl.Name(), db.Name()),
-		desired: desired, stored: &stored, log: log, logErr: logErr, ops: ops,
-		meta: pipeline.MigrationMeta{GeneratedAt: time.Now().UTC(), SourceRevision: rev, Cluster: cl.Name(), SourceRoot: cl.ProjectRoot, Database: db.Name()},
-	}, nil
-}
-
-// ackFileFor is a target's acknowledgement file, or "" without a project.
-func ackFileFor(dpgDir, cluster, key string) string {
-	if dpgDir == "" {
-		return ""
-	}
-	return filepath.Join(dpgDir, "acknowledged", cluster, key+".json")
+	return apply.PrepareDatabase(cl, db, apply.Components{Store: store, Differ: differ, Emitter: emitter, Exec: applyExec}, connect, opts.run(), opts.printer())
 }
 
 // connectCluster connects to a cluster's own connection (its cluster-level
@@ -312,28 +274,6 @@ func connectCluster(ctx context.Context, cl *project.Cluster, secretResolver pip
 	}
 	conn, err := executor.Connect(ctx, connStr)
 	return conn, ui.WrapDB(err)
-}
-
-// liveObjects introspects a target's objects: a database's, or (cluster)
-// the cluster-level ones; [ignore] applied.
-func liveObjects(rules *ignore.Rules, cluster bool) func(ctx context.Context, conn *executor.PgxConn) ([]pipeline.IRObject, error) {
-	return func(ctx context.Context, conn *executor.PgxConn) ([]pipeline.IRObject, error) {
-		introspector, err := pipeline.MustResolve[pipeline.Introspector](pipeline.Default, pipeline.KeyIntrospector)
-		if err != nil {
-			return nil, err
-		}
-		all, err := introspector.Introspect(ctx, conn)
-		if err != nil {
-			return nil, err
-		}
-		var out []pipeline.IRObject
-		for _, o := range rules.FilterObjects(all) {
-			if isClusterScoped(o) == cluster {
-				out = append(out, o)
-			}
-		}
-		return out, nil
-	}
 }
 
 // runClusterApply applies cluster-level objects (roles, tablespaces, etc.).
@@ -363,89 +303,9 @@ func prepareClusterTarget(
 	applyExec pipeline.ApplyExecutor,
 	secretResolver pipeline.SecretResolver,
 	opts applyOptions,
-) (*applyTarget, error) {
-	errColor := ui.IsColorEnabled(os.Stderr)
-
-	desired, mergeDiags, err := compiler.Compile(cl.SourceFiles, cl.ObjectsDir, pipeline.Default)
-	if err != nil {
-		return nil, err
+) (*apply.Target, error) {
+	connect := func(ctx context.Context) (*executor.PgxConn, error) {
+		return connectCluster(ctx, cl, secretResolver)
 	}
-	if err := opts.ignore.CheckDeclared(desired); err != nil {
-		return nil, err
-	}
-
-	diags := linter.FilterMergeDiagnostics(mergeDiags, opts.lintCfg)
-	if l, ok := pipeline.Resolve[pipeline.Linter](pipeline.Default, pipeline.KeyLinter); ok {
-		lintDiags, lintErr := l.Lint(desired, opts.lintCfg)
-		if lintErr != nil {
-			return nil, lintErr
-		}
-		diags = append(diags, lintDiags...)
-	}
-	if opts.strict {
-		for i := range diags {
-			diags[i].IsError = true
-		}
-	}
-	if ui.PrintLintDiagnostics(os.Stderr, diags, errColor) {
-		return nil, ui.ErrSilent
-	}
-
-	snap, err := store.Load(cl.Name(), cl.ClusterSnapshotKey())
-	if err != nil {
-		return nil, fmt.Errorf("snapshot load: %w", err)
-	}
-	stored := *snap
-	stored.Objects = copyObjects(snap.Objects)
-	log, logErr := openLog(opts.migrationsDir, cl.Name(), cl.ClusterSnapshotKey(), &stored)
-	if logErr != nil && !(opts.baseline && errors.Is(logErr, migrationlog.ErrNoBaseline)) {
-		return nil, noBaselineHint(logErr)
-	}
-	if err := opts.ignore.FilterSnapshot(snap); err != nil {
-		return nil, err
-	}
-
-	ops, err := differ.Diff(desired, snap)
-	if err != nil {
-		return nil, err
-	}
-	rev, _ := gitRevision()
-	return &applyTarget{
-		label: cl.Name() + " (cluster)", cluster: cl.Name(), key: cl.ClusterSnapshotKey(),
-		store: store, differ: differ, emitter: emitter, exec: applyExec,
-		connect: func(ctx context.Context) (*executor.PgxConn, error) {
-			return connectCluster(ctx, cl, secretResolver)
-		},
-		live:    liveObjects(opts.ignore, true),
-		rules:   opts.ignore,
-		ackFile: ackFileFor(opts.dpgDir, cl.Name(), cl.ClusterSnapshotKey()),
-		desired: desired, stored: &stored, log: log, logErr: logErr, ops: ops,
-		meta: pipeline.MigrationMeta{GeneratedAt: time.Now().UTC(), SourceRevision: rev, Cluster: cl.Name(), SourceRoot: cl.ProjectRoot, Database: cl.ClusterSnapshotKey()},
-	}, nil
-}
-
-// warnMissingPK writes a bold warning for every table that is being newly
-// created (absent from snap) and has no PRIMARY KEY constraint.
-func warnMissingPK(w io.Writer, desired []pipeline.IRObject, snap *pipeline.Snapshot, color bool) {
-	for _, obj := range desired {
-		tbl, ok := obj.(*ir.Table)
-		if !ok {
-			continue
-		}
-		// Only warn for new tables — existing ones are the user's responsibility.
-		if _, exists := snap.Objects[tbl.QualifiedName()]; exists {
-			continue
-		}
-		hasPK := false
-		for _, cst := range tbl.Constraints {
-			if cst.Type == "PRIMARY KEY" {
-				hasPK = true
-				break
-			}
-		}
-		if !hasPK {
-			fmt.Fprintf(w, "%s  table %s has no PRIMARY KEY — consider adding one\n",
-				ui.Bold("WARNING", color), tbl.QualifiedName())
-		}
-	}
+	return apply.PrepareCluster(cl, apply.Components{Store: store, Differ: differ, Emitter: emitter, Exec: applyExec}, connect, opts.run(), opts.printer())
 }

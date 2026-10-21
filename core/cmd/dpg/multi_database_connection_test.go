@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/thec1oud/dpg/internal/apply"
 	"github.com/thec1oud/dpg/internal/config"
 	"github.com/thec1oud/dpg/internal/diff"
 	"github.com/thec1oud/dpg/internal/emit"
@@ -141,7 +142,7 @@ func TestMultiDatabaseClusterConnectsToCorrectDatabase(t *testing.T) {
 	// instead of mdb_b) or, worse, ever references table_a at all.
 	dbB.SourceFiles = []string{schemaBPath}
 	dbB.Dir = dbBOut
-	report, err := runVerify(cl, dbB, store, introspect.New(), diff.New(), resolver, nil, logPosition{})
+	report, err := runVerify(cl, dbB, store, introspect.New(), diff.New(), resolver, nil, apply.LogPosition{})
 	if err != nil {
 		t.Fatalf("runVerify mdb_b: %v", err)
 	}

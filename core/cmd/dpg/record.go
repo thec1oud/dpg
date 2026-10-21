@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/thec1oud/dpg/internal/apply"
 	"github.com/thec1oud/dpg/internal/emit"
 	"github.com/thec1oud/dpg/internal/ignore"
 	"github.com/thec1oud/dpg/internal/migrationlog"
@@ -27,7 +28,7 @@ type recordOptions struct {
 
 // eachTarget prepares every targeted database (and cluster-level objects)
 // and calls fn with it.
-func eachTarget(clusterName, databaseName string, opts applyOptions, fn func(*applyTarget, applyOptions) error) error {
+func eachTarget(clusterName, databaseName string, opts applyOptions, fn func(*apply.Target, applyOptions) error) error {
 	proj, err := discoverProject()
 	if err != nil {
 		return err
@@ -51,8 +52,8 @@ func eachTarget(clusterName, databaseName string, opts applyOptions, fn func(*ap
 	applyExec, _ := pipeline.Resolve[pipeline.ApplyExecutor](pipeline.Default, pipeline.KeyApplyExecutor)
 	secretResolver, _ := pipeline.Resolve[pipeline.SecretResolver](pipeline.Default, pipeline.KeySecretResolver)
 	opts.migrationsDir = proj.MigrationsDir()
-	opts.ledger = ledgerFor(proj.RootConfig)
-	opts.lintCfg = linterConfigFrom(proj.RootConfig.Linter)
+	opts.ledger = apply.LedgerFor(proj.RootConfig)
+	opts.lintCfg = apply.LinterConfig(proj.RootConfig.Linter)
 	for _, cl := range clusters {
 		if len(cl.SourceFiles) > 0 {
 			o := opts
@@ -91,13 +92,13 @@ func runRecord(ro recordOptions) error {
 	opts := applyOptions{allowDestructive: ro.allowDestructive, approvePartitionRebuild: ro.rebuild}
 	color := ui.IsColorEnabled(os.Stdout)
 	var unrecorded []string
-	err := eachTarget(ro.cluster, ro.database, opts, func(t *applyTarget, o applyOptions) error {
-		if t.logErr != nil {
-			return noBaselineHint(t.logErr)
+	err := eachTarget(ro.cluster, ro.database, opts, func(t *apply.Target, o applyOptions) error {
+		if t.LogErr != nil {
+			return apply.NoBaselineHint(t.LogErr)
 		}
 		if ro.check {
-			if len(t.ops) > 0 {
-				unrecorded = append(unrecorded, fmt.Sprintf("%s: %d change(s) not recorded (first: %s)", t.label, len(t.ops), firstLine(t.ops[0].SQL())))
+			if len(t.Ops) > 0 {
+				unrecorded = append(unrecorded, fmt.Sprintf("%s: %d change(s) not recorded (first: %s)", t.Label, len(t.Ops), firstLine(t.Ops[0].SQL())))
 			}
 			return nil
 		}
@@ -127,45 +128,45 @@ func firstLine(s string) string {
 // running it (RFC Section 18.1): every database runs it when dpg apply
 // settles, or another runner runs its file. With amend, the log's last
 // migration is made again from the source instead of followed.
-func recordTarget(t *applyTarget, opts applyOptions, amend bool, color bool) error {
+func recordTarget(t *apply.Target, opts applyOptions, amend bool, color bool) error {
 	if opts.ledger == nil {
 		return fmt.Errorf("--record needs the ledger ([ledger] enabled = true): without it dpg apply never runs recorded migrations")
 	}
-	before := t.stored.Objects
-	parent := t.log.Head()
-	ops := t.ops
+	before := t.Stored.Objects
+	parent := t.Log.Head()
+	ops := t.Ops
 	var replaced *migrationlog.Entry
 	if amend {
-		if len(t.log.Entries) == 0 {
+		if len(t.Log.Entries) == 0 {
 			return fmt.Errorf("--amend: the migration log has no migration to replace")
 		}
-		replaced = t.log.Entries[len(t.log.Entries)-1]
+		replaced = t.Log.Entries[len(t.Log.Entries)-1]
 		parent = replaced.Parent
 		var err error
-		if before, err = t.log.Replay(parent); err != nil {
+		if before, err = t.Log.Replay(parent); err != nil {
 			return err
 		}
-		base := &pipeline.Snapshot{Objects: copyObjects(before)}
-		if err := t.rules.FilterSnapshot(base); err != nil {
+		base := &pipeline.Snapshot{Objects: apply.CopyObjects(before)}
+		if err := t.Rules.FilterSnapshot(base); err != nil {
 			return err
 		}
-		if ops, err = t.differ.Diff(t.desired, base); err != nil {
+		if ops, err = t.Differ.Diff(t.Desired, base); err != nil {
 			return err
 		}
 	}
 	if len(ops) == 0 && replaced == nil {
-		ui.PrintInfo(os.Stdout, t.label, "nothing to record: the source matches the snapshot", color)
+		ui.PrintInfo(os.Stdout, t.Label, "nothing to record: the source matches the snapshot", color)
 		return nil
 	}
-	if err := gate(ops, opts, "the migration"); err != nil {
+	if err := apply.Gate(ops, opts.run(), "the migration"); err != nil {
 		return err
 	}
 
-	next := *t.stored
+	next := *t.Stored
 	var e *migrationlog.Entry
 	var file string
 	if len(ops) > 0 {
-		full, err := t.emitter.Emit(ops, t.meta)
+		full, err := t.Emitter.Emit(ops, t.Meta)
 		if err != nil {
 			return err
 		}
@@ -173,20 +174,20 @@ func recordTarget(t *applyTarget, opts applyOptions, amend bool, color bool) err
 			return err
 		}
 		newSnap := &pipeline.Snapshot{}
-		if err := snapshotpkg.Populate(newSnap, t.desired); err != nil {
+		if err := snapshotpkg.Populate(newSnap, t.Desired); err != nil {
 			return fmt.Errorf("build snapshot: %w", err)
 		}
 		next.Objects = newSnap.Objects
-		if e, err = migrationlog.New(parent, guardedSteps(full, next.Objects, opts.ledger, t.key), migrationlog.OriginRecord, before, next.Objects, time.Now()); err != nil {
+		if e, err = migrationlog.New(parent, apply.GuardedSteps(full, next.Objects, opts.ledger, t.Key), migrationlog.OriginRecord, before, next.Objects, time.Now()); err != nil {
 			return err
 		}
-		if file, err = renderFile(e, t.meta, opts.ledger, t.key); err != nil {
+		if file, err = apply.RenderFile(e, t.Meta, opts.ledger, t.Key); err != nil {
 			return err
 		}
 	} else {
 		// Amending to nothing: the source matches the log without its last
 		// migration, which goes.
-		next.Objects = copyObjects(before)
+		next.Objects = apply.CopyObjects(before)
 		next.Migration = parent
 	}
 
@@ -194,22 +195,22 @@ func recordTarget(t *applyTarget, opts applyOptions, amend bool, color bool) err
 	// parent are no log), and come back if anything fails.
 	var restore func()
 	if replaced != nil {
-		sqlPath, entryPath := t.log.Paths(replaced.ID)
+		sqlPath, entryPath := t.Log.Paths(replaced.ID)
 		sqlData, _ := os.ReadFile(sqlPath)
 		entryData, _ := os.ReadFile(entryPath)
-		if err := migrationlog.Remove(t.log.Dir, replaced.ID); err != nil {
+		if err := migrationlog.Remove(t.Log.Dir, replaced.ID); err != nil {
 			return err
 		}
-		t.log.Entries = t.log.Entries[:len(t.log.Entries)-1]
+		t.Log.Entries = t.Log.Entries[:len(t.Log.Entries)-1]
 		restore = func() {
 			os.WriteFile(sqlPath, sqlData, 0o644)
 			os.WriteFile(entryPath, entryData, 0o644)
-			t.log.Entries = append(t.log.Entries, replaced)
+			t.Log.Entries = append(t.Log.Entries, replaced)
 		}
 	}
 	undo := func() {}
 	if e != nil {
-		u, err := recordEntry(t.log, e, file, &next)
+		u, err := apply.RecordEntry(t.Log, e, file, &next)
 		if err != nil {
 			if restore != nil {
 				restore()
@@ -218,7 +219,7 @@ func recordTarget(t *applyTarget, opts applyOptions, amend bool, color bool) err
 		}
 		undo = u
 	}
-	if err := t.store.Save(t.cluster, t.key, &next); err != nil {
+	if err := t.Store.Save(t.Cluster, t.Key, &next); err != nil {
 		undo()
 		if restore != nil {
 			restore()
@@ -227,13 +228,13 @@ func recordTarget(t *applyTarget, opts applyOptions, amend bool, color bool) err
 	}
 	switch {
 	case e == nil:
-		ui.PrintSuccess(os.Stdout, "Removed", fmt.Sprintf("%s — migration %s: the source matches the log without it", t.label, replaced.ID), color)
+		ui.PrintSuccess(os.Stdout, "Removed", fmt.Sprintf("%s — migration %s: the source matches the log without it", t.Label, replaced.ID), color)
 	case replaced != nil:
-		path, _ := t.log.Paths(e.ID)
-		ui.PrintSuccess(os.Stdout, "Recorded", fmt.Sprintf("%s — %s, replacing %s (a database that ran %s must be rebuilt)\n         %s", t.label, e.ID, replaced.ID, replaced.ID, ui.Dim(path, color)), color)
+		path, _ := t.Log.Paths(e.ID)
+		ui.PrintSuccess(os.Stdout, "Recorded", fmt.Sprintf("%s — %s, replacing %s (a database that ran %s must be rebuilt)\n         %s", t.Label, e.ID, replaced.ID, replaced.ID, ui.Dim(path, color)), color)
 	default:
-		path, _ := t.log.Paths(e.ID)
-		ui.PrintSuccess(os.Stdout, "Recorded", fmt.Sprintf("%s — not run anywhere yet; dpg apply runs it\n         %s", t.label, ui.Dim(path, color)), color)
+		path, _ := t.Log.Paths(e.ID)
+		ui.PrintSuccess(os.Stdout, "Recorded", fmt.Sprintf("%s — not run anywhere yet; dpg apply runs it\n         %s", t.Label, ui.Dim(path, color)), color)
 	}
 	return nil
 }

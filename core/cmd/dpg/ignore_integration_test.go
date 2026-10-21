@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/thec1oud/dpg/internal/apply"
 	"github.com/thec1oud/dpg/internal/config"
 	"github.com/thec1oud/dpg/internal/diff"
 	"github.com/thec1oud/dpg/internal/drift"
@@ -84,14 +85,14 @@ func TestIgnoreAndUndeclaredRolesLive(t *testing.T) {
 	clusterSnap, dbSnap := &pipeline.Snapshot{}, &pipeline.Snapshot{}
 	var clusterObjs []pipeline.IRObject
 	for _, o := range live {
-		if isClusterScoped(o) {
+		if apply.IsClusterScoped(o) {
 			clusterObjs = append(clusterObjs, o)
 		}
 	}
 	if err := snapshot.Populate(clusterSnap, clusterObjs); err != nil {
 		t.Fatal(err)
 	}
-	if err := snapshot.Populate(dbSnap, excludeClusterScoped(live)); err != nil {
+	if err := snapshot.Populate(dbSnap, apply.ExcludeClusterScoped(live)); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Save("c", cl.ClusterSnapshotKey(), clusterSnap); err != nil {
@@ -110,7 +111,7 @@ func TestIgnoreAndUndeclaredRolesLive(t *testing.T) {
 
 	// verify, cluster: undeclared roles warn, they are not drift; ignored
 	// roles and the bootstrap superuser are not mentioned at all.
-	report, err := runVerifyCluster(cl, store, introspect.New(), diff.New(), resolver, clusterRules, logPosition{})
+	report, err := runVerifyCluster(cl, store, introspect.New(), diff.New(), resolver, clusterRules, apply.LogPosition{})
 	if err != nil {
 		t.Fatalf("verify cluster: %v", err)
 	}
@@ -120,11 +121,11 @@ func TestIgnoreAndUndeclaredRolesLive(t *testing.T) {
 
 	// verify, database: the ignored schema and its table are not reported;
 	// without the rule they are unmanaged, which is not drift.
-	report, err = runVerify(cl, db, store, introspect.New(), diff.New(), resolver, dbRules, logPosition{})
+	report, err = runVerify(cl, db, store, introspect.New(), diff.New(), resolver, dbRules, apply.LogPosition{})
 	if err != nil || len(report.Items) != 0 {
 		t.Errorf("ignored schema reported (err %v): %q", err, itemIDs(report, ""))
 	}
-	report, err = runVerify(cl, db, store, introspect.New(), diff.New(), resolver, nil, logPosition{})
+	report, err = runVerify(cl, db, store, introspect.New(), diff.New(), resolver, nil, apply.LogPosition{})
 	if err != nil || report.HasDrift() || !strings.Contains(itemIDs(report, ""), "unmanaged schema:cron") {
 		t.Errorf("without [ignore], cron must be unmanaged, not drift (err %v): %q", err, itemIDs(report, ""))
 	}
@@ -176,7 +177,7 @@ func TestIgnoreAndUndeclaredRolesLive(t *testing.T) {
 
 	// A declared role dropped outside DPG is still drift.
 	exec(`DROP ROLE app_service`)
-	report, err = runVerifyCluster(cl, store, introspect.New(), diff.New(), resolver, clusterRules, logPosition{})
+	report, err = runVerifyCluster(cl, store, introspect.New(), diff.New(), resolver, clusterRules, apply.LogPosition{})
 	if err != nil || !report.HasDrift() || !strings.Contains(itemIDs(report, "drift"), "role:app_service") {
 		t.Errorf("a dropped declared role must be drift (err %v): %q", err, itemIDs(report, ""))
 	}

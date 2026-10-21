@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/thec1oud/dpg/internal/apply"
 	"github.com/thec1oud/dpg/internal/compiler"
 	"github.com/thec1oud/dpg/internal/ignore"
 	dpglinter "github.com/thec1oud/dpg/internal/linter"
@@ -64,7 +65,7 @@ Use --format json for machine-readable output.`,
 				return err
 			}
 
-			lintCfg := linterConfigFrom(proj.RootConfig.Linter)
+			lintCfg := apply.LinterConfig(proj.RootConfig.Linter)
 			store, err := pipeline.MustResolve[pipeline.SnapshotStore](pipeline.Default, pipeline.KeySnapshotStore)
 			if err != nil {
 				return err
@@ -95,7 +96,7 @@ Use --format json for machine-readable output.`,
 				for _, db := range databases {
 					dbLintCfg := lintCfg
 					dbLintCfg.MinPGVersion = db.EffectiveMinPGVersion(cl, proj.RootConfig)
-					errored, err := runValidate(cl.Name(), db.Name(), db.SourceFiles, db.Dir, dbCompileOptions(db), linter, dbLintCfg, format, strict,
+					errored, err := runValidate(cl.Name(), db.Name(), db.SourceFiles, db.Dir, apply.CompileOptions(db), linter, dbLintCfg, format, strict,
 						ignore.New(db.EffectiveIgnore(cl, proj.RootConfig)))
 					if err != nil {
 						return err

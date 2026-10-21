@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/thec1oud/dpg/internal/apply"
 	"github.com/thec1oud/dpg/internal/config"
 	"github.com/thec1oud/dpg/internal/ir"
 	"github.com/thec1oud/dpg/internal/linter"
@@ -13,37 +14,12 @@ import (
 	"github.com/thec1oud/dpg/internal/project"
 )
 
-// TestNormalizeLinterRuleKeysSnakeToKebab guards RFC audit item #17: the
-// RFC documents/exemplifies snake_case rule IDs
-// ("security_definer_search_path", Section 19.2's own worked example) while the
-// actual code emits kebab-case ("security-definer-search-path"), and
-// ApplyRuleSeverityOverrides does an exact-string lookup — so an
-// unnormalized snake_case config key silently matched nothing.
-func TestNormalizeLinterRuleKeysSnakeToKebab(t *testing.T) {
-	got := normalizeLinterRuleKeys(map[string]string{
-		"security_definer_search_path": "error",
-		"already-kebab-case":           "off",
-	})
-	want := map[string]string{
-		"security-definer-search-path": "error",
-		"already-kebab-case":           "off",
-	}
-	if len(got) != len(want) {
-		t.Fatalf("got %v, want %v", got, want)
-	}
-	for k, v := range want {
-		if got[k] != v {
-			t.Errorf("key %q: got %q, want %q (full map: %v)", k, got[k], v, got)
-		}
-	}
-}
-
 // TestLinterConfigFromNormalizesRuleKeys proves the normalization is
 // actually wired into the real config.LinterConfig -> pipeline.LinterConfig
 // conversion path every CLI command (plan/apply/validate) uses, not just
 // tested in isolation.
 func TestLinterConfigFromNormalizesRuleKeys(t *testing.T) {
-	pc := linterConfigFrom(config.LinterConfig{
+	pc := apply.LinterConfig(config.LinterConfig{
 		Rules: map[string]string{"security_definer_search_path": "error"},
 	})
 	if pc.Rules["security-definer-search-path"] != "error" {
@@ -60,7 +36,7 @@ func TestLinterConfigFromNormalizesRuleKeys(t *testing.T) {
 // config.LinterConfig -> pipeline.LinterConfig -> linter.Lint pipeline
 // every CLI command uses, not just the isolated normalization helper.
 func TestLinterConfigFromRFCWorkedExampleActuallyWorks(t *testing.T) {
-	pc := linterConfigFrom(config.LinterConfig{
+	pc := apply.LinterConfig(config.LinterConfig{
 		Rules: map[string]string{"security_definer_search_path": "error"},
 	})
 	l := linter.New()
@@ -123,7 +99,7 @@ func TestLinterConfigFromRFCWorkedExampleFromRealTOMLFile(t *testing.T) {
 		t.Fatalf("sanity check failed: TOML didn't parse as expected, got %v", rootCfg.Linter.Rules)
 	}
 
-	pc := linterConfigFrom(rootCfg.Linter)
+	pc := apply.LinterConfig(rootCfg.Linter)
 	l := linter.New()
 	objects := []pipeline.IRObject{
 		&ir.Function{

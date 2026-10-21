@@ -8,7 +8,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/thec1oud/dpg/internal/compiler"
 	"github.com/thec1oud/dpg/internal/executor"
 	"github.com/thec1oud/dpg/internal/pipeline"
 	"github.com/thec1oud/dpg/internal/project"
@@ -78,12 +77,6 @@ func dbNames(dbs []*project.Database) []string {
 		names[i] = db.Name()
 	}
 	return names
-}
-
-// dbCompileOptions returns the compile options a database's dpg.toml implies:
-// its default_schema (RFC Section 3.4).
-func dbCompileOptions(db *project.Database) compiler.Options {
-	return compiler.Options{DefaultSchema: db.Config.Database.DefaultSchema}
 }
 
 // connectDatabase connects to db (RFC Section 3.4): through the database's own

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/thec1oud/dpg/internal/apply"
 	"github.com/thec1oud/dpg/internal/compiler"
 	"github.com/thec1oud/dpg/internal/config"
 	"github.com/thec1oud/dpg/internal/diff"
@@ -2390,17 +2391,17 @@ func TestIsClusterScoped(t *testing.T) {
 		&ir.Table{Schema: "public", Name: "t"},
 	}
 	for _, o := range cluster {
-		if !isClusterScoped(o) {
+		if !apply.IsClusterScoped(o) {
 			t.Errorf("%T should be cluster-scoped", o)
 		}
 	}
 	for _, o := range database {
-		if isClusterScoped(o) {
+		if apply.IsClusterScoped(o) {
 			t.Errorf("%T should NOT be cluster-scoped", o)
 		}
 	}
 	// excludeClusterScoped keeps exactly the database objects.
-	kept := excludeClusterScoped(append(append([]pipeline.IRObject{}, cluster...), database...))
+	kept := apply.ExcludeClusterScoped(append(append([]pipeline.IRObject{}, cluster...), database...))
 	if len(kept) != len(database) {
 		t.Errorf("excludeClusterScoped kept %d, want %d", len(kept), len(database))
 	}
