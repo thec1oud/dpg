@@ -64,7 +64,7 @@ func TestPrepareFinishLive(t *testing.T) {
 
 	// Valid, but defined otherwise: refused, not dropped.
 	ops, err := prepare(asBuilt(false))
-	if err == nil || !strings.HasPrefix(err.Error(), "DPG-E058: ") {
+	if err == nil || !strings.HasPrefix(err.Error(), `DPG-E058: migration m1 builds index "t x" on "public"."t", `) {
 		t.Errorf("defined otherwise: %s, %v", sqls(ops), err)
 	}
 	if db := (*ui.DBError)(nil); errors.As(err, &db) {

@@ -587,11 +587,8 @@ func (t *Target) driftAt(ctx context.Context, conn *executor.PgxConn, head strin
 }
 
 // builtAt is prepareFinish's builtFunc for a migration being finished:
-// whether the index is defined as the log has it at the migration,
-// compared as drift is: no item on the index itself. Its comment is part
-// of it (drift.ChangedProperties folds an element's comment into
-// index:<name>), so one changed by hand is a difference, refused
-// (DPG-E058), as a definition changed by hand is.
+// whether the index is defined as the log has it at the migration, which
+// definedOtherwise decides as the preflight does.
 func (t *Target) builtAt(conn *executor.PgxConn, id string) builtFunc {
 	var report *drift.Report
 	return func(ctx context.Context, table, name string) (bool, error) {
@@ -601,9 +598,8 @@ func (t *Target) builtAt(conn *executor.PgxConn, id string) builtFunc {
 				return false, err
 			}
 		}
-		prop := drift.ElementProperty("index", name)
 		for _, it := range report.Items {
-			if it.Object == table && it.Property == prop {
+			if definedOtherwise(it, table, name) {
 				return false, nil
 			}
 		}
@@ -726,9 +722,9 @@ func (t *Target) preflight(ctx context.Context, conn *executor.PgxConn, head str
 				if err != nil {
 					return nil, ui.WrapDB(err)
 				}
-				if st.found && st.valid && sub == "" && it.Change == "changed" {
+				if st.found && st.valid && definedOtherwise(it, it.Object, b.name) {
 					differs = true
-					blocks = append(blocks, fmt.Sprintf("%s: migration %s builds this index, but a valid index of that name is there defined otherwise; drop or rename it", it.ID, resume.ID))
+					blocks = append(blocks, it.ID+": "+indexDefinedOtherwise(resume.ID, quote(b.name), b.table))
 					continue
 				}
 				exempt = st.found && !st.valid
@@ -830,6 +826,23 @@ func (t *Target) preflight(ctx context.Context, conn *executor.PgxConn, head str
 		return nil, &ui.ExitError{Code: 1, Err: &PreflightError{Problems: blocks, Err: fmt.Errorf("DPG-E052: running it would drop objects DPG doesn't manage; --allow-drift with --allow-destructive proceeds")}}
 	}
 	return nil, &ui.ExitError{Code: 1, Err: &PreflightError{Problems: blocks, Err: fmt.Errorf("DPG-E053: %d problem(s); dpg resolve fixes them, or --allow-drift proceeds anyway", len(blocks))}}
+}
+
+// definedOtherwise reports whether drift item it says the index name on
+// the table of snapshot key table, which is there, is defined otherwise
+// than the log has it: what finishing a migration that builds that index
+// refuses (DPG-E058), in the preflight and when finishing it. Drift
+// compares the index whole, its comment included (drift.ChangedProperties
+// folds it into index:<name>), so a comment changed by hand is a
+// difference too.
+func definedOtherwise(it drift.Item, table, name string) bool {
+	return it.Object == table && it.Property == drift.ElementProperty("index", name) && it.Change == "changed"
+}
+
+// indexDefinedOtherwise says why finishing migration id is refused when
+// definedOtherwise.
+func indexDefinedOtherwise(id, index, table string) string {
+	return fmt.Sprintf("migration %s builds index %s on %s, but the table has a valid index of that name defined otherwise; drop or rename it, then apply again", id, index, table)
 }
 
 // noteUnguarded notes the objects a migration changes whose kind has no

@@ -2,6 +2,7 @@ package apply
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -60,7 +61,7 @@ func prepareFinish(ctx context.Context, q pipeline.Querier, ops []pipeline.DiffO
 				return nil, err
 			}
 			if !same {
-				return nil, fmt.Errorf("DPG-E058: the migration builds index %s on %s, but the table has a valid index of that name defined otherwise; drop or rename it, then apply again", m[1], m[2])
+				return nil, errors.New("DPG-E058: " + indexDefinedOtherwise(migration, m[1], m[2]))
 			}
 		}
 	}
@@ -71,8 +72,8 @@ func prepareFinish(ctx context.Context, q pipeline.Querier, ops []pipeline.DiffO
 // table is as the migration builds it.
 type builtFunc func(ctx context.Context, table, name string) (bool, error)
 
-// tableKey is the snapshot key of the table a CREATE INDEX statement
-// builds on (targetKey), the op a step of the log.
+// tableKey is the snapshot key of the table that op, a CREATE INDEX
+// statement of a step of the log, builds on (targetKey).
 func tableKey(op pipeline.DiffOp, table string) string {
 	var tg *pipeline.Target
 	if t, ok := op.(interface{ StepTarget() *pipeline.Target }); ok {
