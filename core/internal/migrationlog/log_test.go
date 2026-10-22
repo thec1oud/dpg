@@ -269,8 +269,8 @@ func TestAMigrationsStatementsKnowTheirSteps(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s isn't an IdentifiedOp", op.SQL())
 		}
-		if id.MigrationID() != "m" {
-			t.Errorf("%s is of migration %q", op.SQL(), id.MigrationID())
+		if id.MigrationID() != "m" || id.Guard() != (op.SQL() == "CHECK") {
+			t.Errorf("%s is of migration %q, guard %v", op.SQL(), id.MigrationID(), id.Guard())
 		}
 		got[op.SQL()] = append(got[op.SQL()], id.StepID())
 	}

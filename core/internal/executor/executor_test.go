@@ -333,6 +333,7 @@ type stepOp struct{ testOp }
 
 func (stepOp) StepID() string      { return "m/2" }
 func (stepOp) MigrationID() string { return "m" }
+func (stepOp) Guard() bool         { return false }
 
 func TestApplyFailedStatementNamesItsStep(t *testing.T) {
 	for _, c := range []struct {

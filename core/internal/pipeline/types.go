@@ -329,12 +329,14 @@ type Target struct {
 // migration's ID and, for one of its steps, the step's ID: "<migration>/<n>",
 // n counting the migration's steps from 1. A copy of one of the migration's
 // guards (its check steps, run before and in its transaction) has no step
-// ID; the statements DPG adds around a migration's (its ledger's records)
-// aren't IdentifiedOps.
+// ID, and is a Guard; so has a statement DPG adds to finish the migration
+// (the drop of an invalid index before building it again), which isn't.
+// The ledger's records aren't IdentifiedOps.
 type IdentifiedOp interface {
 	DiffOp
 	MigrationID() string
 	StepID() string
+	Guard() bool
 }
 
 // TargetedOp is a DiffOp that knows its object. Every op the built-in

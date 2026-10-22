@@ -38,6 +38,10 @@ func prepareFinish(ctx context.Context, q pipeline.Querier, ops []pipeline.DiffO
 			continue
 		}
 		name := unquote(m[1])
+		migration := ""
+		if id, ok := op.(pipeline.IdentifiedOp); ok {
+			migration = id.MigrationID()
+		}
 		st, err := indexState(ctx, q, name, m[2])
 		if err != nil {
 			return nil, ui.WrapDB(err)
@@ -49,7 +53,7 @@ func prepareFinish(ctx context.Context, q pipeline.Querier, ops []pipeline.DiffO
 			out = append(out, op)
 		case !st.valid:
 			drop := "DROP INDEX CONCURRENTLY IF EXISTS " + quote(st.schema) + "." + m[1] + ";"
-			out = append(out, finishOp{sql: drop}, op)
+			out = append(out, finishOp{sql: drop, migration: migration}, op)
 		default:
 			same, err := built(ctx, tableKey(op, m[2]), name)
 			if err != nil {
@@ -148,10 +152,15 @@ func unquote(ident string) string {
 
 func quote(ident string) string { return `"` + strings.ReplaceAll(ident, `"`, `""`) + `"` }
 
-// finishOp is a statement prepareFinish adds, run outside a transaction.
-type finishOp struct{ sql string }
+// finishOp is a statement prepareFinish adds to finish a migration, run
+// outside a transaction. It is no step of the migration's, but is of it
+// (pipeline.IdentifiedOp), so a failure names the migration.
+type finishOp struct{ sql, migration string }
 
 func (o finishOp) SQL() string           { return o.sql }
+func (o finishOp) MigrationID() string   { return o.migration }
+func (finishOp) StepID() string          { return "" }
+func (finishOp) Guard() bool             { return false }
 func (finishOp) Safety() pipeline.Safety { return pipeline.Safe }
 func (finishOp) Pos() pipeline.SourcePos { return pipeline.SourcePos{} }
 func (finishOp) Mode() pipeline.ExecMode { return pipeline.ModeNonTransactional }

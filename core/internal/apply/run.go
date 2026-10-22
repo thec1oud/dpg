@@ -41,7 +41,7 @@ func Gate(ops []pipeline.DiffOp, opts Options, what string) error {
 		}
 		e := &GateError{Reason: reason, SQL: op.SQL()}
 		if id, ok := op.(pipeline.IdentifiedOp); ok {
-			e.Step = id.StepID()
+			e.Step, e.Migration, e.Guard = id.StepID(), id.MigrationID(), id.Guard()
 		}
 		return e
 	}
@@ -49,13 +49,20 @@ func Gate(ops []pipeline.DiffOp, opts Options, what string) error {
 }
 
 // GateError is Gate's refusal. Its message quotes the first statement
-// refused; a caller that keeps SQL out of its logs uses Reason and Step.
+// refused; a caller that keeps SQL out of its logs uses Reason, Step,
+// Migration and Guard.
 type GateError struct {
 	// Reason is the message, without the statement.
 	Reason string
 	// Step is the statement's step ID ("<migration>/<n>"), or "" for a
-	// statement of the source's change, not yet in the migration log.
+	// copy of a migration's guard (Guard) and for a statement of the
+	// source's change, not yet in the migration log (no Migration).
 	Step string
+	// Migration is the ID of the migration the statement is of; "" for
+	// one of the source's change.
+	Migration string
+	// Guard is set for a copy of one of the migration's guards.
+	Guard bool
 	// SQL is the statement.
 	SQL string
 }

@@ -433,6 +433,7 @@ type stepOp struct {
 	s         Step
 	migration string // the migration's ID
 	id        string // the step's ID, "<migration>/<n>" (n from 1); "" for a guard's copy
+	guard     bool   // a copy of a guard
 }
 
 func (o stepOp) SQL() string { return o.s.SQL }
@@ -452,6 +453,7 @@ func (o stepOp) Pos() pipeline.SourcePos { return pipeline.SourcePos{} }
 // (pipeline.IdentifiedOp).
 func (o stepOp) MigrationID() string { return o.migration }
 func (o stepOp) StepID() string      { return o.id }
+func (o stepOp) Guard() bool         { return o.guard }
 
 // StepTarget is the object the step changes, as the log records it (nil
 // for a guard). The op isn't a pipeline.TargetedOp: the log already
@@ -483,13 +485,13 @@ func (e *Entry) Migration(meta pipeline.MigrationMeta, withInstructions, withChe
 	m := pipeline.Migration{Meta: meta}
 	for i, s := range e.Steps {
 		id := e.ID + "/" + strconv.Itoa(i+1)
-		op := stepOp{s, e.ID, id}
+		op := stepOp{s: s, migration: e.ID, id: id}
 		switch s.Stage {
 		case StageCheck:
 			if withChecks {
 				// A guard runs twice, so neither copy is its step.
-				m.PreTransactional = append(m.PreTransactional, stepOp{Step{SQL: s.SQL, Safety: s.Safety, Stage: StageBefore}, e.ID, ""})
-				m.Transactional = append(m.Transactional, stepOp{Step{SQL: s.SQL, Safety: s.Safety, Stage: StageTransaction}, e.ID, ""})
+				m.PreTransactional = append(m.PreTransactional, stepOp{s: Step{SQL: s.SQL, Safety: s.Safety, Stage: StageBefore}, migration: e.ID, guard: true})
+				m.Transactional = append(m.Transactional, stepOp{s: Step{SQL: s.SQL, Safety: s.Safety, Stage: StageTransaction}, migration: e.ID, guard: true})
 			}
 		case StageBefore:
 			m.PreTransactional = append(m.PreTransactional, op)

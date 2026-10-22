@@ -52,6 +52,7 @@ type loggedGateOp struct{ gateOp }
 
 func (o loggedGateOp) StepID() string    { return o.id }
 func (loggedGateOp) MigrationID() string { return "m" }
+func (o loggedGateOp) Guard() bool       { return o.id == "" }
 
 func TestGateRefusesWithATypedError(t *testing.T) {
 	for _, c := range []struct {
@@ -59,13 +60,15 @@ func TestGateRefusesWithATypedError(t *testing.T) {
 		opts Options
 		code string
 		step string
+		mig  string
 	}{
-		{loggedGateOp{gateOp{pipeline.Destructive, "m/3"}}, Options{}, "DPG-E025: migration m contains destructive operations", "m/3"},
-		{gateOp{pipeline.Caution, ""}, Options{RefuseCaution: true}, "migration m contains CAUTION operations", ""},
+		{loggedGateOp{gateOp{pipeline.Destructive, "m/3"}}, Options{}, "DPG-E025: migration m contains destructive operations", "m/3", "m"},
+		{loggedGateOp{gateOp{pipeline.Caution, ""}}, Options{RefuseCaution: true}, "migration m contains CAUTION operations", "", "m"}, // a guard
+		{gateOp{pipeline.Caution, ""}, Options{RefuseCaution: true}, "migration m contains CAUTION operations", "", ""},
 	} {
 		err := Gate([]pipeline.DiffOp{gateOp{pipeline.Safe, ""}, c.op}, c.opts, "migration m")
 		var ge *GateError
-		if !errors.As(err, &ge) || !strings.HasPrefix(ge.Reason, c.code) || strings.Contains(ge.Reason, "DROP") || ge.Step != c.step || ge.SQL != "DROP TABLE t;" {
+		if !errors.As(err, &ge) || !strings.HasPrefix(ge.Reason, c.code) || strings.Contains(ge.Reason, "DROP") || ge.Step != c.step || ge.Migration != c.mig || ge.Guard != (c.mig != "" && c.step == "") || ge.SQL != "DROP TABLE t;" {
 			t.Errorf("%#v", ge)
 			continue
 		}

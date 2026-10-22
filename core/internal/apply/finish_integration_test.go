@@ -30,7 +30,7 @@ func TestPrepareFinishLive(t *testing.T) {
 		}
 	}
 	exec(`CREATE TABLE t (x int); CREATE TABLE o (x int)`)
-	build := finishOp{sql: `CREATE INDEX CONCURRENTLY "t x" ON "public"."t" ("x");`}
+	build := finishOp{sql: `CREATE INDEX CONCURRENTLY "t x" ON "public"."t" ("x");`, migration: "m1"}
 	asBuilt := func(same bool) builtFunc {
 		return func(_ context.Context, table, name string) (bool, error) {
 			if table != "public.t" || name != "t x" {
@@ -79,6 +79,8 @@ func TestPrepareFinishLive(t *testing.T) {
 	})
 	if want := `DROP INDEX CONCURRENTLY IF EXISTS "public"."t x"; | ` + build.sql; err != nil || sqls(ops) != want {
 		t.Errorf("invalid: %s, %v", sqls(ops), err)
+	} else if id := ops[0].(pipeline.IdentifiedOp); id.MigrationID() != "m1" || id.StepID() != "" || id.Guard() {
+		t.Errorf("the drop is of migration %q, step %q, guard %v", id.MigrationID(), id.StepID(), id.Guard())
 	}
 
 	// On another table: refused.

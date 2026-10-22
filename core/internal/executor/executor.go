@@ -105,9 +105,12 @@ type StatementError struct {
 	// ("<migration>/<n>", pipeline.IdentifiedOp), or "" for a statement
 	// DPG adds around a migration's (its guards, its ledger's records).
 	Step string
-	// Migration is the ID of the migration whose step or guard the
-	// statement is, or "" for one of the ledger's records.
+	// Migration is the ID of the migration the statement is of: one of its
+	// steps, a guard of its (Guard), or a statement DPG adds to finish it
+	// (the drop of an invalid index); "" for one of the ledger's records.
 	Migration string
+	// Guard is set for a copy of one of the migration's guards.
+	Guard bool
 	// SQL is the statement, as the migration log records it: with its
 	// secret references unresolved.
 	SQL string
@@ -117,7 +120,7 @@ type StatementError struct {
 func statementError(op pipeline.DiffOp, err error) *StatementError {
 	e := &StatementError{SQL: op.SQL(), Err: err}
 	if id, ok := op.(pipeline.IdentifiedOp); ok {
-		e.Step, e.Migration = id.StepID(), id.MigrationID()
+		e.Step, e.Migration, e.Guard = id.StepID(), id.MigrationID(), id.Guard()
 	}
 	return e
 }

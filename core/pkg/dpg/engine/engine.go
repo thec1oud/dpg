@@ -27,11 +27,12 @@
 // *StatementError, and a statement dpg apply's own checks refuse a
 // *GateError, whose messages quote the statement, as dpg apply's errors
 // do: a caller that keeps SQL out of its logs finds them with errors.As
-// and names the statement by its Step field, the ID of the Step it is,
-// or, when that is empty, as a guard of the migration its Migration field
-// names, or as one of DPG's own (its ledger's records) when that is empty
-// too. Every call stops when its context ends. An Engine is not safe for
-// concurrent use.
+// and names the statement by its Step field, the ID of the Step it is;
+// when that is empty, as a guard of the migration its Migration field
+// names (Guard set), or as a statement DPG runs to finish that migration
+// (the drop of an invalid index), or, with no Migration, as one of DPG's
+// own (its ledger's records). Every call stops when its context ends. An
+// Engine is not safe for concurrent use.
 package engine
 
 import (
@@ -84,15 +85,18 @@ type Config struct {
 }
 
 // StatementError is a statement that failed: Step is the ID of the Step
-// it is ("" for one of DPG's own), Migration the migration whose step or
-// guard it is ("" for the ledger's records), SQL the statement, as a Step
-// has it, and Err why it failed. A guard (a check Step) runs twice, before
-// and in its migration's transaction, so its Step is "" too.
+// it is ("" for one of DPG's own), Migration the migration it is of ("" for
+// the ledger's records), Guard set for one of the migration's guards, SQL
+// the statement, as a Step has it, and Err why it failed. A guard (a check
+// Step) runs twice, before and in its migration's transaction, so its
+// Step is "", as is a statement DPG adds to finish a migration (the drop
+// of an invalid index), which has its Migration.
 type StatementError = executor.StatementError
 
 // GateError is a statement dpg apply's own checks of safety refuse, which
 // Apply's refusals (RefusedError) leave none to: Reason says why, without
-// the statement, and Step is the ID of the Step it is.
+// the statement, and Step, Migration and Guard name it as a
+// StatementError's do.
 type GateError = apply.GateError
 
 // ErrNoConnection is returned by the calls that need a database when the
